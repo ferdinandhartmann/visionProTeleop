@@ -6,7 +6,7 @@ from avp_stream import VisionProStreamer
 import numpy as np
 from tf2_ros import TransformBroadcaster
 
-VISIONPRO_IP = "192.168.10.113"
+VISIONPRO_IP = "192.168.50.153"
 
 JOINT_NAMES = [
     "wrist",  # 0
@@ -174,15 +174,15 @@ class HandViz(Node):
 
         pinch_threshold = 0.02
         
-        # Publish head in map
+        # Publish head in vp_base
         head_mat = data["head"][0]
-        self.publish_tf("map", "visionpro/head", head_mat)
+        self.publish_tf("vp_base", "visionpro/head", head_mat)
 
         for side, wrist_mat, fingers, pinch_dist in [
             ("left", data["left_wrist"][0], data["left_fingers"], data["left_pinch_distance"]),
             ("right", data["right_wrist"][0], data["right_fingers"], data["right_pinch_distance"])
         ]:
-            self.publish_tf("map", f"visionpro/{side}/wrist", wrist_mat)
+            self.publish_tf("vp_base", f"visionpro/{side}/wrist", wrist_mat)
 
             # --- TF publishing for joints ---
             joints = [np.eye(4)] + list(fingers)  # joint[0] is wrist (identity relative to wrist)

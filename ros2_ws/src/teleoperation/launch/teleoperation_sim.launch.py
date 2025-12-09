@@ -62,24 +62,16 @@ def generate_launch_description():
             os.path.join(config_folder, "visionpro.rviz"),
         ],
     )
+    
+    
 
 
-    mycobot_sim_rviz = None
-
-    if SIMULATION_MODE == "rviz":
-        # mycobot_sim_rviz = Node(
-        #     package="mycobot_ros2",
-        #     executable="mycobot_rviz",
-        #     name="mycobot_rviz",
-        #     output="screen"
-        # )
-
-        robot_state_publisher_node = Node(
-            name="robot_state_publisher",
-            package="robot_state_publisher",
-            executable="robot_state_publisher",
-            parameters=[{'robot_description': robot_description}]
-        )    
+    robot_state_publisher_node = Node(
+        name="robot_state_publisher",
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        parameters=[{'robot_description': robot_description}]
+    )    
     
 
 
@@ -87,14 +79,11 @@ def generate_launch_description():
     nodes = [
         rviz2_node,
         transform_publisher_node,
+        robot_state_publisher_node,
         mycobot_adapter_node,
         model_launch_arg,
         rvizconfig_launch_arg, 
     ]
-
-    if mycobot_sim_rviz:
-        nodes.append(mycobot_sim_rviz)
-        nodes.append(robot_state_publisher_node)
 
 
     return LaunchDescription(nodes)

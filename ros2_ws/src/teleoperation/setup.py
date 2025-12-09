@@ -25,9 +25,7 @@ setup(
         "console_scripts": [
             "camera_streamer = teleoperation.camera_streamer:main",
             "transform_publisher = teleoperation.transform_publisher:main",
-            "mycobot_adapter = teleoperation.mycobot_adapter:main",
             "teleop_control = teleoperation.teleop_control:main",
-            "teleop_coords_bridge = teleoperation.teleop_bridge:main",
         ],
     },
 )

@@ -6,7 +6,7 @@ import cv2
 from avp_stream import VisionProStreamer
 
 # Optional: Vision Pro streaming
-VISIONPRO_IP = "192.168.10.113"
+VISIONPRO_IP = "192.168.50.153"
 USE_VISIONPRO = True
 
 if USE_VISIONPRO:
@@ -19,7 +19,8 @@ class CameraStreamer(Node):
         self.bridge = CvBridge()
 
         # Open webcam
-        self.cap = cv2.VideoCapture(0)
+        # self.cap = cv2.VideoCapture(0) # webcam
+        self.cap = cv2.VideoCapture(4) # robot usb camera        
         if not self.cap.isOpened():
             raise RuntimeError("Could not open /dev/video0")
 
@@ -27,7 +28,7 @@ class CameraStreamer(Node):
         if USE_VISIONPRO:
             self.streamer = VisionProStreamer(ip=VISIONPRO_IP)
             self.streamer.start_streaming(
-                device=None, format=None, size="640x480", fps=30
+                device=None, format=None, size="1280x720", fps=25 # 640x480, 320x240
             )
             self.get_logger().info("Vision Pro streaming enabled")
 
