@@ -18,8 +18,8 @@ def generate_launch_description():
     model_launch_arg = DeclareLaunchArgument(
         "model",
         default_value=os.path.join(
-            get_package_share_directory("mycobot_description"),
-            "urdf/mycobot_280_m5/mycobot_280_m5_adaptive_gripper.urdf"
+            get_package_share_directory("robot_description"),
+            "urdf/mycobot_280_m5/mycobot_280_m5_camera_flange_adaptive_gripper.urdf"
         )
     )
     

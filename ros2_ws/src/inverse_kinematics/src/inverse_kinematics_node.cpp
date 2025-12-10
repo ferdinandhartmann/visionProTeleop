@@ -6,10 +6,14 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_ros/transform_listener.h"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_broadcaster.h"
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -34,48 +38,93 @@ struct Pose
 class InverseKinematicsNode : public rclcpp::Node
 {
 public:
-  InverseKinematicsNode()
-  : Node("inverse_kinematics_node"),
-    joint_names_{"joint1", "joint2", "joint3", "joint4", "joint5", "joint6"},
+InverseKinematicsNode()
+: Node("inverse_kinematics_node"),
+    joint_names_{
+        "joint2_to_joint1",
+        "joint3_to_joint2",
+        "joint4_to_joint3",
+        "joint5_to_joint4",
+        "joint6_to_joint5",
+        "joint6output_to_joint6"
+    },
     joint_state_(6, 0.0)
-  {
+{
     declare_parameter<std::string>("target_topic", "/teleop/ee_target");
-    declare_parameter<std::string>("joint_target_topic", "/teleop/joint_targets");
+    declare_parameter<std::string>("joint_target_topic", "/joint_states");
+    declare_parameter<std::string>("map_frame", "map");
+    declare_parameter<std::string>("map_target_topic", "/teleop/ee_target_map");
+    declare_parameter<std::string>("ee_parent_frame", "g_base");
+    declare_parameter<std::string>("ee_child_frame", "gripper_ee");
 
     const auto target_topic = get_parameter("target_topic").as_string();
     const auto joint_target_topic = get_parameter("joint_target_topic").as_string();
+    const auto map_frame = get_parameter("map_frame").as_string();
+    const auto map_target_topic = get_parameter("map_target_topic").as_string();
+    ee_parent_frame_ = get_parameter("ee_parent_frame").as_string();
+    ee_child_frame_ = get_parameter("ee_child_frame").as_string();
 
     pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      target_topic, rclcpp::SensorDataQoS(),
-      std::bind(&InverseKinematicsNode::poseCallback, this, std::placeholders::_1));
+        target_topic, rclcpp::SensorDataQoS(),
+        std::bind(&InverseKinematicsNode::poseCallback, this, std::placeholders::_1));
 
     joint_state_publisher_ = create_publisher<sensor_msgs::msg::JointState>(
-      joint_target_topic, 10);
+        joint_target_topic, 10);
+
+    map_target_publisher_ = create_publisher<geometry_msgs::msg::PoseStamped>(
+        map_target_topic, 10);
 
     dh_chain_ = buildDhParameters();
 
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+
     RCLCPP_INFO(get_logger(), "Inverse kinematics node listening to %s", target_topic.c_str());
     RCLCPP_INFO(get_logger(), "Publishing joint targets to %s", joint_target_topic.c_str());
-  }
+    RCLCPP_INFO(get_logger(), "Republishing ee_target in frame %s to %s",
+        map_frame.c_str(), map_target_topic.c_str());
+}
 
 private:
-  static std::vector<DhParameter> buildDhParameters()
-  {
-    // Convert millimeter distances from the provided DH table into meters.
-    constexpr double mm_to_m = 0.001;
-    return {
-      DhParameter{0.0, 0.0, 131.56 * mm_to_m, 0.0},
-      DhParameter{M_PI_2, 0.0, 0.0, -M_PI_2},
-      DhParameter{0.0, -110.4 * mm_to_m, 0.0, 0.0},
-      DhParameter{0.0, -96.0 * mm_to_m, 64.62 * mm_to_m, -M_PI_2},
-      DhParameter{M_PI_2, 0.0, 73.18 * mm_to_m, M_PI_2},
-      DhParameter{-M_PI_2, 0.0, 48.6 * mm_to_m, 0.0},
-    };
-  }
+      // Constant gripper open position (adjust as needed).
+      static constexpr double kGripperOpenPosition = 0.0;
+
+    static std::vector<DhParameter> buildDhParameters()
+    {
+        constexpr double mm = 0.001;
+
+        return {
+            // j1
+            DhParameter{ +1.5708,      0.0,     131.22 * mm,    0.0 },
+            // j2
+            DhParameter{  0.0,        -110.4 * mm, 0.0,        -1.5708 },
+            // j3
+            DhParameter{  0.0,         -96.0 * mm, 0.0,         0.0 },
+            // j4
+            DhParameter{ +1.5708,       0.0,      63.4 * mm,   -1.5708 },
+            // j5
+            DhParameter{ -1.5708,       0.0,      75.05 * mm,  +1.5708 },
+            // j6
+            DhParameter{  0.0,          0.0,      45.6 * mm,    0.0 }
+        };
+    }
+
 
   void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
   {
     Pose target = poseFromMsg(*msg);
+
+    RCLCPP_INFO(get_logger(),
+      "Received target pose: frame=%s pos=(%.3f, %.3f, %.3f)",
+      msg->header.frame_id.c_str(),
+      target.position.x(), target.position.y(), target.position.z());
+
+    // geometry_msgs::msg::PoseStamped map_pose;
+    // if (transformToMapFrame(*msg, map_pose))
+    // {
+    //   map_target_publisher_->publish(map_pose);
+    // }
 
     std::vector<double> solution;
     bool success = solveInverseKinematics(target, joint_state_, solution);
@@ -85,11 +134,62 @@ private:
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 3000,
         "Inverse kinematics did not converge for the requested pose");
+
+      // Publish all zero joints if IK fails
+      sensor_msgs::msg::JointState zero_msg;
+      zero_msg.header = msg->header;
+      zero_msg.name = joint_names_;
+      zero_msg.name.push_back("gripper_controller");
+      zero_msg.name.push_back("gripper_base_to_gripper_left2");
+      zero_msg.name.push_back("gripper_left3_to_gripper_left1");
+      zero_msg.name.push_back("gripper_base_to_gripper_right3");
+      zero_msg.name.push_back("gripper_base_to_gripper_right2");
+      zero_msg.name.push_back("gripper_right3_to_gripper_right1");
+
+      zero_msg.position = std::vector<double>(joint_names_.size(), 0.0);
+      // Gripper and its mimic joints are kept at the open angle.
+      zero_msg.position.push_back(kGripperOpenPosition);  // gripper_controller
+      zero_msg.position.push_back(0.0);                   // gripper_base_to_gripper_left2 (mimic)
+      zero_msg.position.push_back(0.0);                   // gripper_left3_to_gripper_left1 (mimic)
+      zero_msg.position.push_back(0.0);                   // gripper_base_to_gripper_right3 (mimic)
+      zero_msg.position.push_back(0.0);                   // gripper_base_to_gripper_right2 (mimic)
+      zero_msg.position.push_back(0.0);                   // gripper_right3_to_gripper_right1 (mimic)
+      joint_state_publisher_->publish(zero_msg);
+      publishEndEffectorTf(msg->header);
       return;
     }
 
     joint_state_ = solution;
     publishJointState(msg->header);
+  }
+
+  bool transformToMapFrame(const geometry_msgs::msg::PoseStamped & input,
+                           geometry_msgs::msg::PoseStamped & output)
+  {
+    const std::string map_frame = get_parameter("map_frame").as_string();
+    if (input.header.frame_id == map_frame)
+    {
+      output = input;
+      return true;
+    }
+
+    try
+    {
+      geometry_msgs::msg::TransformStamped tf_stamped = tf_buffer_->lookupTransform(
+        map_frame, input.header.frame_id, tf2::TimePointZero);
+
+      tf2::doTransform(input, output, tf_stamped);
+      output.header.frame_id = map_frame;
+      return true;
+    }
+    catch (const tf2::TransformException & ex)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 3000,
+        "Failed to transform ee_target from %s to %s: %s",
+        input.header.frame_id.c_str(), map_frame.c_str(), ex.what());
+      return false;
+    }
   }
 
   Pose poseFromMsg(const geometry_msgs::msg::PoseStamped & msg) const
@@ -122,6 +222,16 @@ private:
     return T;
   }
 
+  static Eigen::Matrix3d rpyToMatrix(double roll, double pitch, double yaw)
+  {
+    Eigen::AngleAxisd roll_angle(roll, Eigen::Vector3d::UnitX());
+    Eigen::AngleAxisd pitch_angle(pitch, Eigen::Vector3d::UnitY());
+    Eigen::AngleAxisd yaw_angle(yaw, Eigen::Vector3d::UnitZ());
+    // URDF uses R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    Eigen::Matrix3d R = (yaw_angle * pitch_angle * roll_angle).toRotationMatrix();
+    return R;
+  }
+
   Pose forwardKinematics(const std::vector<double> & joints) const
   {
     Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
@@ -131,6 +241,31 @@ private:
       const double theta = joints[i] + dh.offset;
       T = T * dhTransform(dh.alpha, dh.a, dh.d, theta);
     }
+
+    // Add fixed transforms from joint6 flange to camera flange
+    // and from camera flange to gripper base, matching the URDF.
+    //
+    // joint6output_to_camera_flange:
+    //   origin xyz="0 0 0.01" rpy="1.579 0 0.7854"
+    Eigen::Matrix4d T_joint6_to_camera = Eigen::Matrix4d::Identity();
+    T_joint6_to_camera.block<3, 3>(0, 0) = rpyToMatrix(1.579, 0.0, 0.7854);
+    T_joint6_to_camera.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.0, 0.01);
+
+    // camera_flange_to_gripper_base:
+    //   origin xyz="0.0 0.041 0.0" rpy="0 -1.57 0"
+    Eigen::Matrix4d T_camera_to_gripper = Eigen::Matrix4d::Identity();
+    T_camera_to_gripper.block<3, 3>(0, 0) = rpyToMatrix(0.0, -1.57, 0.0);
+    T_camera_to_gripper.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.041, 0.0);
+
+    // Compose up to the gripper base frame.
+    T = T * T_joint6_to_camera * T_camera_to_gripper;
+
+    // Finally, apply a constant 0.02 m offset from the gripper
+    // base to the effective tool point, along the gripper's +Z.
+    constexpr double gripper_offset_front = 0.065;  // meters
+    constexpr double gripper_offset_down = -0.01;  // meters
+    Eigen::Vector3d tool_offset = T.block<3, 3>(0, 0) * Eigen::Vector3d(0.0, gripper_offset_front, gripper_offset_down);
+    T.block<3, 1>(0, 3) += tool_offset;
 
     Pose pose;
     pose.position = T.block<3, 1>(0, 3);
@@ -204,22 +339,33 @@ private:
                               const std::vector<double> & seed,
                               std::vector<double> & solution) const
   {
-    const double position_tolerance = 1e-4;      // meters
-    const double orientation_tolerance = 1e-3;   // radians
-    const size_t max_iterations = 200;
-    const double damping = 1e-3;
+    // Accept ~2 cm position error and ~3 deg orientation error
+    const double position_tolerance = 0.001;      // meters
+    const double orientation_tolerance = 0.001;   // radians
+    const size_t max_iterations = 300;
+    const double damping = 0.008;
+    const double step_tolerance = 2e-6;          // rad magnitude of joint update
 
     Eigen::VectorXd joints = Eigen::Map<const Eigen::VectorXd>(seed.data(), seed.size());
+
+    Eigen::Matrix<double, 6, 1> last_error;
 
     for (size_t iter = 0; iter < max_iterations; ++iter)
     {
       Pose current = forwardKinematics(std::vector<double>(joints.data(), joints.data() + joints.size()));
       Eigen::Matrix<double, 6, 1> error = computeError(current, target);
+      last_error = error;
 
       if (error.block<3, 1>(0, 0).norm() < position_tolerance &&
           error.block<3, 1>(3, 0).norm() < orientation_tolerance)
       {
         solution.assign(joints.data(), joints.data() + joints.size());
+        RCLCPP_INFO(
+          rclcpp::get_logger("inverse_kinematics_node"),
+          "IK converged in %zu iterations (pos_err=%.3e, ori_err=%.3e)",
+          iter,
+          error.block<3, 1>(0, 0).norm(),
+          error.block<3, 1>(3, 0).norm());
         return true;
       }
 
@@ -231,7 +377,51 @@ private:
       Eigen::Matrix<double, 6, 1> delta = J.transpose() * lhs.ldlt().solve(error);
 
       joints += delta;
+
+      if (iter == 0 || (iter + 1) == max_iterations)
+      {
+        RCLCPP_INFO(
+          rclcpp::get_logger("inverse_kinematics_node"),
+          "IK iter %zu: pos_err=%.3e, ori_err=%.3e, |delta|=%.3e",
+          iter,
+          error.block<3, 1>(0, 0).norm(),
+          error.block<3, 1>(3, 0).norm(),
+          delta.norm());
+      }
+
+      // If we're only making tiny joint updates, treat current
+      // configuration as the best-effort solution even if the
+      // residual error is slightly above the strict tolerance.
+      if (delta.norm() < step_tolerance)
+      {
+        solution.assign(joints.data(), joints.data() + joints.size());
+        RCLCPP_INFO(
+          rclcpp::get_logger("inverse_kinematics_node"),
+          "IK stopped by step tolerance at iter %zu (pos_err=%.3e, ori_err=%.3e)",
+          iter,
+          error.block<3, 1>(0, 0).norm(),
+          error.block<3, 1>(3, 0).norm());
+        return true;
+      }
+
+    if (iter == 0 || (iter + 1) == max_iterations || (iter % 100 == 0))
+    {
+        RCLCPP_INFO(
+          rclcpp::get_logger("inverse_kinematics_node"),
+          "IK iter %zu: pos_err=%.3e, ori_err=%.3e, |delta|=%.3e",
+          iter,
+          error.block<3, 1>(0, 0).norm(),
+          error.block<3, 1>(3, 0).norm(),
+          delta.norm());
+      }
     }
+
+    RCLCPP_WARN(
+      rclcpp::get_logger("inverse_kinematics_node"),
+      "IK failed after %zu iterations: final pos_err=%.3e, ori_err=%.3e",
+      max_iterations,
+      last_error.block<3, 1>(0, 0).norm(),
+      last_error.block<3, 1>(3, 0).norm());
 
     return false;
   }
@@ -241,16 +431,67 @@ private:
     sensor_msgs::msg::JointState msg;
     msg.header = header;
     msg.name = joint_names_;
+    msg.name.push_back("gripper_controller");
+    msg.name.push_back("gripper_base_to_gripper_left2");
+    msg.name.push_back("gripper_left3_to_gripper_left1");
+    msg.name.push_back("gripper_base_to_gripper_right3");
+    msg.name.push_back("gripper_base_to_gripper_right2");
+    msg.name.push_back("gripper_right3_to_gripper_right1");
+
     msg.position = joint_state_;
+    // Gripper and its mimic joints are kept at the open angle.
+    msg.position.push_back(kGripperOpenPosition);  // gripper_controller
+    msg.position.push_back(0.0);                   // gripper_base_to_gripper_left2 (mimic)
+    msg.position.push_back(0.0);                   // gripper_left3_to_gripper_left1 (mimic)
+    msg.position.push_back(0.0);                   // gripper_base_to_gripper_right3 (mimic)
+    msg.position.push_back(0.0);                   // gripper_base_to_gripper_right2 (mimic)
+    msg.position.push_back(0.0);                   // gripper_right3_to_gripper_right1 (mimic)
     joint_state_publisher_->publish(msg);
+
+    publishEndEffectorTf(header);
+  }
+
+  void publishEndEffectorTf(const std_msgs::msg::Header & header)
+  {
+    if (!tf_broadcaster_)
+    {
+      return;
+    }
+
+    Pose ee_pose = forwardKinematics(joint_state_);
+
+    geometry_msgs::msg::TransformStamped tf_msg;
+    tf_msg.header.stamp = header.stamp;
+    tf_msg.header.frame_id = ee_parent_frame_;
+    tf_msg.child_frame_id = ee_child_frame_;
+
+    tf_msg.transform.translation.x = ee_pose.position.x();
+    tf_msg.transform.translation.y = ee_pose.position.y();
+    tf_msg.transform.translation.z = ee_pose.position.z();
+
+    Eigen::Quaterniond q(ee_pose.rotation);
+    q.normalize();
+    tf_msg.transform.rotation.x = q.x();
+    tf_msg.transform.rotation.y = q.y();
+    tf_msg.transform.rotation.z = q.z();
+    tf_msg.transform.rotation.w = q.w();
+
+    tf_broadcaster_->sendTransform(tf_msg);
   }
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr map_target_publisher_;
+
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::vector<DhParameter> dh_chain_;
   std::vector<std::string> joint_names_;
   std::vector<double> joint_state_;
+  std::string ee_parent_frame_;
+  std::string ee_child_frame_;
 };
 
 }  // namespace inverse_kinematics

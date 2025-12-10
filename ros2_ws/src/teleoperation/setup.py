@@ -26,6 +26,7 @@ setup(
             "camera_streamer = teleoperation.camera_streamer:main",
             "transform_publisher = teleoperation.transform_publisher:main",
             "teleop_control = teleoperation.teleop_control:main",
+            "keyboard_ee_teleop = teleoperation.keyboard_ee_teleop:main",
         ],
     },
 )
