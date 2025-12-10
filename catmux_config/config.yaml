@@ -1,0 +1,56 @@
+---
+common:
+  # before_commands will be executed in each pane before doing anything else. Use this e.g. for
+  #   - sourcing an environment
+  #   - ssh-ing to another machine
+  before_commands:
+    - source ~/.bashrc  # before commands can be specified global and per window
+
+  # The default window will be the one displayed when first connecting to the tmux session
+  default_window: control
+parameters:
+  # Parameters specified here can be used below and they can be overwritten at runtime
+  show_layouts: true # This parameter is used together with the if flag below
+  # replacement_param: world\! # Parameters can also be used as replacement templates
+
+# Everything will be opened in windows. Windows can have multiple splits.
+windows:
+  - name: control
+    if: show_layouts # this window will only be started when the 'show_layouts' parameter is true
+    layout: no_split # One can use the default layouts specified by tmux
+    splits:
+      - commands:
+        - ros2 run teleoperation teleop_control
+  # - name: rviz
+  #   if: show_layouts # this window will only be started when the 'show_layouts' parameter is true
+  #   layout: no_split # One can use the default layouts specified by tmux
+  #   splits:
+  #     - commands:
+  #       - rviz2
+  - name: bridge
+    if: show_layouts # this window will only be started when the 'show_layouts' parameter is true
+    layout: no_split # One can use the default layouts specified by tmux
+    splits:
+      - commands:
+        - ros2 run teleoperation teleop_coords_bridge
+
+  - name: launch
+    if: show_layouts # this window will only be started when the 'show_layouts' parameter is true
+    layout: no_split # One can use the default layouts specified by tmux
+    splits:
+      - commands:
+        - ros2 launch teleoperation teleoperation.launch.py
+
+  - name: listenr
+    if: show_layouts # this window will only be started when the 'show_layouts' parameter is true
+    layout: no_split # One can use the default layouts specified by tmux
+    splits:
+      - commands:
+        - ros2 run mycobot_280 listen_real --ros-args -p port:=/dev/ttyACM0
+
+
+  - name: some_other_window
+    if: show_layouts # this window will only be started when the 'show_layouts' parameter is true
+    layout: no_split # One can use the default layouts specified by tmux
+    commands:
+      - echo "hello"
