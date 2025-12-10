@@ -14,12 +14,14 @@ def generate_launch_description():
     config_folder = os.path.join(
         get_package_share_directory("teleoperation"), "config"
     )
+
+    teleop_config = os.path.join(config_folder, "teleoperation.yaml")
     
     model_launch_arg = DeclareLaunchArgument(
         "model",
         default_value=os.path.join(
             get_package_share_directory("robot_description"),
-            "urdf/mycobot_280_m5/mycobot_280_m5_camera_flange_adaptive_gripper.urdf"
+            "urdf/mycobot_280_m5/mycobot_280_m5_camera_adaptive_gripper.urdf"
         )
     )
     
@@ -67,15 +69,15 @@ def generate_launch_description():
     #     output="screen"
     # )
     
-    static_transform_map_g_base = Node(
+    static_transform_map_mycobot_base = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
-        name="static_transform_map_g_base",
+        name="static_transform_map_mycobot_base",
         arguments=[
             "0", "0", "0",  # translation x y z
             "0", "0", "0",  # rotation roll pitch yaw (radians)
             "map",
-            "g_base"
+            "mycobot_base"
         ],
         output="screen"
     )
@@ -106,8 +108,7 @@ def generate_launch_description():
         name="teleop_control",
         output="screen",
         parameters=[
-            {'port': LaunchConfiguration('port')},
-            {'baud': LaunchConfiguration('baud')},
+            teleop_config,
         ],
     )
 
@@ -136,6 +137,22 @@ def generate_launch_description():
         output="screen",
     )
 
+    keyboard_ee_teleop_node = Node(
+        package="teleoperation",
+        executable="keyboard_ee_teleop",
+        name="keyboard_ee_teleop",
+        output="screen",
+        parameters=[teleop_config],
+    )
+
+    joint_state_to_mycobot_node = Node(
+        package="teleoperation",
+        executable="joint_state_to_mycobot",
+        name="joint_state_to_mycobot",
+        output="screen",
+        parameters=[teleop_config],
+    )
+
 
     nodes = [
         model_launch_arg,
@@ -146,11 +163,13 @@ def generate_launch_description():
         # joint_state_publisher_node,
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
 
-        static_transform_map_g_base,
+        static_transform_map_mycobot_base,
         transform_publisher_node,
         static_transform_map_vp_base_origin,
 
         teleop_control_node,
+        keyboard_ee_teleop_node,
+        joint_state_to_mycobot_node,
         # teleop_bridge_node,
 
         rviz2_node,

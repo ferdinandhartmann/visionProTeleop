@@ -15,19 +15,11 @@ from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 # from tf_transformations import quaternion_multiply, quaternion_from_euler
 from scipy.spatial.transform import Rotation as R
 
-from pymycobot import MyCobot280
-from pymycobot.error import MyCobot280DataException
-import time
-
 from tf2_ros import StaticTransformBroadcaster
 
 from pathlib import Path
 import fcntl
 import os
-
-
-LOCK_FILE = "/tmp/mycobot_lock"
-
 
 
 def mat_from_tf(tf):
@@ -58,47 +50,32 @@ class VisionProTeleop(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Publishes target pose and gripper command
-        self.ee_pub = self.create_publisher(PoseStamped, '/teleop/ee_target', 10)
-        self.joint_state_pub = self.create_publisher(JointState, 'joint_states', 10)
+        self.ee_target_pub = self.create_publisher(PoseStamped, '/teleop/ee_target', 10)
+        self.joint_state_pub = self.create_publisher(JointState, '/joint_states', 10)
 
         # TF broadcaster for target pose
         self.tf_broadcaster = TransformBroadcaster(self)
 
         # Parameters
-        self.declare_parameter('base_frame', 'vp_base')
-        self.base_frame = self.get_parameter('base_frame').get_parameter_value().string_value
+        self.declare_parameter('vp_base_frame', 'vp_base')
         self.declare_parameter('gripper_base_frame', 'gripper_base')
-        self.gripper_base_frame = self.get_parameter('gripper_base_frame').get_parameter_value().string_value
-        # MyCobot connection parameters
-        self.declare_parameter('port', '/dev/ttyUSB0')
-        self.declare_parameter('baud', 115200)
-        port = self.get_parameter('port').get_parameter_value().string_value
-        baud = self.get_parameter('baud').get_parameter_value().integer_value
-        self.get_logger().info(f"MyCobot port: {port}, baud: {baud}")
         
-        # pinch thresholds (meters)
-        self.PINCH_THRESHOLD = 0.02   # left pinch < ON → start teleop
+        self.vp_base_frame = self.get_parameter('vp_base_frame').get_parameter_value().string_value
+        self.gripper_base_frame = self.get_parameter('gripper_base_frame').get_parameter_value().string_value
+        
+        # pinch thresholds (meters) as parameters
+        self.declare_parameter('pinch_threshold', 0.02)   # left pinch < ON → start teleop
+        self.declare_parameter('right_pinch_min', 0.015)  # considered fully closed
+        self.declare_parameter('right_pinch_max', 0.150)  # considered fully open
 
-        # right pinch mapping to gripper 0–1 (meters)
-        self.RIGHT_PINCH_MIN = 0.015   # considered fully closed
-        self.RIGHT_PINCH_MAX = 0.150   # considered fully open
+        self.pinch_threshold = self.get_parameter('pinch_threshold').get_parameter_value().double_value
+        self.right_pinch_min = self.get_parameter('right_pinch_min').get_parameter_value().double_value
+        self.right_pinch_max = self.get_parameter('right_pinch_max').get_parameter_value().double_value
 
         self.teleop_enabled = False
 
-        self.timer = self.create_timer(0.01, self.update)
-        self.joint_state_timer = self.create_timer(0.1, self.publish_joint_states)
-        
-        # -------- MyCobot --------
-        self.mc = MyCobot280(port, baud)
-        time.sleep(0.1)
-        self.mc.set_fresh_mode(1)
-        self.speed = 40
-        self.gripper_speed = 75
-        self.mode = 0 # 1 = linear, 0 = angular
-
         # -------- Offset + state --------
         self.offset_T = None
-        self.was_teleop_enabled = False
         self.ee_pos_offset = np.zeros(3)
         self.ee_ori_offset = np.zeros(4)
         self.offset_pos = None
@@ -107,81 +84,12 @@ class VisionProTeleop(Node):
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         
         self.publish_vp_base_calibration(np.eye(4))
-        
-    def acquire_lock(self):
-        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return fd
-
-    def release_lock(self, fd):
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
-    def send_T_to_mycobot(self, T):
-        x, y, z = T[0, 3], T[1, 3], T[2, 3]
-
-        # Convert from meters to millimeters
-        x_mm = x * 1000.0
-        y_mm = y * 1000.0
-        z_mm = z * 1000.0
-
-        # The MyCobot280 API enforces workspace limits; from the error
-        # message we know Z must stay within [-70, 412.67] mm. Clamp Z
-        # to this range so small overshoots don't crash the node.
-        # Clamp and print if clamped
-        old_x_mm, old_y_mm, old_z_mm = x_mm, y_mm, z_mm
-
-        x_mm = self.clamp(x_mm, -280.0, 280.0)
-        if x_mm != old_x_mm:
-            self.get_logger().info(f'x_mm clamped from {old_x_mm:.2f} to {x_mm:.2f}')
-
-        y_mm = self.clamp(y_mm, -280.0, 280.0)
-        if y_mm != old_y_mm:
-            self.get_logger().info(f'y_mm clamped from {old_y_mm:.2f} to {y_mm:.2f}')
-
-        z_mm = self.clamp(z_mm, -65.0, 410.0)
-        if z_mm != old_z_mm:
-            self.get_logger().info(f'z_mm clamped from {old_z_mm:.2f} to {z_mm:.2f}')
-        
-        
-        rot = R.from_matrix(T[:3, :3])
-        rx, ry, rz = rot.as_euler("xyz", degrees=True)
-        
-        rx = self.clamp(rx, -90.0, 90.0)
-        ry = self.clamp(ry, -90.0, 90.0)
-        rz = self.clamp(rz, -90.0, 90.0)
-        if rx != rot.as_euler("xyz", degrees=True)[0]:
-            self.get_logger().info(f'rx clamped to {rx:.2f}')
-        if ry != rot.as_euler("xyz", degrees=True)[1]:
-            self.get_logger().info(f'ry clamped to {ry:.2f}')
-        if rz != rot.as_euler("xyz", degrees=True)[2]:
-            self.get_logger().info(f'rz clamped to {rz:.2f}')
-
-        coords = [x_mm, y_mm, z_mm, rx, ry, rz]
-        
-        self.get_logger().info(f'Sending coords to MyCobo......')
-
-        try:
-            
-            fd = self.acquire_lock()
-            try:
-                self.mc.send_coords(coords, self.speed, self.mode)
-                self.get_logger().info(f'Sent coords to MyCobot: {coords}')
-            except MyCobot280DataException as e:
-                # If any axis is still out of range, skip this command
-                # but keep the teleop node running.
-                self.get_logger().info(f"MyCobot sending cords error: {e}")
-            finally:
-                self.release_lock(fd)
-        except Exception as e:
-            self.get_logger().error(f"Failed to acquire lock for MyCobot: {e}")
 
 
     def get_pos(self, child_frame):
         try:
             tf = self.tf_buffer.lookup_transform(
-                self.base_frame,
+                self.vp_base_frame,
                 child_frame,
                 Time()
             )
@@ -193,7 +101,7 @@ class VisionProTeleop(Node):
     def get_pose(self, child_frame):
         try:
             tf = self.tf_buffer.lookup_transform(
-                self.base_frame,
+                self.vp_base_frame,
                 child_frame,
                 Time()
             )
@@ -234,7 +142,7 @@ class VisionProTeleop(Node):
     def publish_ee_target_tf(self, ee_pos, ee_ori, child_frame='ee_target', header_frame=None):
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = header_frame if header_frame is not None else self.base_frame
+        t.header.frame_id = header_frame if header_frame is not None else self.vp_base_frame
         t.child_frame_id = child_frame
         t.transform.translation.x = float(ee_pos[0])
         t.transform.translation.y = float(ee_pos[1])
@@ -245,47 +153,6 @@ class VisionProTeleop(Node):
         t.transform.rotation.w = float(ee_ori[3])
 
         self.tf_broadcaster.sendTransform(t)
-
-
-    def publish_joint_states(self):
-        try:
-            fd = self.acquire_lock()
-            try:
-                angles = self.mc.get_angles()
-            finally:
-                self.release_lock(fd)
-        except Exception as e:
-            self.get_logger().warn(f"Failed to read joint angles: {e}")
-            return
-
-        if not isinstance(angles, (list, tuple)) or len(angles) < 6:
-            self.get_logger().warn(f"Invalid angle list received: {angles}")
-            return
-
-        msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
-
-        # EXACT joint names from the original script
-        msg.name = [
-            "joint2_to_joint1",
-            "joint3_to_joint2",
-            "joint4_to_joint3",
-            "joint5_to_joint4",
-            "joint6_to_joint5",
-            "joint6output_to_joint6",
-        ]
-
-        # Convert degrees → radians
-        msg.position = [math.radians(a) for a in angles[:6]]
-
-        msg.velocity = []
-        msg.effort = []
-
-        self.joint_state_pub.publish(msg)
-
-
-
-
     
 
     def update(self):
@@ -381,9 +248,6 @@ class VisionProTeleop(Node):
                 R_hand = R.from_matrix(T_hand_map[:3, :3])
                 R_grip = R.from_matrix(T_gripper[:3, :3])
                 self.offset_rot = R_hand.inv() * R_grip
-
-
-                # self.publish_vp_base_calibration(self.offset_T)               
                 
                 self.get_logger().info(f"Teleop offset captured (gripper frame: {self.gripper_base_frame})")
             except Exception as e:
@@ -399,9 +263,7 @@ class VisionProTeleop(Node):
 
         if elapsed >= 0.5:
             if self.teleop_enabled and self.offset_T is not None:
-                
-                # T_target = T_hand_map @ self.offset_T
-                
+                                
                 T_target_pos = T_hand_map[:3, 3] + self.offset_pos
                 T_target_rot = R.from_matrix(T_hand_map[:3, :3]) * self.offset_rot
                 T_target = np.eye(4)
@@ -415,15 +277,44 @@ class VisionProTeleop(Node):
                 ee_ori_offset = rot_offset.as_quat()
                 # ee_ori_offset = np.array([0.0, 0.0, 0.0, 1.0])
 
-                self.publish_ee_target_tf(ee_pos_offset, ee_ori_offset, child_frame='ee_target_offset', header_frame='map')
-                
-                self.send_T_to_mycobot(T_target)
-                
-                # ---- Drive MyCobot gripper directly ----
-                # Send gripper command directly as a float between 0 and 1
-                self.mc.set_gripper_value(open_ratio, self.gripper_speed)
+                # Transform ee_target_offset (in map) to mycobot_base frame
+                try:
+                    tf_gbase = self.tf_buffer.lookup_transform(
+                        "mycobot_base",
+                        "map",
+                        Time()
+                    )
+                    T_map_to_gbase = mat_from_tf(tf_gbase)
+                    T_ee_target_offset_map = np.eye(4)
+                    T_ee_target_offset_map[:3, :3] = R.from_quat(ee_ori_offset).as_matrix()
+                    T_ee_target_offset_map[:3, 3] = ee_pos_offset
 
+                    # Transform to gripper_base frame
+                    T_ee_target_offset_gbase = T_map_to_gbase @ T_ee_target_offset_map
+                    ee_pos_gbase = T_ee_target_offset_gbase[:3, 3]
+                    ee_ori_gbase = R.from_matrix(T_ee_target_offset_gbase[:3, :3]).as_quat()
 
+                    self.publish_ee_target_tf(ee_pos_gbase, ee_ori_gbase, child_frame='ee_target_offset_gbase', header_frame='mycobot_base')
+                    
+                    # Publish ee_target_pub in mycobot_base frame
+                    pose_msg = PoseStamped()
+                    pose_msg.header.stamp = self.get_clock().now().to_msg()
+                    pose_msg.header.frame_id = 'mycobot_base'
+                    pose_msg.pose.position.x = float(ee_pos_gbase[0])
+                    pose_msg.pose.position.y = float(ee_pos_gbase[1])
+                    pose_msg.pose.position.z = float(ee_pos_gbase[2])
+                    pose_msg.pose.orientation.x = float(ee_ori_gbase[0])
+                    pose_msg.pose.orientation.y = float(ee_ori_gbase[1])
+                    pose_msg.pose.orientation.z = float(ee_ori_gbase[2])
+                    pose_msg.pose.orientation.w = float(ee_ori_gbase[3])
+                    self.ee_target_pub.publish(pose_msg)
+                    
+                    self.get_logger().info(f"Published ee_target_offset in mycobot_base frame")
+                
+                except Exception as e:
+                    self.get_logger().warn(f"Failed to transform ee_target_offset to mycobot_base: {e}")
+                
+                
             if just_disabled:
                 self.offset_T = None
                 self.get_logger().info("Teleop offset cleared")

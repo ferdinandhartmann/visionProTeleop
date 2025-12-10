@@ -15,11 +15,15 @@ def generate_launch_description():
         get_package_share_directory("inverse_kinematics"), "config"
     )
     
+    inverse_kin_config_folder = os.path.join(
+        get_package_share_directory("inverse_kinematics"), "config"
+    )
+    
     model_launch_arg = DeclareLaunchArgument(
         "model",
         default_value=os.path.join(
             get_package_share_directory("robot_description"),
-            "urdf/mycobot_280_m5/mycobot_280_m5_camera_flange_adaptive_gripper.urdf"
+            "urdf/mycobot_280_m5/mycobot_280_m5_camera_adaptive_gripper.urdf"
         )
     )
     
@@ -79,15 +83,15 @@ def generate_launch_description():
     #     output="screen"
     # )
     
-    static_transform_map_g_base = Node(
+    static_transform_map_mycobot_base = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
-        name="static_transform_map_g_base",
+        name="static_transform_map_mycobot_base",
         arguments=[
             "0", "0", "0",  # translation x y z
             "0", "0", "0",  # rotation roll pitch yaw (radians)
             "map",
-            "g_base"
+            "mycobot_base"
         ],
         output="screen"
     )
@@ -146,6 +150,9 @@ def generate_launch_description():
         executable="inverse_kinematics_node",
         name="inverse_kinematics_node",
         output="screen",
+        parameters=[
+            os.path.join(inverse_kin_config_folder, "invers_kinematics.yaml"),
+        ],
     )
     
     keyboard_ee_teleop_node = Node(
@@ -166,7 +173,7 @@ def generate_launch_description():
         # joint_state_publisher_node,
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
 
-        static_transform_map_g_base,
+        static_transform_map_mycobot_base,
         # transform_publisher_node,
         # static_transform_map_vp_base_origin,
 

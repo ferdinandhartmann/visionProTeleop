@@ -1,0 +1,25 @@
+teleop_control:
+  ros__parameters:
+    vp_base_frame: "vp_base"
+    gripper_base_frame: "gripper_base"
+
+    # Gesture thresholds
+    pinch_threshold: 0.02
+    right_pinch_min: 0.015
+    right_pinch_max: 0.150
+
+keyboard_ee_teleop:
+  ros__parameters:
+    frame_id: "mycobot_base"
+    step_linear: 0.05
+    step_angular: 0.25
+
+joint_state_to_mycobot:
+  ros__parameters:
+    port: "/dev/ttyACM0"
+    baud: 115200
+    
+    joint_state_topic: "/joint_states"
+    speed: 40
+    gripper_speed: 75
+

@@ -44,8 +44,9 @@ class KeyboardEeTeleop(Node):
         super().__init__("keyboard_ee_teleop")
 
         # Parameters
-        # Frame in which ee_target is expressed; use map by default
-        self.declare_parameter("frame_id", "g_base")
+        # Parameters (loaded from teleoperation/config/teleoperation.yaml or overrides)
+        # Frame in which ee_target is expressed; use mycobot_base by default
+        self.declare_parameter("frame_id", "mycobot_base")
         self.declare_parameter("step_linear", 0.05)
         self.declare_parameter("step_angular", 0.25)
 
