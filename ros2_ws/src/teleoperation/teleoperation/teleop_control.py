@@ -42,16 +42,15 @@ def mat_from_tf(tf):
 def quat_multiply(q1, q2):
     return (R.from_quat(q1) * R.from_quat(q2)).as_quat()
     
-class VisionProTeleop(Node):
+class TeleopControl(Node):
     def __init__(self):
-        super().__init__('visionpro_teleop')
+        super().__init__('teleop_control')
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Publishes target pose and gripper command
         self.ee_target_pub = self.create_publisher(PoseStamped, '/teleop/ee_target', 10)
-        self.joint_state_pub = self.create_publisher(JointState, '/joint_states', 10)
 
         # TF broadcaster for target pose
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -63,11 +62,13 @@ class VisionProTeleop(Node):
         self.vp_base_frame = self.get_parameter('vp_base_frame').get_parameter_value().string_value
         self.gripper_base_frame = self.get_parameter('gripper_base_frame').get_parameter_value().string_value
         
-        # pinch thresholds (meters) as parameters
+        # Timer + pinch thresholds (meters) as parameters
+        self.declare_parameter('update_period', 0.2)    # seconds
         self.declare_parameter('pinch_threshold', 0.02)   # left pinch < ON → start teleop
         self.declare_parameter('right_pinch_min', 0.015)  # considered fully closed
         self.declare_parameter('right_pinch_max', 0.150)  # considered fully open
 
+        self.update_period = self.get_parameter('update_period').get_parameter_value().double_value
         self.pinch_threshold = self.get_parameter('pinch_threshold').get_parameter_value().double_value
         self.right_pinch_min = self.get_parameter('right_pinch_min').get_parameter_value().double_value
         self.right_pinch_max = self.get_parameter('right_pinch_max').get_parameter_value().double_value
@@ -84,6 +85,10 @@ class VisionProTeleop(Node):
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         
         self.publish_vp_base_calibration(np.eye(4))
+        
+        self.timer = self.create_timer(self.update_period, self.update)
+
+        self.get_logger().info("Teleop Control node initialized.")
 
 
     def get_pos(self, child_frame):
@@ -172,12 +177,12 @@ class VisionProTeleop(Node):
         just_enabled = False
         just_disabled = False
 
-        if not self.teleop_enabled and left_pinch < self.PINCH_THRESHOLD:
+        if not self.teleop_enabled and left_pinch < self.pinch_threshold:
             self.teleop_enabled = True
             just_enabled = True
             self.get_logger().info('Teleop ENABLED (left pinch)')
 
-        elif self.teleop_enabled and left_pinch > self.PINCH_THRESHOLD:
+        elif self.teleop_enabled and left_pinch > self.pinch_threshold:
             self.teleop_enabled = False
             just_disabled = True
             self.publish_vp_base_calibration(np.eye(4))
@@ -211,12 +216,12 @@ class VisionProTeleop(Node):
     
         # Right pinch → gripper
         right_pinch = self.distance(right_thumb, right_index)
-        d_clamped = self.clamp(right_pinch, self.RIGHT_PINCH_MIN, self.RIGHT_PINCH_MAX)
-        open_ratio = int((d_clamped - self.RIGHT_PINCH_MIN) / (self.RIGHT_PINCH_MAX - self.RIGHT_PINCH_MIN) * 100)
+        d_clamped = self.clamp(right_pinch, self.right_pinch_min, self.right_pinch_max)
+        open_ratio = int((d_clamped - self.right_pinch_min) / (self.right_pinch_max - self.right_pinch_min) * 100)
         
-        if not hasattr(self, '_last_log_time') or (self.get_clock().now() - self._last_log_time).nanoseconds * 1e-9 > 0.5:
-            self.get_logger().info(f'Gripper command: {open_ratio}')
-            self._last_log_time = self.get_clock().now()
+        # if not hasattr(self, '_last_log_time') or (self.get_clock().now() - self._last_log_time).nanoseconds * 1e-9 > 0.5:
+        #     self.get_logger().info(f'Gripper command: {open_ratio}')
+        #     self._last_log_time = self.get_clock().now()
         
         
         # ---- Build HAND transform in MAP frame ----
@@ -261,58 +266,59 @@ class VisionProTeleop(Node):
 
         elapsed = (self.get_clock().now() - self._last_5hz_time).nanoseconds * 1e-9
 
-        if elapsed >= 0.5:
-            if self.teleop_enabled and self.offset_T is not None:
-                                
-                T_target_pos = T_hand_map[:3, 3] + self.offset_pos
-                T_target_rot = R.from_matrix(T_hand_map[:3, :3]) * self.offset_rot
-                T_target = np.eye(4)
-                T_target[:3, 3] = T_target_pos
-                T_target[:3, :3] = T_target_rot.as_matrix()
+        # if elapsed >= 0.0000005:
+        if self.teleop_enabled and self.offset_T is not None:
+                            
+            T_target_pos = T_hand_map[:3, 3] + self.offset_pos
+            T_target_rot = R.from_matrix(T_hand_map[:3, :3]) * self.offset_rot
+            T_target = np.eye(4)
+            T_target[:3, 3] = T_target_pos
+            T_target[:3, :3] = T_target_rot.as_matrix()
+            
+            ee_pos_offset = T_target[:3, 3]
+            rot_offset = R.from_matrix(T_target[:3, :3])
+            # Use a valid quaternion (identity or true offset orientation).
+            # Here we publish the actual offset orientation.
+            ee_ori_offset = rot_offset.as_quat()
+            # ee_ori_offset = np.array([0.0, 0.0, 0.0, 1.0])
+
+            # Transform ee_target_offset (in map) to mycobot_base frame
+            try:
+                tf_mycobot_base = self.tf_buffer.lookup_transform(
+                    "mycobot_base",
+                    "map",
+                    Time()
+                )
+                T_map_to_mycobot_base = mat_from_tf(tf_mycobot_base)
+                T_ee_target_offset_map = np.eye(4)
+                T_ee_target_offset_map[:3, :3] = R.from_quat(ee_ori_offset).as_matrix()
+                T_ee_target_offset_map[:3, 3] = ee_pos_offset
+
+                # Transform to gripper_base frame
+                T_ee_target_offset_mycobot_base = T_map_to_mycobot_base @ T_ee_target_offset_map
+                ee_pos_mycobot_base = T_ee_target_offset_mycobot_base[:3, 3]
+                ee_ori_mycobot_base = R.from_matrix(T_ee_target_offset_mycobot_base[:3, :3]).as_quat()
                 
-                ee_pos_offset = T_target[:3, 3]
-                rot_offset = R.from_matrix(T_target[:3, :3])
-                # Use a valid quaternion (identity or true offset orientation).
-                # Here we publish the actual offset orientation.
-                ee_ori_offset = rot_offset.as_quat()
-                # ee_ori_offset = np.array([0.0, 0.0, 0.0, 1.0])
 
-                # Transform ee_target_offset (in map) to mycobot_base frame
-                try:
-                    tf_gbase = self.tf_buffer.lookup_transform(
-                        "mycobot_base",
-                        "map",
-                        Time()
-                    )
-                    T_map_to_gbase = mat_from_tf(tf_gbase)
-                    T_ee_target_offset_map = np.eye(4)
-                    T_ee_target_offset_map[:3, :3] = R.from_quat(ee_ori_offset).as_matrix()
-                    T_ee_target_offset_map[:3, 3] = ee_pos_offset
-
-                    # Transform to gripper_base frame
-                    T_ee_target_offset_gbase = T_map_to_gbase @ T_ee_target_offset_map
-                    ee_pos_gbase = T_ee_target_offset_gbase[:3, 3]
-                    ee_ori_gbase = R.from_matrix(T_ee_target_offset_gbase[:3, :3]).as_quat()
-
-                    self.publish_ee_target_tf(ee_pos_gbase, ee_ori_gbase, child_frame='ee_target_offset_gbase', header_frame='mycobot_base')
-                    
-                    # Publish ee_target_pub in mycobot_base frame
-                    pose_msg = PoseStamped()
-                    pose_msg.header.stamp = self.get_clock().now().to_msg()
-                    pose_msg.header.frame_id = 'mycobot_base'
-                    pose_msg.pose.position.x = float(ee_pos_gbase[0])
-                    pose_msg.pose.position.y = float(ee_pos_gbase[1])
-                    pose_msg.pose.position.z = float(ee_pos_gbase[2])
-                    pose_msg.pose.orientation.x = float(ee_ori_gbase[0])
-                    pose_msg.pose.orientation.y = float(ee_ori_gbase[1])
-                    pose_msg.pose.orientation.z = float(ee_ori_gbase[2])
-                    pose_msg.pose.orientation.w = float(ee_ori_gbase[3])
-                    self.ee_target_pub.publish(pose_msg)
-                    
-                    self.get_logger().info(f"Published ee_target_offset in mycobot_base frame")
+                self.publish_ee_target_tf(ee_pos_mycobot_base, ee_ori_mycobot_base, child_frame='ee_target_offset_mycobot_base', header_frame='mycobot_base')
                 
-                except Exception as e:
-                    self.get_logger().warn(f"Failed to transform ee_target_offset to mycobot_base: {e}")
+                # Publish ee_target_pub in mycobot_base frame
+                pose_msg = PoseStamped()
+                pose_msg.header.stamp = self.get_clock().now().to_msg()
+                pose_msg.header.frame_id = 'mycobot_base'
+                pose_msg.pose.position.x = float(ee_pos_mycobot_base[0])
+                pose_msg.pose.position.y = float(ee_pos_mycobot_base[1])
+                pose_msg.pose.position.z = float(ee_pos_mycobot_base[2])
+                pose_msg.pose.orientation.x = float(ee_ori_mycobot_base[0])
+                pose_msg.pose.orientation.y = float(ee_ori_mycobot_base[1])
+                pose_msg.pose.orientation.z = float(ee_ori_mycobot_base[2])
+                pose_msg.pose.orientation.w = float(ee_ori_mycobot_base[3])
+                self.ee_target_pub.publish(pose_msg)
+                
+                self.get_logger().info(f"Published ee_target_offset in mycobot_base frame")
+            
+            except Exception as e:
+                self.get_logger().warn(f"Failed to transform ee_target_offset to mycobot_base: {e}")
                 
                 
             if just_disabled:
@@ -325,10 +331,17 @@ class VisionProTeleop(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = VisionProTeleop()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node = TeleopControl()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

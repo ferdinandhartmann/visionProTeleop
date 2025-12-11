@@ -151,7 +151,7 @@ def generate_launch_description():
         name="inverse_kinematics_node",
         output="screen",
         parameters=[
-            os.path.join(inverse_kin_config_folder, "invers_kinematics.yaml"),
+            os.path.join(inverse_kin_config_folder, "inverse_kinematics.yaml"),
         ],
     )
     

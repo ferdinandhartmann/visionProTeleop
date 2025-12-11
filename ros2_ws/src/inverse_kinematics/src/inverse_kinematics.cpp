@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
@@ -52,7 +53,7 @@ InverseKinematicsNode()
   joint_state_(6, 0.0)
 {
   declare_parameter<std::string>("target_topic", "/teleop/ee_target");
-  declare_parameter<std::string>("joint_target_topic", "/joint_states");
+  declare_parameter<std::string>("joint_target_topic", "/joint_states_mycobot");
   declare_parameter<std::string>("mycobot_base_frame", "mycobot_base");
   declare_parameter<std::string>("ee_child_frame", "gripper_ee");
 
@@ -63,6 +64,15 @@ InverseKinematicsNode()
   declare_parameter<double>("damping", 0.008);
   declare_parameter<double>("step_tolerance", 2e-6);
   declare_parameter<int>("gripper_percent", 100);
+  declare_parameter<double>("joint_states_ros2_update_rate", 50.0);  // Hz
+  // Joint limits in degrees for joints 1..6
+  declare_parameter<std::vector<double>>("joint_lower_limits_deg",
+    std::vector<double>{-170.0, -170.0, -170.0, -170.0, -170.0, -180.0});
+  declare_parameter<std::vector<double>>("joint_upper_limits_deg",
+    std::vector<double>{ 170.0,  170.0,  170.0,  170.0,  170.0,  180.0});
+  // Optional initial joint configuration in degrees (6 values: joint1..joint6).
+  // Use a typed default (double array); YAML must then provide doubles.
+  declare_parameter<std::vector<double>>("initial_joint_positions_deg", std::vector<double>{});
 
   const auto target_topic = get_parameter("target_topic").as_string();
   const auto joint_target_topic = get_parameter("joint_target_topic").as_string();
@@ -76,12 +86,71 @@ InverseKinematicsNode()
   damping_ = get_parameter("damping").as_double();
   step_tolerance_ = get_parameter("step_tolerance").as_double();
 	gripper_percent_ = get_parameter("gripper_percent").as_int();
+  joint_states_ros2_update_rate_ = get_parameter("joint_states_ros2_update_rate").as_double();
+  if (joint_states_ros2_update_rate_ <= 0.0) {
+    RCLCPP_WARN(get_logger(),
+      "joint_states_ros2_update_rate must be > 0. Using 50 Hz fallback.");
+    joint_states_ros2_update_rate_ = 50.0;
+  }
+
+  // Read joint limits (degrees) and convert to radians
+  joint_lower_limits_rad_.resize(6);
+  joint_upper_limits_rad_.resize(6);
+  const auto joint_lower_limits_deg = get_parameter("joint_lower_limits_deg").as_double_array();
+  const auto joint_upper_limits_deg = get_parameter("joint_upper_limits_deg").as_double_array();
+  if (joint_lower_limits_deg.size() == 6 && joint_upper_limits_deg.size() == 6) {
+    for (size_t i = 0; i < 6; ++i) {
+      joint_lower_limits_rad_[i] = joint_lower_limits_deg[i] * M_PI / 180.0;
+      joint_upper_limits_rad_[i] = joint_upper_limits_deg[i] * M_PI / 180.0;
+    }
+  } else {
+    RCLCPP_WARN(get_logger(),
+      "Parameters 'joint_lower_limits_deg' and 'joint_upper_limits_deg' must have 6 values; using built-in defaults.");
+    const std::array<double, 6> default_lower_deg{ -170.0, -170.0, -170.0, -170.0, -170.0, -180.0 };
+    const std::array<double, 6> default_upper_deg{  170.0,  170.0,  170.0,  170.0,  170.0,  180.0 };
+    for (size_t i = 0; i < 6; ++i) {
+      joint_lower_limits_rad_[i] = default_lower_deg[i] * M_PI / 180.0;
+      joint_upper_limits_rad_[i] = default_upper_deg[i] * M_PI / 180.0;
+    }
+  }
+
+  // Optional: override initial joint_state_ from parameter (degrees -> radians)
+  const auto initial_joints_deg = get_parameter("initial_joint_positions_deg").as_double_array();
+  if (!initial_joints_deg.empty()) {
+    if (initial_joints_deg.size() != 6) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Parameter 'initial_joint_positions_deg' must have 6 values; got %zu. Ignoring.",
+        initial_joints_deg.size());
+    } else {
+      for (size_t i = 0; i < 6; ++i) {
+        joint_state_[i] = initial_joints_deg[i] * M_PI / 180.0;
+      }
+      RCLCPP_INFO(get_logger(),
+        "Initial joint_state set from initial_joint_positions_deg (degrees): [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+        initial_joints_deg[0], initial_joints_deg[1], initial_joints_deg[2],
+        initial_joints_deg[3], initial_joints_deg[4], initial_joints_deg[5]);
+    }
+    joint_state_[6] = gripper_lower_limit_ +
+      (gripper_upper_limit_ - gripper_lower_limit_) *
+      (static_cast<double>(gripper_percent_) / 100.0);
+  }
 
 
   pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(target_topic, rclcpp::SensorDataQoS(),
                             std::bind(&InverseKinematicsNode::poseCallback, this, std::placeholders::_1));
 
   joint_state_publisher_ = create_publisher<sensor_msgs::msg::JointState>(joint_target_topic, 10);
+
+  // Continuous JointState publisher on /joint_states_ros2
+  joint_state_ros2_publisher_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
+  int period_ms = static_cast<int>(1000.0 / joint_states_ros2_update_rate_);
+  if (period_ms <= 0) {
+    period_ms = 20;  // fallback 50 Hz
+  }
+  joint_state_timer_ = create_wall_timer(
+    std::chrono::milliseconds(period_ms),
+    std::bind(&InverseKinematicsNode::jointStateTimerCallback, this));
 
   dh_chain_ = buildDhParameters();
 
@@ -99,17 +168,16 @@ private:
   {
     Pose target = poseFromMsg(*msg);
 
-    RCLCPP_INFO(get_logger(),
-      "Received target pose: frame=%s pos=(%.3f, %.3f, %.3f)",
-      msg->header.frame_id.c_str(),
-      target.position.x(), target.position.y(), target.position.z());
+    // RCLCPP_INFO(get_logger(),
+    //   "Received target pose: frame=%s pos=(%.3f, %.3f, %.3f)",
+    //   msg->header.frame_id.c_str(),
+    //   target.position.x(), target.position.y(), target.position.z());
 
     std::vector<double> solution;
     bool success = solveInverseKinematics(target, joint_state_, solution);
 
     if (success){ 
       joint_state_ = solution;
-      return;
     }
     else{
       RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
@@ -117,6 +185,31 @@ private:
 
     publishEndEffectorTf(msg->header);
     publishJointState(msg->header);
+    
+    return;
+  }
+
+  // Periodic publisher for /joint_states_ros2
+  void jointStateTimerCallback()
+  {
+    if (!joint_state_ros2_publisher_) {
+      return;
+    }
+
+    sensor_msgs::msg::JointState msg;
+    msg.header.stamp = now();
+    msg.header.frame_id = mycobot_base_frame_;
+    msg.name = joint_names_;
+    msg.position.assign(joint_state_.begin(), joint_state_.end());
+
+    double gripper_joint_value = gripper_lower_limit_ +
+      (gripper_upper_limit_ - gripper_lower_limit_) *
+      (static_cast<double>(gripper_percent_) / 100.0);
+    msg.position.push_back(gripper_joint_value);
+
+    joint_state_ros2_publisher_->publish(msg);
+
+    publishEndEffectorTf(msg.header);
   }
 
   Pose poseFromMsg(const geometry_msgs::msg::PoseStamped & msg) const
@@ -169,25 +262,28 @@ private:
       T = T * dhTransform(dh.alpha, dh.a, dh.d, theta);
     }
 
-    // joint6output_to_camera_flange:
-    //   origin xyz="0 0 0.01" rpy="1.579 0 0.7854"
-    Eigen::Matrix4d T_joint6_to_camera = Eigen::Matrix4d::Identity();
-    T_joint6_to_camera.block<3, 3>(0, 0) = rpyToMatrix(1.579, 0.0, 0.7854);
-    T_joint6_to_camera.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.0, 0.01);
-
+    // joint7_to_camera:
+    // origin xyz="0 0 0.01" rpy="1.579 0 0.7854"
+    Eigen::Matrix4d T_joint7_to_camera = Eigen::Matrix4d::Identity();
+    T_joint7_to_camera.block<3, 3>(0, 0) = rpyToMatrix(1.579, 0.0, 0.7854);
+    T_joint7_to_camera.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.0, 0.01);
     // camera_flange_to_gripper_base:
     //   origin xyz="0.0 0.041 0.0" rpy="0 -1.57 0"
     Eigen::Matrix4d T_camera_to_gripper = Eigen::Matrix4d::Identity();
     T_camera_to_gripper.block<3, 3>(0, 0) = rpyToMatrix(0.0, -1.57, 0.0);
     T_camera_to_gripper.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.041, 0.0);
 
-    T = T * T_joint6_to_camera * T_camera_to_gripper;
+    T = T * T_joint7_to_camera * T_camera_to_gripper;
 
     // Constant offset to place the pose in the grippers middle
-    constexpr double gripper_offset_front = 0.065;  
+    constexpr double gripper_offset_front = 0.05;  
     constexpr double gripper_offset_down = -0.01; 
     Eigen::Vector3d tool_offset = T.block<3, 3>(0, 0) * Eigen::Vector3d(0.0, gripper_offset_front, gripper_offset_down);
     T.block<3, 1>(0, 3) += tool_offset;
+
+    // Apply rotation: 90 deg around X
+    Eigen::Matrix3d rot_z = Eigen::AngleAxisd(M_PI/2, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    T.block<3,3>(0,0) = T.block<3,3>(0,0) * rot_z;
 
     Pose pose;
     pose.position = T.block<3, 1>(0, 3);
@@ -269,6 +365,12 @@ private:
 
     Eigen::VectorXd joints = Eigen::Map<const Eigen::VectorXd>(seed.data(), seed.size());
 
+    // Enforce joint limits on initial seed
+    for (size_t i = 0; i < static_cast<size_t>(joints.size()) && i < joint_lower_limits_rad_.size(); ++i)
+    {
+      joints[i] = std::clamp(joints[i], joint_lower_limits_rad_[i], joint_upper_limits_rad_[i]);
+    }
+
     Eigen::Matrix<double, 6, 1> last_error;
 
     for (size_t iter = 0; iter < max_iterations; ++iter)
@@ -281,8 +383,8 @@ private:
           error.block<3, 1>(3, 0).norm() < orientation_tolerance)
       {
         solution.assign(joints.data(), joints.data() + joints.size());
-        RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
-          "IK converged in %zu iterations (pos_err=%.3e, ori_err=%.3e)", iter, error.block<3, 1>(0, 0).norm(), error.block<3, 1>(3, 0).norm());
+        // RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
+        //   "IK converged in %zu iterations (pos_err=%.3e, ori_err=%.3e)", iter, error.block<3, 1>(0, 0).norm(), error.block<3, 1>(3, 0).norm());
         return true;
       }
 
@@ -295,11 +397,17 @@ private:
 
       joints += delta;
 
-      if (iter == 0 || (iter + 1) == max_iterations)
+      // Enforce joint limits after each update
+      for (size_t i = 0; i < static_cast<size_t>(joints.size()) && i < joint_lower_limits_rad_.size(); ++i)
       {
-        RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
-          "IK iter %zu: pos_err=%.3e, ori_err=%.3e, |delta|=%.3e", iter, error.block<3, 1>(0, 0).norm(), error.block<3, 1>(3, 0).norm(), delta.norm());
+        joints[i] = std::clamp(joints[i], joint_lower_limits_rad_[i], joint_upper_limits_rad_[i]);
       }
+
+    //   if (iter == 0 || (iter + 1) == max_iterations)
+    //   {
+    //     RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
+    //       "IK iter %zu: pos_err=%.3e, ori_err=%.3e, |delta|=%.3e", iter, error.block<3, 1>(0, 0).norm(), error.block<3, 1>(3, 0).norm(), delta.norm());
+    //   }
 
       // If only tiny joint updates, finish early
       if (delta.norm() < step_tolerance)
@@ -368,6 +476,8 @@ private:
 
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_ros2_publisher_;
+    rclcpp::TimerBase::SharedPtr joint_state_timer_;
 
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -388,6 +498,11 @@ private:
     int gripper_percent_{};
     const float gripper_lower_limit_ = -0.74;
     const float gripper_upper_limit_ = 0.15;
+
+    double joint_states_ros2_update_rate_{};
+
+    std::vector<double> joint_lower_limits_rad_;
+    std::vector<double> joint_upper_limits_rad_;
 
     static std::vector<DhParameter> buildDhParameters()
     {

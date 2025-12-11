@@ -24,7 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "camera_streamer = teleoperation.camera_streamer:main",
-            "transform_publisher = teleoperation.transform_publisher:main",
+            "vp_transform_publisher = teleoperation.vp_transform_publisher:main",
             "teleop_control = teleoperation.teleop_control:main",
             "keyboard_ee_teleop = teleoperation.keyboard_ee_teleop:main",
             "joint_state_to_mycobot = teleoperation.joint_state_to_mycobot:main",

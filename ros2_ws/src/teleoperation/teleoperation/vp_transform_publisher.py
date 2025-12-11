@@ -134,9 +134,9 @@ def quat_from_matrix(mat):
 # ROS2 Node
 # ======================================================
 
-class HandViz(Node):
+class VPTransformPublisher(Node):
     def __init__(self):
-        super().__init__("visionpro_tf_visualizer")
+        super().__init__("vp_transform_publisher")
 
         self.tf_broadcaster = TransformBroadcaster(self)
         self.marker_pub = self.create_publisher(
@@ -145,6 +145,8 @@ class HandViz(Node):
         self.streamer = VisionProStreamer(ip=VISIONPRO_IP)
 
         self.timer = self.create_timer(0.01, self.update)
+        
+        self.get_logger().info("VP Transform Publisher started.")
 
     def publish_tf(self, parent, child, mat):
         t = TransformStamped()
@@ -238,10 +240,19 @@ class HandViz(Node):
         self.marker_pub.publish(markers)
 
 
-def main():
-    rclpy.init()
-    node = HandViz()
-    rclpy.spin(node)
+def main(args=None):
+    rclpy.init(args=args)
+    node = VPTransformPublisher() 
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

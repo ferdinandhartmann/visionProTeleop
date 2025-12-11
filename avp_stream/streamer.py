@@ -739,7 +739,7 @@ class VisionProStreamer:
         while self.latest is None: 
             time.sleep(0.1)
             retry_count += 1
-            if retry_count > 100:  # 10 seconds timeout
+            if retry_count > 50:  # 5 seconds timeout
                 self._log('WARNING: No data received yet. Is the VisionOS app running?', force=True)
                 retry_count = 0
         

@@ -1,7 +1,10 @@
 teleop_control:
   ros__parameters:
     vp_base_frame: "vp_base"
-    gripper_base_frame: "gripper_base"
+    gripper_base_frame: "gripper_ee"
+
+    # Update rate for teleop_control.update() (seconds)
+    update_period: 0.3
 
     # Gesture thresholds
     pinch_threshold: 0.02
@@ -19,7 +22,10 @@ joint_state_to_mycobot:
     port: "/dev/ttyACM0"
     baud: 115200
     
-    joint_state_topic: "/joint_states"
-    speed: 40
+    joint_state_topic: "/joint_states_mycobot"
+    speed: 60
     gripper_speed: 75
+
+    initial_angles_deg: [0, 0, 0, 0, 0, 45]  # Initial joint angles in degrees
+    initial_move_speed: 15
 

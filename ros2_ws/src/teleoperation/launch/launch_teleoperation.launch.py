@@ -82,10 +82,10 @@ def generate_launch_description():
         output="screen"
     )
     
-    transform_publisher_node = Node(
+    vp_transform_publisher_node = Node(
         package="teleoperation",
-        executable="transform_publisher",
-        name="transform_publisher",
+        executable="vp_transform_publisher",
+        name="vp_transform_publisher",
         output="screen",
     )
     
@@ -110,13 +110,6 @@ def generate_launch_description():
         parameters=[
             teleop_config,
         ],
-    )
-
-    teleop_bridge_node = Node(
-        package="teleoperation",
-        executable="teleop_coords_bridge",
-        name="teleop_coords_bridge",
-        output="screen"
     )
     
     rviz2_node = Node(
@@ -152,6 +145,20 @@ def generate_launch_description():
         output="screen",
         parameters=[teleop_config],
     )
+    
+    inverse_kinematics_node = Node(
+        package="inverse_kinematics",
+        executable="inverse_kinematics_node",
+        name="inverse_kinematics_node",
+        output="screen",
+        parameters=[
+            os.path.join(
+                get_package_share_directory("inverse_kinematics"),
+                "config",
+                "inverse_kinematics.yaml"
+            )
+        ],
+    )
 
 
     nodes = [
@@ -164,16 +171,19 @@ def generate_launch_description():
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
 
         static_transform_map_mycobot_base,
-        transform_publisher_node,
+        vp_transform_publisher_node,
         static_transform_map_vp_base_origin,
 
         teleop_control_node,
-        keyboard_ee_teleop_node,
-        joint_state_to_mycobot_node,
-        # teleop_bridge_node,
+        inverse_kinematics_node,
+        
+        # joint_state_to_mycobot_node,
+
 
         rviz2_node,
         
+        # keyboard_ee_teleop_node,
+
         # camera_streamer_node
     ]
 

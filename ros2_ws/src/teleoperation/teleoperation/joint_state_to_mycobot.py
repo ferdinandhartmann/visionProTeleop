@@ -7,6 +7,8 @@ import os
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import ParameterValue
+from rcl_interfaces.msg import ParameterType
 from sensor_msgs.msg import JointState
 
 from pymycobot import MyCobot280
@@ -22,20 +24,29 @@ class JointStateToMyCobot(Node):
     def __init__(self):
         super().__init__("joint_state_to_mycobot")
 
-        # Parameters for hardware connection
         self.declare_parameter("port", "/dev/ttyUSB0")
         self.declare_parameter("baud", 115200)
-        self.declare_parameter("joint_state_topic", "/joint_states")
+        self.declare_parameter("joint_state_topic", "/joint_states_mycobot")
         self.declare_parameter("speed", 40)  # joint speed 1-100
         self.declare_parameter("gripper_speed", 75)  # gripper speed 1-100
+        # 6 joint angles in degrees; explicitly declare as INTEGER_ARRAY
+        self.declare_parameter(
+            "initial_angles_deg",
+            ParameterValue(
+                type=ParameterType.PARAMETER_INTEGER_ARRAY,
+                integer_array_value=[],
+            ),
+        )
+        # Speed used only for initial move on startup
+        self.declare_parameter("initial_move_speed", 15)
 
         port = self.get_parameter("port").get_parameter_value().string_value
         baud = self.get_parameter("baud").get_parameter_value().integer_value
-        self.joint_state_topic = (
-            self.get_parameter("joint_state_topic").get_parameter_value().string_value
-        )
+        self.joint_state_topic = (self.get_parameter("joint_state_topic").get_parameter_value().string_value)
         self.speed = int(self.get_parameter("speed").value)
         self.gripper_speed = int(self.get_parameter("gripper_speed").value)
+        self.initial_angles_deg = list(self.get_parameter("initial_angles_deg").value)
+        self.initial_move_speed = int(self.get_parameter("initial_move_speed").value)
 
         self.get_logger().info(f"Connecting to MyCobot on {port} @ {baud} baud")
 
@@ -46,6 +57,37 @@ class JointStateToMyCobot(Node):
             self.mc.set_fresh_mode(1)
         except Exception as e:
             self.get_logger().warn(f"Failed to set fresh mode: {e}")
+
+        # If an initial pose is configured, move to it once on startup
+        if self.initial_angles_deg:
+            if len(self.initial_angles_deg) != 6:
+                self.get_logger().warn(
+                    "Parameter 'initial_angles_deg' must contain exactly 6 values; "
+                    f"got {len(self.initial_angles_deg)}. Skipping initial move."
+                )
+            else:
+                self.get_logger().info(
+                    "Moving MyCobot to initial joint angles from parameters: "
+                    f"{self.initial_angles_deg} at speed {self.initial_move_speed}"
+                )
+                try:
+                    fd = self.acquire_lock()
+                    try:
+                        try:
+                            self.mc.send_angles(
+                                self.initial_angles_deg,
+                                max(1, min(100, self.initial_move_speed)),
+                            )
+                        except MyCobot280DataException as e:
+                            self.get_logger().warn(
+                                f"send_angles error during initial move: {e}"
+                            )
+                    finally:
+                        self.release_lock(fd)
+                except Exception as e:
+                    self.get_logger().error(
+                        f"Failed to perform initial move to configured pose: {e}"
+                    )
 
         # Gripper joint limits from inverse_kinematics.cpp
         self.gripper_lower_limit = -0.74  # closed
@@ -91,6 +133,8 @@ class JointStateToMyCobot(Node):
         if len(msg.position) >= 7:
             gripper_joint = msg.position[6]
             gripper_percent = self.gripper_joint_to_percent(gripper_joint)
+            
+        self.get_logger().info(f"Trying to send angles: {angles_deg} and gripper percent: {gripper_percent}")
 
         try:
             fd = self.acquire_lock()
@@ -106,6 +150,7 @@ class JointStateToMyCobot(Node):
                     clamped = max(0, min(100, int(round(gripper_percent))))
                     try:
                         self.mc.set_gripper_value(clamped, self.gripper_speed)
+                        self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
                     except MyCobot280DataException as e:
                         self.get_logger().warn(f"set_gripper_value error: {e}")
             finally:
