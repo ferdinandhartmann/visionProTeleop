@@ -1,321 +1,56 @@
+# teleoperation
 
+The teleoperation package bridges Apple Vision Pro tracking, keyboard-based controls, and the MyCobot arm. It converts Vision Pro hand poses (or keyboard commands) into end-effector targets, computes gripper intent, and forwards everything to inverse kinematics and robot drivers.
 
+## Data flow and key nodes
 
+1. **Vision Pro transforms** – `vp_transform_publisher.py` listens to the Vision Pro stream and publishes TF frames such as `visionpro/right/wrist` and fingertip frames under the configurable `vp_base` tree.
+2. **Target computation** – `teleop_control_cpp` reads the TF frames, applies calibration offsets, converts the wrist pose into an end-effector goal, and derives a gripper percentage from the right-hand pinch distance. It publishes `teleoperation/TeleopTarget` on `/teleop/ee_target`.
+3. **Inverse kinematics** – The `inverse_kinematics` package subscribes to `/teleop/ee_target`, solves for joint angles, and republishes joint targets (see its README for details).
+4. **Robot command fan-out** – Optional helper nodes in this package translate joint targets for specific hardware (`joint_state_to_mycobot.py`) or publish visualization data (RViz, camera overlay).
+5. **Keyboard fallback** – `keyboard_ee_teleop.py` publishes targets without any Vision Pro hardware. Launch it via the keyboard launch file when you want to drive RViz or the IK solver without a headset or robot attached.
 
-    def update(self):
-        data = self.streamer.latest
-        if data is None:
-            return
+## Custom message: `teleoperation/TeleopTarget`
 
-        markers = MarkerArray()
+```
+geometry_msgs/PoseStamped pose
+int32 gripper  # Desired gripper opening in percent (0 = closed, 100 = open)
+```
 
-        # Head
-        head_mat = data["head"][0]
-        self.publish_tf("map", "visionpro/head", head_mat)
-        
-        print("Publishing hand TFs...")
-        print(data.keys())
-        print("Head data:")
-        print(data["head"])
-        print("Left pinch distance:")
-        print(data["left_pinch_distance"])
-        print("Right pinch distance:")
-        print(data["right_pinch_distance"])
-        print("Left wrist roll:")
-        print(data["left_wrist_roll"])
-        print("Right wrist roll:")
-        print(data["right_wrist_roll"])
-        print("Left wrist data:")
-        print(data["left_wrist"])
-        print("Left fingers data:")
-        print(data["left_fingers"])
-        print("Right wrist data:")
-        print(data["right_wrist"])
-        print("Right fingers data:")
-        print(data["right_fingers"])
+- The pose is expressed in the `mycobot_base` frame so the IK solver can work directly in the robot base.
+- `teleop_control_cpp` maps the right-hand pinch distance to `gripper` (0–100%). If Vision Pro is unavailable, `keyboard_ee_teleop.py` fills this field from key presses instead.
 
+## Launch options
 
+### Full Vision Pro + robot stack
+Use the main launch file when you have both the Vision Pro stream and a connected MyCobot:
 
-[transform_publisher-2] Publishing hand TFs...
-[transform_publisher-2] dict_keys(['left_wrist', 'right_wrist', 'left_fingers', 'right_fingers', 'head', 'left_pinch_distance', 'right_pinch_distance', 'right_wrist_roll', 'left_wrist_roll'])
-[transform_publisher-2] Head data:
-[transform_publisher-2] [[[ 0.99900526 -0.04313008 -0.0113261  -0.01405404]
-[transform_publisher-2]   [ 0.04273184  0.85332602  0.51962358  0.11414151]
-[transform_publisher-2]   [-0.01274656 -0.51959062  0.85432023  1.14853954]
-[transform_publisher-2]   [ 0.          0.          0.          1.        ]]]
+```bash
+ros2 launch teleoperation launch_teleoperation.launch.py
+```
 
-[transform_publisher-2] Left pinch distance:
-[transform_publisher-2] 0.06416581015321639
+This starts TF publishers, the C++ teleop node, the inverse kinematics node, RViz, and the MyCobot interface. The end-effector pose and gripper percentage travel together in the `TeleopTarget` message from teleop to IK and on to the cobot node.
 
-[transform_publisher-2] Right pinch distance:
-[transform_publisher-2] 0.05751831834187812
+### Vision Pro without robot hardware
+Run the same launch file but disable or disconnect the hardware side; RViz will still show the streamed hand targets and IK results. Because the teleop node owns the serial port, no additional changes are required to omit the cobot driver.
 
-[transform_publisher-2] Left wrist roll:
-[transform_publisher-2] 1.8842382267121247
+### No Vision Pro (keyboard-only)
+When you want to test without a headset (and optionally without a robot), use the keyboard launch file:
 
-[transform_publisher-2] Right wrist roll:
-[transform_publisher-2] -1.0918790769067035
+```bash
+ros2 launch teleoperation keyboard_launch_teleoperation.launch.py
+```
 
-[transform_publisher-2] Left wrist data:
-[transform_publisher-2] [[[ 0.31259838  0.30370098 -0.90002656 -0.20318094]
-[transform_publisher-2]   [ 0.94918656 -0.06353544  0.30823359  0.27013016]
-[transform_publisher-2]   [ 0.03642728 -0.95064646 -0.30812997  0.77021545]
-[transform_publisher-2]   [ 0.          0.          0.          1.        ]]]
+This brings up RViz, the C++ teleop node, the IK solver, and the keyboard controller. You can drive the end-effector pose with the keyboard and still publish `TeleopTarget` messages that include a gripper percentage, so downstream nodes behave the same way as with Vision Pro input.
 
-[transform_publisher-2] Left fingers data:
-[transform_publisher-2] [[[ 1.00000000e+00  0.00000000e+00  0.00000000e+00  0.00000000e+00]
-[transform_publisher-2]   [ 0.00000000e+00  1.00000000e+00  0.00000000e+00  0.00000000e+00]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  1.00000000e+00  0.00000000e+00]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 7.67418385e-01  6.28899813e-01  1.24713793e-01  2.16982439e-02]
-[transform_publisher-2]   [ 2.31173053e-01 -8.99840444e-02 -9.68742192e-01  1.12241805e-02]
-[transform_publisher-2]   [-5.98019719e-01  7.72261202e-01 -2.14440167e-01 -1.66563094e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.91572559e-01  1.02895766e-01  7.87114576e-02  6.34043515e-02]
-[transform_publisher-2]   [ 9.54967886e-02 -1.69989750e-01 -9.80807304e-01  2.48483345e-02]
-[transform_publisher-2]   [-8.75408724e-02  9.80058730e-01 -1.78383470e-01 -4.75495420e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.32679772e-01  3.52010757e-01  7.87114352e-02  9.61739942e-02]
-[transform_publisher-2]   [ 1.35636911e-01 -1.40066981e-01 -9.80807006e-01  2.85995007e-02]
-[transform_publisher-2]   [-3.34229976e-01  9.25455749e-01 -1.78383410e-01 -4.98387255e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.32679772e-01  3.52010757e-01  7.87114352e-02  1.24831356e-01]
-[transform_publisher-2]   [ 1.35636911e-01 -1.40066981e-01 -9.80807006e-01  3.32326591e-02]
-[transform_publisher-2]   [-3.34229976e-01  9.25455749e-01 -1.78383410e-01 -5.95163219e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.80819345e-01 -3.41462120e-02  1.91904694e-01  2.29879543e-02]
-[transform_publisher-2]   [ 4.27650437e-02  9.98245537e-01 -4.09499034e-02  7.07060099e-04]
-[transform_publisher-2]   [-1.90169722e-01  4.83712703e-02  9.80558872e-01 -1.47234797e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.85458255e-01 -1.49427503e-01  8.08878094e-02  9.51564312e-02]
-[transform_publisher-2]   [ 1.53771147e-01  9.86819744e-01 -5.04036061e-02  5.40336687e-03]
-[transform_publisher-2]   [-7.22900108e-02  6.21088780e-02  9.95447636e-01 -2.68923417e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 8.84003282e-01 -4.60428506e-01  8.08877945e-02  1.39132068e-01]
-[transform_publisher-2]   [ 4.64979023e-01  8.83885145e-01 -5.04035950e-02  1.29950987e-02]
-[transform_publisher-2]   [-4.82883006e-02  8.21681097e-02  9.95447457e-01 -2.92286519e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 8.32628608e-01 -5.47891676e-01  8.08877721e-02  1.62024945e-01]
-[transform_publisher-2]   [ 5.52406609e-01  8.32048595e-01 -5.04035838e-02  2.52770800e-02]
-[transform_publisher-2]   [-3.96868698e-02  8.66504684e-02  9.95447218e-01 -2.99669206e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 8.32628608e-01 -5.47891617e-01  8.08878765e-02  1.81797475e-01]
-[transform_publisher-2]   [ 5.52406609e-01  8.32048595e-01 -5.04037514e-02  3.85372937e-02]
-[transform_publisher-2]   [-3.96868698e-02  8.66506621e-02  9.95447218e-01 -3.04651018e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.99481380e-01  3.19131911e-02 -4.17736685e-03  2.47291625e-02]
-[transform_publisher-2]   [-3.20995152e-02  9.97858763e-01 -5.69766238e-02  6.52670860e-04]
-[transform_publisher-2]   [ 2.35011778e-03  5.70812002e-02  9.98366177e-01 -3.12146544e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.73279119e-01  2.19681710e-01 -6.68261796e-02  9.36633721e-02]
-[transform_publisher-2]   [-2.13934362e-01  9.73259568e-01  8.36416259e-02 -8.52865633e-05]
-[transform_publisher-2]   [ 8.34138244e-02 -6.71103075e-02  9.94251609e-01 -1.40169763e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 7.21288681e-01 -6.84495091e-01 -1.05861224e-01  1.43388033e-01]
-[transform_publisher-2]   [ 6.92421377e-01  7.16372013e-01  8.57977346e-02 -1.01006962e-02]
-[transform_publisher-2]   [ 1.71079058e-02 -1.35185689e-01  9.90671217e-01  3.63331847e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.92232865e-01 -9.13181841e-01 -1.10676758e-01  1.65947199e-01]
-[transform_publisher-2]   [ 9.19332743e-01  3.85068804e-01  8.09084624e-02  1.15479138e-02]
-[transform_publisher-2]   [-3.12660411e-02 -1.33483931e-01  9.90556061e-01  4.85975854e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.92232865e-01 -9.13181841e-01 -1.10676758e-01  1.75734535e-01]
-[transform_publisher-2]   [ 9.19332743e-01  3.85068804e-01  8.09084624e-02  3.38662677e-02]
-[transform_publisher-2]   [-3.12660411e-02 -1.33483931e-01  9.90556061e-01  4.56693955e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.89912570e-01  3.65224406e-02 -1.36889800e-01  2.48708203e-02]
-[transform_publisher-2]   [-3.09572816e-02  9.98613775e-01  4.25656810e-02  1.94707513e-03]
-[transform_publisher-2]   [ 1.38254657e-01 -3.78985777e-02  9.89671171e-01  8.58312845e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.26842272e-01  3.43800306e-01 -1.50877714e-01  9.17512625e-02]
-[transform_publisher-2]   [-3.43105048e-01  9.38769937e-01  3.14504132e-02  1.28694624e-03]
-[transform_publisher-2]   [ 1.52452186e-01  2.26173420e-02  9.88051713e-01  1.93546489e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 6.90053463e-01 -7.11220980e-01 -1.34124950e-01  1.32320195e-01]
-[transform_publisher-2]   [ 7.20150590e-01  6.93199456e-01  2.92588919e-02 -1.29752411e-02]
-[transform_publisher-2]   [ 7.21658543e-02 -1.16780415e-01  9.90531743e-01  2.65914313e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.35667372e-01 -9.32480931e-01 -1.33433953e-01  1.52514428e-01]
-[transform_publisher-2]   [ 9.41831589e-01  3.34740549e-01  2.99988221e-02  8.05879384e-03]
-[transform_publisher-2]   [ 1.66924484e-02 -1.35742053e-01  9.90602672e-01  2.93870252e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.35667402e-01 -9.26607609e-01 -1.69481978e-01  1.60560191e-01]
-[transform_publisher-2]   [ 9.41831708e-01  3.33326042e-01  4.29527350e-02  2.98573803e-02]
-[transform_publisher-2]   [ 1.66924503e-02 -1.74041480e-01  9.84596074e-01  3.02487146e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.67192948e-01  2.70240624e-02 -2.52599925e-01  2.40179598e-02]
-[transform_publisher-2]   [-1.38183190e-02  9.98449922e-01  5.39081357e-02  3.20327282e-03]
-[transform_publisher-2]   [ 2.53665298e-01 -4.86490838e-02  9.66067553e-01  2.20195353e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.18898702e-01  3.01112115e-01 -2.54863292e-01  8.03188607e-02]
-[transform_publisher-2]   [-2.97212511e-01  9.53245997e-01  5.46401367e-02  3.61530669e-03]
-[transform_publisher-2]   [ 2.59400427e-01  2.55398192e-02  9.65431511e-01  3.79547514e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 6.75128162e-01 -6.92275226e-01 -2.54863262e-01  1.12739593e-01]
-[transform_publisher-2]   [ 7.24827886e-01  6.86758637e-01  5.46401255e-02 -6.24602847e-03]
-[transform_publisher-2]   [ 1.37203634e-01 -2.21621275e-01  9.65431333e-01  4.75611165e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.03406119e-01 -9.18143392e-01 -2.54863173e-01  1.26679599e-01]
-[transform_publisher-2]   [ 9.52500224e-01  2.99592316e-01  5.46401106e-02  8.71807709e-03]
-[transform_publisher-2]   [ 2.61876155e-02 -2.59335697e-01  9.65431035e-01  5.08981496e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.03406119e-01 -9.18143392e-01 -2.54863173e-01  1.33261591e-01]
-[transform_publisher-2]   [ 9.52500224e-01  2.99592316e-01  5.46401106e-02  2.86111590e-02]
-[transform_publisher-2]   [ 2.61876155e-02 -2.59335697e-01  9.65431035e-01  5.19291088e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]]
+## Configuration
 
-[transform_publisher-2] Right wrist data:
-[transform_publisher-2] [[[ 0.59492087  0.50484031 -0.62546408  0.09857603]
-[transform_publisher-2]   [-0.76076329  0.10249417 -0.64088541  0.25811294]
-[transform_publisher-2]   [-0.25943834  0.85710633  0.44503981  0.75054687]
-[transform_publisher-2]   [ 0.          0.          0.          1.        ]]]
+- Teleop parameters live in `config/teleoperation.yaml` (frames, pinch thresholds, update rates).
+- Static transforms for `map` → `mycobot_base` and `map` → `vp_base_origin` are set in the launch files. Adjust them if your physical setup differs.
+- The launch files accept URDF/model overrides through the `model` argument, making it easy to swap robot variants.
 
-[transform_publisher-2] Right fingers data:
-[transform_publisher-2] [[[ 1.00000000e+00  0.00000000e+00  0.00000000e+00  0.00000000e+00]
-[transform_publisher-2]   [ 0.00000000e+00  1.00000000e+00  0.00000000e+00  0.00000000e+00]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  1.00000000e+00  0.00000000e+00]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 6.25676990e-01  4.94334370e-01  6.03457987e-01 -2.19953358e-02]
-[transform_publisher-2]   [ 6.29312813e-01  1.37271479e-01 -7.64932394e-01 -1.05656385e-02]
-[transform_publisher-2]   [-4.60970014e-01  8.58364582e-01 -2.25203395e-01  1.81450844e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 8.00020993e-01  2.01679513e-01  5.65058529e-01 -5.68606555e-02]
-[transform_publisher-2]   [ 5.90475321e-01 -9.77678820e-02 -8.01111519e-01 -4.57127132e-02]
-[transform_publisher-2]   [-1.06323212e-01  9.74559486e-01 -1.97303206e-01  4.34664190e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 8.11839998e-01  1.47050068e-01  5.65058351e-01 -8.38970914e-02]
-[transform_publisher-2]   [ 5.82500696e-01 -1.37522459e-01 -8.01111281e-01 -6.60236180e-02]
-[transform_publisher-2]   [-4.00952995e-02  9.79521573e-01 -1.97303146e-01  4.63707335e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 8.11839998e-01  1.47050068e-01  5.65058351e-01 -1.09695114e-01]
-[transform_publisher-2]   [ 5.82500696e-01 -1.37522459e-01 -8.01111281e-01 -8.49350542e-02]
-[transform_publisher-2]   [-4.00952995e-02  9.79521573e-01 -1.97303146e-01  4.69228178e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.79142189e-01 -2.74554137e-02  2.01311797e-01 -2.33802274e-02]
-[transform_publisher-2]   [ 3.58542837e-02  9.98626769e-01 -3.81931476e-02  7.79032707e-05]
-[transform_publisher-2]   [-1.99986786e-01  4.46144231e-02  9.78782177e-01  1.60194933e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.11269248e-01 -4.11657542e-01  1.12276366e-02 -9.58828628e-02]
-[transform_publisher-2]   [ 4.10765558e-01  9.06677902e-01 -9.59511846e-02 -3.12106428e-03]
-[transform_publisher-2]   [ 2.93191783e-02  9.20493156e-02  9.95322585e-01  2.98711173e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 5.07693887e-01 -8.61463845e-01  1.12276329e-02 -1.37040704e-01]
-[transform_publisher-2]   [ 8.58089745e-01  5.04454851e-01 -9.59511623e-02 -2.21834984e-02]
-[transform_publisher-2]   [ 7.69946575e-02  5.83481677e-02  9.95322347e-01  2.75034085e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.34824681e-01 -9.42212820e-01  1.12276357e-02 -1.50515139e-01]
-[transform_publisher-2]   [ 9.38284814e-01  3.32285523e-01 -9.59511325e-02 -4.49392796e-02]
-[transform_publisher-2]   [ 8.66756588e-02  4.26615626e-02  9.95321989e-01  2.48841122e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 3.34824681e-01 -9.42212820e-01  1.12278266e-02 -1.58733636e-01]
-[transform_publisher-2]   [ 9.38284814e-01  3.32285523e-01 -9.59511921e-02 -6.77045882e-02]
-[transform_publisher-2]   [ 8.66756588e-02  4.26617488e-02  9.95321989e-01  2.22917125e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.99125779e-01  3.42982933e-02  2.38823071e-02 -2.52007470e-02]
-[transform_publisher-2]   [-3.27440798e-02  9.97495949e-01 -6.26803488e-02 -1.69992447e-04]
-[transform_publisher-2]   [-2.59723440e-02  6.18435778e-02  9.97747421e-01  3.64574790e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.97621238e-01 -9.19669215e-03 -6.83094487e-02 -9.52345505e-02]
-[transform_publisher-2]   [ 1.31107382e-02  9.98283386e-01  5.70732541e-02  1.40756182e-03]
-[transform_publisher-2]   [ 6.76673427e-02 -5.78331165e-02  9.96029854e-01  4.27979138e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 5.17531335e-01 -8.48964334e-01 -1.06859244e-01 -1.46803543e-01]
-[transform_publisher-2]   [ 8.55573952e-01  5.15229881e-01  5.02953194e-02  6.48650021e-05]
-[transform_publisher-2]   [ 1.23581449e-02 -1.17455490e-01  9.93000388e-01 -3.01075634e-04]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 1.82257324e-01 -9.77049649e-01 -1.10245444e-01 -1.63309604e-01]
-[transform_publisher-2]   [ 9.82965469e-01  1.78359285e-01  4.43259291e-02 -2.71570850e-02]
-[transform_publisher-2]   [-2.36453600e-02 -1.16446294e-01  9.92914438e-01 -1.38834864e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 1.82257324e-01 -9.77049649e-01 -1.10245444e-01 -1.67982936e-01]
-[transform_publisher-2]   [ 9.82965469e-01  1.78359285e-01  4.43259291e-02 -5.16484715e-02]
-[transform_publisher-2]   [-2.36453600e-02 -1.16446294e-01  9.92914438e-01 -1.21857785e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.93202984e-01  3.41308378e-02 -1.11275680e-01 -2.53877267e-02]
-[transform_publisher-2]   [-2.81665605e-02  9.98103142e-01  5.47377765e-02 -1.82217360e-03]
-[transform_publisher-2]   [ 1.12932883e-01 -5.12314886e-02  9.92280662e-01 -8.87545943e-03]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.66923296e-01  2.43139967e-01 -7.70769119e-02 -9.30669606e-02]
-[transform_publisher-2]   [-2.42130324e-01  9.69986081e-01  2.23276205e-02 -7.63530959e-04]
-[transform_publisher-2]   [ 8.01923275e-02 -2.92644673e-03  9.96774375e-01 -1.79655589e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 5.18881977e-01 -8.52733076e-01 -6.00456074e-02 -1.36102244e-01]
-[transform_publisher-2]   [ 8.54754269e-01  5.18567145e-01  2.19367128e-02  9.46821645e-03]
-[transform_publisher-2]   [ 1.24315238e-02 -6.27068728e-02  9.97953534e-01 -2.23255288e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 1.36366978e-01 -9.88866746e-01 -5.95302396e-02 -1.51660770e-01]
-[transform_publisher-2]   [ 9.90550756e-01  1.35225937e-01  2.28109378e-02 -1.60994437e-02]
-[transform_publisher-2]   [-1.45069659e-02 -6.20784760e-02  9.97964442e-01 -2.33442765e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 1.36366993e-01 -9.85815883e-01 -9.78196412e-02 -1.55021340e-01]
-[transform_publisher-2]   [ 9.90550935e-01  1.34240046e-01  2.80359313e-02 -3.96057554e-02]
-[transform_publisher-2]   [-1.45069696e-02 -1.00718632e-01  9.94808078e-01 -2.33769380e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 9.70270276e-01  4.68863808e-02 -2.37437159e-01 -2.45700479e-02]
-[transform_publisher-2]   [-3.46816890e-02  9.97865558e-01  5.53228296e-02 -3.51554155e-03]
-[transform_publisher-2]   [ 2.39524364e-01 -4.54433970e-02  9.69825804e-01 -2.33126879e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 8.53471994e-01  4.62923944e-01 -2.39343390e-01 -8.20848644e-02]
-[transform_publisher-2]   [-4.63765621e-01  8.84162605e-01  5.63584939e-02 -2.32486613e-03]
-[transform_publisher-2]   [ 2.37708360e-01  6.28988892e-02  9.69297111e-01 -3.88867930e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[ 6.04318261e-01 -7.59941995e-01 -2.39343315e-01 -1.12727344e-01]
-[transform_publisher-2]   [ 7.90018320e-01  6.10485375e-01  5.63584752e-02  1.38340797e-02]
-[transform_publisher-2]   [ 1.03286535e-01 -2.23144323e-01  9.69296813e-01 -4.80319932e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[-1.42000755e-02 -9.70829844e-01 -2.39343271e-01 -1.25367329e-01]
-[transform_publisher-2]   [ 9.98002589e-01 -2.84918565e-02  5.63584678e-02 -2.71994574e-03]
-[transform_publisher-2]   [-6.15338907e-02 -2.38065243e-01  9.69296634e-01 -5.06797470e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
-[transform_publisher-2] 
-[transform_publisher-2]  [[-1.42000755e-02 -9.70829844e-01 -2.39343271e-01 -1.25153214e-01]
-[transform_publisher-2]   [ 9.98002589e-01 -2.84918565e-02  5.63584678e-02 -2.39643157e-02]
-[transform_publisher-2]   [-6.15338907e-02 -2.38065243e-01  9.69296634e-01 -4.96009104e-02]
-[transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]]
+## How everything ties together
+
+1. Vision Pro (or keyboard) produces an end-effector target and gripper percentage as `TeleopTarget`.
+2. The inverse kinematics node consumes that message, solves for joint angles, and publishes `/joint_states` plus cobot-specific joint commands.
+3. If a real robot is present, `joint_state_to_mycobot.py` sends the joint values to hardware; otherwise, RViz visualizes the same stream, so you can test with or without the robot attached.
