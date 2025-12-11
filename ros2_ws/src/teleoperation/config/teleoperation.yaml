@@ -4,7 +4,7 @@ teleop_control:
     gripper_base_frame: "gripper_ee"
 
     # Update rate for teleop_control.update() (seconds)
-    update_period: 0.3
+    update_period: 0.8
 
     # Gesture thresholds
     pinch_threshold: 0.02
@@ -23,9 +23,9 @@ joint_state_to_mycobot:
     baud: 115200
     
     joint_state_topic: "/joint_states_mycobot"
-    speed: 60
+    speed: 80
     gripper_speed: 75
 
     initial_angles_deg: [0, 0, 0, 0, 0, 45]  # Initial joint angles in degrees
-    initial_move_speed: 15
+    initial_move_speed: 35
 

@@ -12,9 +12,9 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 
-add_executable(teleop_control src/teleop_control.cpp)
-target_include_directories(teleop_control PRIVATE ${EIGEN3_INCLUDE_DIRS})
-ament_target_dependencies(teleop_control
+add_executable(teleop_control_cpp src/teleop_control_cpp.cpp)
+target_include_directories(teleop_control_cpp PRIVATE ${EIGEN3_INCLUDE_DIRS})
+ament_target_dependencies(teleop_control_cpp
   rclcpp
   geometry_msgs
   sensor_msgs
@@ -24,7 +24,7 @@ ament_target_dependencies(teleop_control
   tf2_geometry_msgs
 )
 
-install(TARGETS teleop_control
+install(TARGETS teleop_control_cpp
   DESTINATION lib/${PROJECT_NAME})
 
 ament_python_install_package(${PROJECT_NAME})
@@ -34,6 +34,7 @@ install(PROGRAMS
   teleoperation/joint_state_to_mycobot.py
   teleoperation/keyboard_ee_teleop.py
   teleoperation/vp_transform_publisher.py
+  teleoperation/teleop_control.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

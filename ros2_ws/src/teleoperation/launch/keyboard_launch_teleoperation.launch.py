@@ -104,7 +104,7 @@ def generate_launch_description():
 
     teleop_control_node = Node(
         package="teleoperation",
-        executable="teleop_control.py",
+        executable="teleop_control",
         name="teleop_control",
         output="screen",
         parameters=[
@@ -150,7 +150,7 @@ def generate_launch_description():
 
     joint_state_to_mycobot_node = Node(
         package="teleoperation",
-        executable="joint_state_to_mycobot.py",
+        executable="joint_state_to_mycobot",
         name="joint_state_to_mycobot",
         output="screen",
         parameters=[teleop_config],
@@ -188,7 +188,8 @@ def generate_launch_description():
         teleop_control_cpp_node,
         inverse_kinematics_node,
         
-        joint_state_to_mycobot_node,
+        # joint_state_to_mycobot_node,
+
 
         rviz2_node,
         

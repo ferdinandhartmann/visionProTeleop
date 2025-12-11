@@ -5,6 +5,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "geometry_msgs/msg/quaternion.hpp"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_broadcaster.h"
@@ -15,6 +16,16 @@
 
 namespace
 {
+geometry_msgs::msg::Quaternion eigenToMsg(const Eigen::Quaterniond & q)
+{
+  geometry_msgs::msg::Quaternion msg;
+  msg.x = q.x();
+  msg.y = q.y();
+  msg.z = q.z();
+  msg.w = q.w();
+  return msg;
+}
+
 Eigen::Matrix4d transformToMatrix(const geometry_msgs::msg::TransformStamped & tf)
 {
   Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
@@ -61,8 +72,8 @@ public:
     ee_target_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/teleop/ee_target", 10);
 
     this->declare_parameter<std::string>("vp_base_frame", "vp_base");
-    this->declare_parameter<std::string>("gripper_base_frame", "gripper_base");
-    this->declare_parameter<double>("update_period", 0.2);
+    this->declare_parameter<std::string>("gripper_base_frame", "gripper_ee");
+    this->declare_parameter<double>("update_period", 0.1);
     this->declare_parameter<double>("pinch_threshold", 0.02);
     this->declare_parameter<double>("right_pinch_min", 0.015);
     this->declare_parameter<double>("right_pinch_max", 0.150);
@@ -133,7 +144,7 @@ private:
 
     Eigen::Quaterniond q(T.block<3, 3>(0, 0));
     q.normalize();
-    tf_msg.transform.rotation = tf2::toMsg(q);
+    tf_msg.transform.rotation = eigenToMsg(q);
 
     static_tf_broadcaster_->sendTransform(tf_msg);
     RCLCPP_INFO(this->get_logger(), "Published vp_base calibration transform");
@@ -150,7 +161,7 @@ private:
     t.transform.translation.x = ee_pos.x();
     t.transform.translation.y = ee_pos.y();
     t.transform.translation.z = ee_pos.z();
-    t.transform.rotation = tf2::toMsg(ee_ori);
+    t.transform.rotation = eigenToMsg(ee_ori);
 
     tf_broadcaster_->sendTransform(t);
   }
@@ -276,7 +287,7 @@ private:
         pose_msg.pose.position.x = ee_pos_mycobot_base.x();
         pose_msg.pose.position.y = ee_pos_mycobot_base.y();
         pose_msg.pose.position.z = ee_pos_mycobot_base.z();
-        pose_msg.pose.orientation = tf2::toMsg(ee_ori_mycobot_base);
+        pose_msg.pose.orientation = eigenToMsg(ee_ori_mycobot_base);
         ee_target_pub_->publish(pose_msg);
 
         RCLCPP_INFO(this->get_logger(), "Published ee_target_offset in mycobot_base frame");
@@ -311,7 +322,7 @@ private:
   bool offset_available_{false};
   Eigen::Matrix4d offset_T_ = Eigen::Matrix4d::Identity();
   Eigen::Vector3d offset_pos_ = Eigen::Vector3d::Zero();
-  Eigen::Quaterniond offset_rot_{1.0, 0.0, 0.0, 0.0};
+  Eigen::Quaterniond offset_rot_{0.0, 0.0, 0.0, 0.0};
   rclcpp::Time last_5hz_time_;
 };
 

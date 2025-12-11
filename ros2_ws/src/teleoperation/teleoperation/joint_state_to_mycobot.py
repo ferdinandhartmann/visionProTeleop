@@ -134,29 +134,59 @@ class JointStateToMyCobot(Node):
             gripper_joint = msg.position[6]
             gripper_percent = self.gripper_joint_to_percent(gripper_joint)
             
-        self.get_logger().info(f"Trying to send angles: {angles_deg} and gripper percent: {gripper_percent}")
+        self.get_logger().info(
+            f"Trying to send angles: {[round(a, 2) for a in angles_deg]} and gripper percent: {round(gripper_percent, 2) if gripper_percent is not None else gripper_percent}"
+        )
+        # Add a parameter to control lock usage
+        # use_lock = self.get_parameter("use_lock").value if self.has_parameter("use_lock") else False#
+        
+        use_lock = False
 
-        try:
-            fd = self.acquire_lock()
+        if use_lock:
             try:
-                # Send arm joint angles
+                fd = self.acquire_lock()
                 try:
-                    self.mc.send_angles(angles_deg, self.speed)
-                except MyCobot280DataException as e:
-                    self.get_logger().warn(f"send_angles error: {e}")
-
-                # Send gripper if present
-                if gripper_percent is not None:
-                    clamped = max(0, min(100, int(round(gripper_percent))))
+                    # Send arm joint angles
                     try:
-                        self.mc.set_gripper_value(clamped, self.gripper_speed)
-                        self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
+                        self.mc.send_angles(angles_deg, self.speed)
                     except MyCobot280DataException as e:
-                        self.get_logger().warn(f"set_gripper_value error: {e}")
-            finally:
-                self.release_lock(fd)
-        except Exception as e:
-            self.get_logger().error(f"Failed to acquire MyCobot lock: {e}")
+                        self.get_logger().warn(f"send_angles error: {e}")
+
+                        # Send gripper if present
+                        if gripper_percent is not None:
+                            clamped = max(0, min(100, int(round(gripper_percent))))
+                        try:
+                            self.mc.set_gripper_value(clamped, self.gripper_speed)
+                            self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
+                        except MyCobot280DataException as e:
+                            self.get_logger().warn(f"set_gripper_value error: {e}")
+                finally:
+                    self.release_lock(fd)
+            except Exception as e:
+                self.get_logger().error(f"Failed to acquire MyCobot lock: {e}")
+        else:
+            # # Without lock
+            # try:
+            #     self.mc.send_angles(angles_deg, self.speed)
+            # except MyCobot280DataException as e:
+            #     self.get_logger().warn(f"send_angles error: {e}")
+
+            # if gripper_percent is not None:
+            #     clamped = max(0, min(100, int(round(gripper_percent))))
+            # try:
+            #     self.mc.set_gripper_value(clamped, self.gripper_speed)
+            #     self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
+            # except MyCobot280DataException as e:
+            #     self.get_logger().warn(f"set_gripper_value error: {e}")
+            
+              # Without lock
+            self.mc.send_angles(angles_deg, self.speed)
+
+            if gripper_percent is not None:
+                clamped = max(0, min(100, int(round(gripper_percent))))
+            self.mc.set_gripper_value(clamped, self.gripper_speed)
+            self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
+
 
     def gripper_joint_to_percent(self, joint_value: float) -> float:
         """Map gripper joint angle [lower, upper] -> [0, 100]."""
