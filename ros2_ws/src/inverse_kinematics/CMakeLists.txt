@@ -12,6 +12,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(teleoperation REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 add_executable(inverse_kinematics_node src/inverse_kinematics.cpp)
@@ -22,6 +23,7 @@ ament_target_dependencies(inverse_kinematics_node
   tf2
   tf2_geometry_msgs
   tf2_ros
+  teleoperation
 )
 target_link_libraries(inverse_kinematics_node Eigen3::Eigen)
 

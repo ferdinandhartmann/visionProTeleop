@@ -15,6 +15,7 @@
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_broadcaster.h"
+#include "teleoperation/msg/teleop_target.hpp"
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -116,28 +117,25 @@ InverseKinematicsNode()
 
   // Optional: override initial joint_state_ from parameter (degrees -> radians)
   const auto initial_joints_deg = get_parameter("initial_joint_positions_deg").as_double_array();
-  if (!initial_joints_deg.empty()) {
-    if (initial_joints_deg.size() != 6) {
-      RCLCPP_WARN(
-        get_logger(),
-        "Parameter 'initial_joint_positions_deg' must have 6 values; got %zu. Ignoring.",
-        initial_joints_deg.size());
-    } else {
-      for (size_t i = 0; i < 6; ++i) {
-        joint_state_[i] = initial_joints_deg[i] * M_PI / 180.0;
+    if (!initial_joints_deg.empty()) {
+      if (initial_joints_deg.size() != 6) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Parameter 'initial_joint_positions_deg' must have 6 values; got %zu. Ignoring.",
+          initial_joints_deg.size());
+      } else {
+        for (size_t i = 0; i < 6; ++i) {
+          joint_state_[i] = initial_joints_deg[i] * M_PI / 180.0;
+        }
+        RCLCPP_INFO(get_logger(),
+          "Initial joint_state set from initial_joint_positions_deg (degrees): [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+          initial_joints_deg[0], initial_joints_deg[1], initial_joints_deg[2],
+          initial_joints_deg[3], initial_joints_deg[4], initial_joints_deg[5]);
       }
-      RCLCPP_INFO(get_logger(),
-        "Initial joint_state set from initial_joint_positions_deg (degrees): [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
-        initial_joints_deg[0], initial_joints_deg[1], initial_joints_deg[2],
-        initial_joints_deg[3], initial_joints_deg[4], initial_joints_deg[5]);
     }
-    joint_state_[6] = gripper_lower_limit_ +
-      (gripper_upper_limit_ - gripper_lower_limit_) *
-      (static_cast<double>(gripper_percent_) / 100.0);
-  }
 
 
-  pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(target_topic, rclcpp::SensorDataQoS(),
+  pose_subscription_ = create_subscription<teleoperation::msg::TeleopTarget>(target_topic, rclcpp::SensorDataQoS(),
                             std::bind(&InverseKinematicsNode::poseCallback, this, std::placeholders::_1));
 
   joint_state_publisher_ = create_publisher<sensor_msgs::msg::JointState>(joint_target_topic, 10);
@@ -164,9 +162,10 @@ InverseKinematicsNode()
 
 private:
 
-  void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+  void poseCallback(const teleoperation::msg::TeleopTarget::SharedPtr msg)
   {
-    Pose target = poseFromMsg(*msg);
+    Pose target = poseFromMsg(msg->pose);
+    gripper_percent_ = std::clamp(msg->gripper, 0, 100);
 
     // RCLCPP_INFO(get_logger(),
     //   "Received target pose: frame=%s pos=(%.3f, %.3f, %.3f)",
@@ -183,8 +182,8 @@ private:
       RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
     }
 
-    publishEndEffectorTf(msg->header);
-    publishJointState(msg->header);
+    publishEndEffectorTf(msg->pose.header);
+    publishJointState(msg->pose.header);
     
     return;
   }

@@ -6,6 +6,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
+#include "teleoperation/msg/teleop_target.hpp"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_broadcaster.h"
@@ -69,7 +70,7 @@ public:
     tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
     static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
 
-    ee_target_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/teleop/ee_target", 10);
+    ee_target_pub_ = this->create_publisher<teleoperation::msg::TeleopTarget>("/teleop/ee_target", 10);
 
     this->declare_parameter<std::string>("vp_base_frame", "vp_base");
     this->declare_parameter<std::string>("gripper_base_frame", "gripper_ee");
@@ -214,7 +215,6 @@ private:
 
     const double right_pinch = distance(*right_thumb, *right_index);
     const double d_clamped = clamp(right_pinch, right_pinch_min_, right_pinch_max_);
-    (void)d_clamped;  // Currently unused; placeholder for gripper logic.
 
     geometry_msgs::msg::TransformStamped tf_h;
     try {
@@ -281,14 +281,24 @@ private:
           ee_pos_mycobot_base, ee_ori_mycobot_base,
           "ee_target_offset_mycobot_base", "mycobot_base");
 
-        geometry_msgs::msg::PoseStamped pose_msg;
-        pose_msg.header.stamp = this->get_clock()->now();
-        pose_msg.header.frame_id = "mycobot_base";
-        pose_msg.pose.position.x = ee_pos_mycobot_base.x();
-        pose_msg.pose.position.y = ee_pos_mycobot_base.y();
-        pose_msg.pose.position.z = ee_pos_mycobot_base.z();
-        pose_msg.pose.orientation = eigenToMsg(ee_ori_mycobot_base);
-        ee_target_pub_->publish(pose_msg);
+        teleoperation::msg::TeleopTarget target_msg;
+        target_msg.pose.header.stamp = this->get_clock()->now();
+        target_msg.pose.header.frame_id = "mycobot_base";
+        target_msg.pose.pose.position.x = ee_pos_mycobot_base.x();
+        target_msg.pose.pose.position.y = ee_pos_mycobot_base.y();
+        target_msg.pose.pose.position.z = ee_pos_mycobot_base.z();
+        target_msg.pose.pose.orientation = eigenToMsg(ee_ori_mycobot_base);
+
+        if (right_pinch_max_ > right_pinch_min_) {
+          const double normalized = (right_pinch_max_ - d_clamped) /
+            (right_pinch_max_ - right_pinch_min_);
+          const double percent = clamp(normalized, 0.0, 1.0) * 100.0;
+          target_msg.gripper = static_cast<int32_t>(std::round(percent));
+        } else {
+          target_msg.gripper = 100;
+        }
+
+        ee_target_pub_->publish(target_msg);
 
         RCLCPP_INFO(this->get_logger(), "Published ee_target_offset in mycobot_base frame");
       } catch (const tf2::TransformException & ex) {

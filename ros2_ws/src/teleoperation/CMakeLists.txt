@@ -3,6 +3,7 @@ project(teleoperation)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -11,6 +12,11 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/TeleopTarget.msg"
+  DEPENDENCIES geometry_msgs std_msgs
+)
 
 add_executable(teleop_control_cpp src/teleop_control_cpp.cpp)
 target_include_directories(teleop_control_cpp PRIVATE ${EIGEN3_INCLUDE_DIRS})
@@ -23,6 +29,8 @@ ament_target_dependencies(teleop_control_cpp
   tf2_ros
   tf2_geometry_msgs
 )
+rosidl_target_interfaces(teleop_control_cpp
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 install(TARGETS teleop_control_cpp
   DESTINATION lib/${PROJECT_NAME})
@@ -44,5 +52,7 @@ install(DIRECTORY
   resource
   DESTINATION share/${PROJECT_NAME}
 )
+
+ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()
