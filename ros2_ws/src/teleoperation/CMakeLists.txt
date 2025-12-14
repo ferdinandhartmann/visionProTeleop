@@ -29,20 +29,23 @@ ament_target_dependencies(teleop_control_cpp
   tf2_ros
   tf2_geometry_msgs
 )
-rosidl_target_interfaces(teleop_control_cpp
+
+# Link against the generated C++ typesupport for TeleopTarget
+rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(teleop_control_cpp
+  "${cpp_typesupport_target}")
 
 install(TARGETS teleop_control_cpp
   DESTINATION lib/${PROJECT_NAME})
 
-ament_python_install_package(${PROJECT_NAME})
+# ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
   teleoperation/camera_streamer.py
   teleoperation/joint_state_to_mycobot.py
   teleoperation/keyboard_ee_teleop.py
   teleoperation/vp_transform_publisher.py
-  teleoperation/teleop_control.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

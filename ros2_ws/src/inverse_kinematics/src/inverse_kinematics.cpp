@@ -66,6 +66,7 @@ InverseKinematicsNode()
   declare_parameter<double>("step_tolerance", 2e-6);
   declare_parameter<int>("gripper_percent", 100);
   declare_parameter<double>("joint_states_ros2_update_rate", 50.0);  // Hz
+  declare_parameter<double>("mycobot_target_pose_update_rate", 0.5);  // s
   // Joint limits in degrees for joints 1..6
   declare_parameter<std::vector<double>>("joint_lower_limits_deg",
     std::vector<double>{-170.0, -170.0, -170.0, -170.0, -170.0, -180.0});
@@ -86,13 +87,9 @@ InverseKinematicsNode()
   max_iterations_ = static_cast<size_t>(get_parameter("max_iterations").as_int());
   damping_ = get_parameter("damping").as_double();
   step_tolerance_ = get_parameter("step_tolerance").as_double();
-	gripper_percent_ = get_parameter("gripper_percent").as_int();
+  gripper_percent_ = get_parameter("gripper_percent").as_int();
   joint_states_ros2_update_rate_ = get_parameter("joint_states_ros2_update_rate").as_double();
-  if (joint_states_ros2_update_rate_ <= 0.0) {
-    RCLCPP_WARN(get_logger(),
-      "joint_states_ros2_update_rate must be > 0. Using 50 Hz fallback.");
-    joint_states_ros2_update_rate_ = 50.0;
-  }
+  mycobot_target_pose_update_rate_ = get_parameter("mycobot_target_pose_update_rate").as_double();
 
   // Read joint limits (degrees) and convert to radians
   joint_lower_limits_rad_.resize(6);
@@ -140,15 +137,21 @@ InverseKinematicsNode()
 
   joint_state_publisher_ = create_publisher<sensor_msgs::msg::JointState>(joint_target_topic, 10);
 
-  // Continuous JointState publisher on /joint_states_ros2
+  // Continuous JointState publisher on for ros2
   joint_state_ros2_publisher_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
   int period_ms = static_cast<int>(1000.0 / joint_states_ros2_update_rate_);
   if (period_ms <= 0) {
     period_ms = 20;  // fallback 50 Hz
   }
-  joint_state_timer_ = create_wall_timer(
+  joint_state_ros2_timer_ = create_wall_timer(
     std::chrono::milliseconds(period_ms),
-    std::bind(&InverseKinematicsNode::jointStateTimerCallback, this));
+    std::bind(&InverseKinematicsNode::jointStateRos2TimerCallback, this));
+
+	joint_state_mycobot_timer_ = create_wall_timer(
+		std::chrono::milliseconds(static_cast<int>(mycobot_target_pose_update_rate_ * 1000.0)),
+		std::bind(&InverseKinematicsNode::jointStateMycobotTimerCallback, this));
+
+	// Build DH parameters for
 
   dh_chain_ = buildDhParameters();
 
@@ -179,17 +182,16 @@ private:
       joint_state_ = solution;
     }
     else{
-      RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
+    //   RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
     }
 
-    publishEndEffectorTf(msg->pose.header);
-    publishJointState(msg->pose.header);
-    
+    // publishEndEffectorTf(msg->pose.header);
+    // publishJointState(msg->pose.header);
     return;
   }
 
   // Periodic publisher for /joint_states_ros2
-  void jointStateTimerCallback()
+  void jointStateRos2TimerCallback()
   {
     if (!joint_state_ros2_publisher_) {
       return;
@@ -201,15 +203,28 @@ private:
     msg.name = joint_names_;
     msg.position.assign(joint_state_.begin(), joint_state_.end());
 
-    double gripper_joint_value = gripper_lower_limit_ +
-      (gripper_upper_limit_ - gripper_lower_limit_) *
-      (static_cast<double>(gripper_percent_) / 100.0);
+    double gripper_joint_value = gripper_lower_limit_ + (gripper_upper_limit_ - gripper_lower_limit_) * (static_cast<double>(gripper_percent_) / 100.0);
     msg.position.push_back(gripper_joint_value);
 
     joint_state_ros2_publisher_->publish(msg);
 
     publishEndEffectorTf(msg.header);
   }
+
+	void jointStateMycobotTimerCallback()
+	{
+		if (!joint_state_publisher_) {
+			return;
+		}
+		sensor_msgs::msg::JointState msg;
+		msg.header.stamp = now();
+		msg.header.frame_id = mycobot_base_frame_;
+		msg.name = joint_names_;
+		msg.position.assign(joint_state_.begin(), joint_state_.end());
+		msg.position.push_back(gripper_percent_);
+
+		joint_state_publisher_->publish(msg);
+	}
 
   Pose poseFromMsg(const geometry_msgs::msg::PoseStamped & msg) const
   {
@@ -412,8 +427,8 @@ private:
       if (delta.norm() < step_tolerance)
       {
         solution.assign(joints.data(), joints.data() + joints.size());
-        RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
-          "IK stopped by step tolerance at iter %zu (pos_err=%.3e, ori_err=%.3e)", iter, error.block<3, 1>(0, 0).norm(), error.block<3, 1>(3, 0).norm());
+        // RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
+        //   "IK stopped by step tolerance at iter %zu (pos_err=%.3e, ori_err=%.3e)", iter, error.block<3, 1>(0, 0).norm(), error.block<3, 1>(3, 0).norm());
         return true;
       }
 
@@ -425,8 +440,8 @@ private:
     // }
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
-      "IK failed after %zu iterations: final pos_err=%.3e, ori_err=%.3e", max_iterations, last_error.block<3, 1>(0, 0).norm(), last_error.block<3, 1>(3, 0).norm());
+    // RCLCPP_INFO(rclcpp::get_logger("inverse_kinematics_node"),
+    //   "IK failed after %zu iterations: final pos_err=%.3e, ori_err=%.3e", max_iterations, last_error.block<3, 1>(0, 0).norm(), last_error.block<3, 1>(3, 0).norm());
 
     return false;
   }
@@ -437,11 +452,8 @@ private:
     msg.header = header;
     msg.name = joint_names_;
     msg.position.assign(joint_state_.begin(), joint_state_.end());
-    double gripper_joint_value = gripper_lower_limit_ + (gripper_upper_limit_ - gripper_lower_limit_) * (static_cast<double>(gripper_percent_) / 100.0);
-    msg.position.push_back(gripper_joint_value);
+    msg.position.push_back(gripper_percent_);
     joint_state_publisher_->publish(msg);
-
-    publishEndEffectorTf(header);
   }
 
   void publishEndEffectorTf(const std_msgs::msg::Header & header)
@@ -473,10 +485,11 @@ private:
     tf_broadcaster_->sendTransform(tf_msg);
   }
 
-    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
+    rclcpp::Subscription<teleoperation::msg::TeleopTarget>::SharedPtr pose_subscription_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_ros2_publisher_;
-    rclcpp::TimerBase::SharedPtr joint_state_timer_;
+    rclcpp::TimerBase::SharedPtr joint_state_ros2_timer_;
+		rclcpp::TimerBase::SharedPtr joint_state_mycobot_timer_;
 
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -499,6 +512,7 @@ private:
     const float gripper_upper_limit_ = 0.15;
 
     double joint_states_ros2_update_rate_{};
+    double mycobot_target_pose_update_rate_{};
 
     std::vector<double> joint_lower_limits_rad_;
     std::vector<double> joint_upper_limits_rad_;

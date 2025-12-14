@@ -1,21 +1,25 @@
-teleop_control:
+vp_transform_publisher:
+  ros__parameters:
+    visionpro_ip: "192.168.50.153"
+    pinch_threshold: 0.02   # just for markers for rviz
+
+teleop_control_cpp:
   ros__parameters:
     vp_base_frame: "vp_base"
     gripper_base_frame: "gripper_ee"
 
-    # Update rate for teleop_control.update() (seconds)
-    update_period: 0.8
+    update_period: 0.05    # seconds
+
+    smoothing_factor: 3.0  # Run sampling this many times faster than update_period
+    smoothing_window: 15   # Number of recent samples to average
+
+    translation_scale: 0.66  # Scale translation of the commanded EE pose in mycobot_base
+    rotation_scale: 0.66     # Scale rotation of the commanded EE pose
 
     # Gesture thresholds
     pinch_threshold: 0.02
     right_pinch_min: 0.015
     right_pinch_max: 0.150
-
-keyboard_ee_teleop:
-  ros__parameters:
-    frame_id: "mycobot_base"
-    step_linear: 0.05
-    step_angular: 0.25
 
 joint_state_to_mycobot:
   ros__parameters:
@@ -23,9 +27,12 @@ joint_state_to_mycobot:
     baud: 115200
     
     joint_state_topic: "/joint_states_mycobot"
-    speed: 80
-    gripper_speed: 75
+    gripper_speed: 100
+    speed: 70               # default movement speed if adaptive speed is false
+    adaptive_speed: true
+    adaptive_speed_low_speed: 60
+    adaptive_speed_high_speed: 90
 
-    initial_angles_deg: [0, 0, 0, 0, 0, 45]  # Initial joint angles in degrees
+    initial_angles_deg: [0, 0, 0, 0, 0, 45]
     initial_move_speed: 35
 

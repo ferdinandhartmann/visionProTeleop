@@ -29,6 +29,10 @@ class JointStateToMyCobot(Node):
         self.declare_parameter("joint_state_topic", "/joint_states_mycobot")
         self.declare_parameter("speed", 40)  # joint speed 1-100
         self.declare_parameter("gripper_speed", 75)  # gripper speed 1-100
+        # Adaptive speed settings
+        self.declare_parameter("adaptive_speed", False)
+        self.declare_parameter("adaptive_speed_low_speed", 20)
+        self.declare_parameter("adaptive_speed_high_speed", 80)
         # 6 joint angles in degrees; explicitly declare as INTEGER_ARRAY
         self.declare_parameter(
             "initial_angles_deg",
@@ -45,10 +49,16 @@ class JointStateToMyCobot(Node):
         self.joint_state_topic = (self.get_parameter("joint_state_topic").get_parameter_value().string_value)
         self.speed = int(self.get_parameter("speed").value)
         self.gripper_speed = int(self.get_parameter("gripper_speed").value)
+        self.adaptive_speed = bool(self.get_parameter("adaptive_speed").value)
+        self.adaptive_speed_low = int(self.get_parameter("adaptive_speed_low_speed").value)
+        self.adaptive_speed_high = int(self.get_parameter("adaptive_speed_high_speed").value)
         self.initial_angles_deg = list(self.get_parameter("initial_angles_deg").value)
         self.initial_move_speed = int(self.get_parameter("initial_move_speed").value)
 
         self.get_logger().info(f"Connecting to MyCobot on {port} @ {baud} baud")
+
+        self.prev_angles_deg = None
+        self.prev_gripper_percent = None
 
         # Connect to MyCobot
         self.mc = MyCobot280(port, baud)
@@ -127,78 +137,45 @@ class JointStateToMyCobot(Node):
         # First 6 positions: arm joints in radians -> degrees
         arm_positions_rad = list(msg.position[:6])
         angles_deg = [math.degrees(p) for p in arm_positions_rad]
-
-        # Optional 7th value: gripper joint (radians)
-        gripper_percent = None
-        if len(msg.position) >= 7:
-            gripper_joint = msg.position[6]
-            gripper_percent = self.gripper_joint_to_percent(gripper_joint)
+        gripper_percent = msg.position[6]
             
-        self.get_logger().info(
-            f"Trying to send angles: {[round(a, 2) for a in angles_deg]} and gripper percent: {round(gripper_percent, 2) if gripper_percent is not None else gripper_percent}"
-        )
-        # Add a parameter to control lock usage
-        # use_lock = self.get_parameter("use_lock").value if self.has_parameter("use_lock") else False#
+        # self.get_logger().info(f"Trying to send angles: {[round(a, 2) for a in angles_deg]} and gripper percent: {round(gripper_percent, 2) if gripper_percent is not None else gripper_percent}")
         
-        use_lock = False
 
-        if use_lock:
-            try:
-                fd = self.acquire_lock()
-                try:
-                    # Send arm joint angles
-                    try:
-                        self.mc.send_angles(angles_deg, self.speed)
-                    except MyCobot280DataException as e:
-                        self.get_logger().warn(f"send_angles error: {e}")
+        angles_changed = (
+            self.prev_angles_deg is None or
+            any(abs(a - b) > 1e-2 for a, b in zip(angles_deg, self.prev_angles_deg))
+        )
+        gripper_changed = (
+            self.prev_gripper_percent is None or
+            abs(gripper_percent - self.prev_gripper_percent) > 1e-2
+        )
 
-                        # Send gripper if present
-                        if gripper_percent is not None:
-                            clamped = max(0, min(100, int(round(gripper_percent))))
-                        try:
-                            self.mc.set_gripper_value(clamped, self.gripper_speed)
-                            self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
-                        except MyCobot280DataException as e:
-                            self.get_logger().warn(f"set_gripper_value error: {e}")
-                finally:
-                    self.release_lock(fd)
-            except Exception as e:
-                self.get_logger().error(f"Failed to acquire MyCobot lock: {e}")
-        else:
-            # # Without lock
-            # try:
-            #     self.mc.send_angles(angles_deg, self.speed)
-            # except MyCobot280DataException as e:
-            #     self.get_logger().warn(f"send_angles error: {e}")
-
-            # if gripper_percent is not None:
-            #     clamped = max(0, min(100, int(round(gripper_percent))))
-            # try:
-            #     self.mc.set_gripper_value(clamped, self.gripper_speed)
-            #     self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
-            # except MyCobot280DataException as e:
-            #     self.get_logger().warn(f"set_gripper_value error: {e}")
-            
-              # Without lock
-            self.mc.send_angles(angles_deg, self.speed)
-
-            if gripper_percent is not None:
-                clamped = max(0, min(100, int(round(gripper_percent))))
-            self.mc.set_gripper_value(clamped, self.gripper_speed)
-            self.get_logger().debug(f"Sent gripper value: {clamped} at speed {self.gripper_speed}")
-
-
-    def gripper_joint_to_percent(self, joint_value: float) -> float:
-        """Map gripper joint angle [lower, upper] -> [0, 100]."""
-        lo = self.gripper_lower_limit
-        hi = self.gripper_upper_limit
-        if hi == lo:
-            return 0.0
-        # Linear mapping: lo -> 0, hi -> 100
-        ratio = (joint_value - lo) / (hi - lo)
-        percent = ratio * 100.0
-        # Clamp to [0, 100]
-        return max(0.0, min(100.0, percent))
+        send_speed = self.speed
+        if angles_changed:
+            # Choose speed based on angle change if adaptive speed is enabled
+            if self.adaptive_speed and self.prev_angles_deg is not None:
+                max_delta = max(abs(a - b) for a, b in zip(angles_deg, self.prev_angles_deg))
+                # Interpolate speed between adaptive_speed_low and adaptive_speed_high
+                angle_change_upper_bouond = 4.0  # degrees
+                angle_change_lower_bound = 2.0  # degrees
+                if max_delta <= angle_change_upper_bouond:
+                    send_speed = self.adaptive_speed_low
+                elif max_delta >= angle_change_lower_bound:
+                    send_speed = self.adaptive_speed_high
+                else:
+                    # Linear interpolation between low and high speed
+                    ratio = (max_delta - angle_change_lower_bound) / (angle_change_upper_bouond - angle_change_lower_bound)
+                    send_speed = int(self.adaptive_speed_low + ratio * (self.adaptive_speed_high - self.adaptive_speed_low))
+            self.mc.send_angles(angles_deg, send_speed, _async=True)
+            self.prev_angles_deg = angles_deg.copy()
+        if gripper_changed:
+            self.mc.set_gripper_value(int(gripper_percent), self.gripper_speed)
+            self.prev_gripper_percent = gripper_percent
+        if angles_changed or gripper_changed:
+            self.get_logger().info(
+                f"Sent gripper and/or joint values. Gripper: {gripper_percent} at speed {self.gripper_speed}, angle speed: {send_speed}"
+            )
 
 
 def main(args=None):

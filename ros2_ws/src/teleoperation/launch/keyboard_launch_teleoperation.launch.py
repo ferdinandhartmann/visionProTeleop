@@ -48,27 +48,6 @@ def generate_launch_description():
         parameters=[{'robot_description': robot_description}]
     )
     
-    joint_state_publisher_node = Node(
-        package='joint_state_publisher',
-        executable='joint_state_publisher',
-        name='joint_state_publisher',
-    )
-    
-    # Hardware access is now handled directly inside teleop_control,
-    # which also publishes /joint_states. We therefore do not launch
-    # the mycobot_280 listen_real node here to avoid double-opening
-    # the same serial port.
-    # listen_real_node = Node(
-    #     package="mycobot_280",
-    #     executable="listen_real",
-    #     name="listen_real",
-    #     parameters=[
-    #         {'port': LaunchConfiguration('port')},
-    #         {'baud': LaunchConfiguration('baud')}
-    #     ],
-    #     output="screen"
-    # )
-    
     static_transform_map_mycobot_base = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -81,14 +60,7 @@ def generate_launch_description():
         ],
         output="screen"
     )
-    
-    vp_transform_publisher_node = Node(
-        package="teleoperation",
-        executable="vp_transform_publisher.py",
-        name="vp_transform_publisher",
-        output="screen",
-    )
-    
+
     static_transform_map_vp_base_origin = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -100,16 +72,6 @@ def generate_launch_description():
             "vp_base_origin"
         ],
         output="screen"
-    )
-
-    teleop_control_node = Node(
-        package="teleoperation",
-        executable="teleop_control",
-        name="teleop_control",
-        output="screen",
-        parameters=[
-            teleop_config,
-        ],
     )
     
     teleop_control_cpp_node = Node(
@@ -133,29 +95,6 @@ def generate_launch_description():
         ],
     )
     
-    camera_streamer_node = Node(
-        package="teleoperation",
-        executable="camera_streamer",
-        name="camera_streamer",
-        output="screen",
-    )
-
-    keyboard_ee_teleop_node = Node(
-        package="teleoperation",
-        executable="keyboard_ee_teleop",
-        name="keyboard_ee_teleop",
-        output="screen",
-        parameters=[teleop_config],
-    )
-
-    joint_state_to_mycobot_node = Node(
-        package="teleoperation",
-        executable="joint_state_to_mycobot",
-        name="joint_state_to_mycobot",
-        output="screen",
-        parameters=[teleop_config],
-    )
-    
     inverse_kinematics_node = Node(
         package="inverse_kinematics",
         executable="inverse_kinematics_node",
@@ -177,25 +116,14 @@ def generate_launch_description():
         baud_rate_arg,
         
         robot_state_publisher_node,
-        # joint_state_publisher_node,
-        # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
 
         static_transform_map_mycobot_base,
-        vp_transform_publisher_node,
         static_transform_map_vp_base_origin,
 
-        # teleop_control_node,
         teleop_control_cpp_node,
         inverse_kinematics_node,
         
-        # joint_state_to_mycobot_node,
-
-
         rviz2_node,
-        
-        # keyboard_ee_teleop_node,
-
-        # camera_streamer_node
     ]
 
     return LaunchDescription(nodes)

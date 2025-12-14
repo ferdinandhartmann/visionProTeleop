@@ -1,6 +1,7 @@
 #include <cmath>
 #include <optional>
 #include <string>
+#include <deque>
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -57,6 +58,20 @@ Eigen::Quaterniond quaternionFromEulerZ(double degrees)
   eigen_q.normalize();
   return eigen_q;
 }
+// Flip rotation about the X and Y axes (roll and pitch) while keeping yaw.
+Eigen::Quaterniond flipPitchAndRoll(const Eigen::Quaterniond & q)
+{
+    tf2::Quaternion tf_q(q.x(), q.y(), q.z(), q.w());
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
+    roll = -roll;
+    pitch = -pitch;
+    tf2::Quaternion out;
+    out.setRPY(roll, pitch, yaw);
+    Eigen::Quaterniond eigen_out(out.w(), out.x(), out.y(), out.z());
+    eigen_out.normalize();
+    return eigen_out;
+}
 }  // namespace
 
 class TeleopControl : public rclcpp::Node
@@ -74,23 +89,62 @@ public:
 
     this->declare_parameter<std::string>("vp_base_frame", "vp_base");
     this->declare_parameter<std::string>("gripper_base_frame", "gripper_ee");
-    this->declare_parameter<double>("update_period", 0.1);
+    this->declare_parameter<double>("update_period", 1.0);
     this->declare_parameter<double>("pinch_threshold", 0.02);
     this->declare_parameter<double>("right_pinch_min", 0.015);
     this->declare_parameter<double>("right_pinch_max", 0.150);
+    this->declare_parameter<double>("smoothing_factor", 3.0);
+    this->declare_parameter<int>("smoothing_window", 3);
+    this->declare_parameter<double>("translation_scale", 1.0);
+    this->declare_parameter<double>("rotation_scale", 1.0);
 
     vp_base_frame_ = this->get_parameter("vp_base_frame").as_string();
     gripper_base_frame_ = this->get_parameter("gripper_base_frame").as_string();
     update_period_ = this->get_parameter("update_period").as_double();
+    if (update_period_ <= 0.0) {
+      RCLCPP_WARN(this->get_logger(), "update_period must be > 0. Using 0.1s.");
+      update_period_ = 0.1;
+    }
     pinch_threshold_ = this->get_parameter("pinch_threshold").as_double();
     right_pinch_min_ = this->get_parameter("right_pinch_min").as_double();
     right_pinch_max_ = this->get_parameter("right_pinch_max").as_double();
 
+    smoothing_factor_ = this->get_parameter("smoothing_factor").as_double();
+    if (smoothing_factor_ <= 0.0) {
+      RCLCPP_WARN(this->get_logger(), "smoothing_factor must be > 0. Using 3.0.");
+      smoothing_factor_ = 3.0;
+    }
+    int smoothing_window_param = this->get_parameter("smoothing_window").as_int();
+    if (smoothing_window_param <= 0) {
+      RCLCPP_WARN(this->get_logger(), "smoothing_window must be > 0. Using 3.");
+      smoothing_window_param = 3;
+    }
+    smoothing_window_ = static_cast<std::size_t>(smoothing_window_param);
+
+    translation_scale_ = this->get_parameter("translation_scale").as_double();
+    if (translation_scale_ <= 0.0) {
+      RCLCPP_WARN(this->get_logger(), "translation_scale must be > 0. Using 1.0.");
+      translation_scale_ = 1.0;
+    }
+
+    rotation_scale_ = this->get_parameter("rotation_scale").as_double();
+    if (rotation_scale_ <= 0.0) {
+      RCLCPP_WARN(this->get_logger(), "rotation_scale must be > 0. Using 1.0.");
+      rotation_scale_ = 1.0;
+    }
+
     publishVpBaseCalibration(Eigen::Matrix4d::Identity());
 
-    timer_ = this->create_wall_timer(
+    const double sample_period = update_period_ / smoothing_factor_;
+    auto sample_duration = std::chrono::duration<double>(sample_period);
+
+    sampling_timer_ = this->create_wall_timer(
+      sample_duration,
+      std::bind(&TeleopControl::sample, this));
+
+    publish_timer_ = this->create_wall_timer(
       std::chrono::duration<double>(update_period_),
-      std::bind(&TeleopControl::update, this));
+      std::bind(&TeleopControl::publishSmoothed, this));
 
     RCLCPP_INFO(this->get_logger(), "Teleop Control node initialized.");
   }
@@ -167,7 +221,7 @@ private:
     tf_broadcaster_->sendTransform(t);
   }
 
-  void update()
+  void sample()
   {
     auto left_thumb = getPos("visionpro/left/thumb_4");
     auto left_index = getPos("visionpro/left/index_4");
@@ -204,12 +258,19 @@ private:
     if (!right_thumb || !right_index || !wrist_pose.first || !wrist_pose.second) {
       return;
     }
-
     Eigen::Vector3d ee_pos = (*right_thumb + *right_index) / 2.0;
     Eigen::Quaterniond wrist_ori = *wrist_pose.second;
 
+    // Create a quaternion for -20 degrees about X axis
+    tf2::Quaternion q_x;
+    q_x.setRPY(-35.0 * M_PI / 180.0, 0.0, 0.0);
+    Eigen::Quaterniond q_x_eigen(q_x.w(), q_x.x(), q_x.y(), q_x.z());
+    q_x_eigen.normalize();
+
     Eigen::Quaterniond q_flip = quaternionFromEulerZ(220.0);
-    Eigen::Quaterniond ee_ori = multiplyQuat(wrist_ori, q_flip);
+    // Apply the -20deg X rotation before the Z rotation
+    Eigen::Quaterniond ee_ori = multiplyQuat(wrist_ori, q_x_eigen);
+    ee_ori = multiplyQuat(ee_ori, q_flip);
 
     publishEeTargetTf(ee_pos, ee_ori, "ee_target", vp_base_frame_);
 
@@ -276,37 +337,42 @@ private:
         Eigen::Vector3d ee_pos_mycobot_base = T_ee_target_offset_mycobot_base.block<3, 1>(0, 3);
         Eigen::Quaterniond ee_ori_mycobot_base(T_ee_target_offset_mycobot_base.block<3, 3>(0, 0));
         ee_ori_mycobot_base.normalize();
+        ee_ori_mycobot_base = flipPitchAndRoll(ee_ori_mycobot_base);
 
-        publishEeTargetTf(
-          ee_pos_mycobot_base, ee_ori_mycobot_base,
-          "ee_target_offset_mycobot_base", "mycobot_base");
+        // Apply translation scaling relative to the reference (offset) pose
+        if (!ref_pose_set_) {
+          ref_pos_mycobot_base_ = ee_pos_mycobot_base;
+          ref_pose_set_ = true;
+        }
+        Eigen::Vector3d delta_pos = ee_pos_mycobot_base - ref_pos_mycobot_base_;
+        ee_pos_mycobot_base = ref_pos_mycobot_base_ + translation_scale_ * delta_pos;
 
-        teleoperation::msg::TeleopTarget target_msg;
-        target_msg.pose.header.stamp = this->get_clock()->now();
-        target_msg.pose.header.frame_id = "mycobot_base";
-        target_msg.pose.pose.position.x = ee_pos_mycobot_base.x();
-        target_msg.pose.pose.position.y = ee_pos_mycobot_base.y();
-        target_msg.pose.pose.position.z = ee_pos_mycobot_base.z();
-        target_msg.pose.pose.orientation = eigenToMsg(ee_ori_mycobot_base);
-
-        if (right_pinch_max_ > right_pinch_min_) {
-          const double normalized = (right_pinch_max_ - d_clamped) /
-            (right_pinch_max_ - right_pinch_min_);
-          const double percent = clamp(normalized, 0.0, 1.0) * 100.0;
-          target_msg.gripper = static_cast<int32_t>(std::round(percent));
-        } else {
-          target_msg.gripper = 100;
+        // Apply rotation scaling by scaling the rotation angle
+        if (rotation_scale_ != 1.0) {
+          Eigen::AngleAxisd aa(ee_ori_mycobot_base);
+          double angle = aa.angle();
+          if (angle > 1e-6) {
+            double scaled_angle = angle * rotation_scale_;
+            aa = Eigen::AngleAxisd(scaled_angle, aa.axis());
+            ee_ori_mycobot_base = Eigen::Quaterniond(aa);
+            ee_ori_mycobot_base.normalize();
+          }
         }
 
-        ee_target_pub_->publish(target_msg);
+        const double normalized = (d_clamped - right_pinch_min_) /
+          (right_pinch_max_ - right_pinch_min_);
+        const double percent = clamp(normalized, 0.0, 1.0) * 100.0;
+        const int32_t gripper_value = static_cast<int32_t>(std::round(percent));
 
-        RCLCPP_INFO(this->get_logger(), "Published ee_target_offset in mycobot_base frame");
+        addSample(ee_pos_mycobot_base, ee_ori_mycobot_base, gripper_value);
       } catch (const tf2::TransformException & ex) {
         RCLCPP_WARN(this->get_logger(), "Failed to transform ee_target_offset to mycobot_base: %s", ex.what());
       }
 
       if (just_disabled) {
         offset_available_ = false;
+        clearSamples();
+        ref_pose_set_ = false;
         RCLCPP_INFO(this->get_logger(), "Teleop offset cleared");
       }
 
@@ -314,12 +380,94 @@ private:
     }
   }
 
+  void publishSmoothed()
+  {
+    if (!teleop_enabled_ || !offset_available_ || samples_.empty()) {
+      return;
+    }
+
+    Eigen::Vector3d avg_pos = Eigen::Vector3d::Zero();
+    double gripper_sum = 0.0;
+
+    bool first = true;
+    Eigen::Quaterniond ref_q;
+    Eigen::Vector4d accum_q(0.0, 0.0, 0.0, 0.0);  // (x, y, z, w)
+
+    for (const auto & s : samples_) {
+      avg_pos += s.pos_mycobot_base;
+      gripper_sum += static_cast<double>(s.gripper);
+
+      Eigen::Quaterniond q = s.ori_mycobot_base;
+      if (first) {
+        ref_q = q;
+        first = false;
+      } else {
+        if (ref_q.dot(q) < 0.0) {
+          q.coeffs() *= -1.0;
+        }
+      }
+      accum_q[0] += q.x();
+      accum_q[1] += q.y();
+      accum_q[2] += q.z();
+      accum_q[3] += q.w();
+    }
+
+    const double inv_n = 1.0 / static_cast<double>(samples_.size());
+    avg_pos *= inv_n;
+    accum_q *= inv_n;
+
+    Eigen::Quaterniond avg_q(accum_q[3], accum_q[0], accum_q[1], accum_q[2]);
+    avg_q.normalize();
+
+    const double gripper_avg = gripper_sum * inv_n;
+    const int32_t gripper_smoothed = static_cast<int32_t>(std::round(gripper_avg));
+
+    publishEeTargetTf(
+      avg_pos, avg_q,
+      "ee_target_offset_mycobot_base", "mycobot_base");
+
+    teleoperation::msg::TeleopTarget target_msg;
+    target_msg.pose.header.stamp = this->get_clock()->now();
+    target_msg.pose.header.frame_id = "mycobot_base";
+    target_msg.pose.pose.position.x = avg_pos.x();
+    target_msg.pose.pose.position.y = avg_pos.y();
+    target_msg.pose.pose.position.z = avg_pos.z();
+    target_msg.pose.pose.orientation = eigenToMsg(avg_q);
+    target_msg.gripper = gripper_smoothed;
+
+    ee_target_pub_->publish(target_msg);
+  }
+
+  struct Sample
+  {
+    Eigen::Vector3d pos_mycobot_base;
+    Eigen::Quaterniond ori_mycobot_base;
+    int32_t gripper;
+  };
+
+  void addSample(
+    const Eigen::Vector3d & pos_mycobot_base,
+    const Eigen::Quaterniond & ori_mycobot_base,
+    int32_t gripper)
+  {
+    if (samples_.size() >= smoothing_window_) {
+      samples_.pop_front();
+    }
+    samples_.push_back(Sample{pos_mycobot_base, ori_mycobot_base, gripper});
+  }
+
+  void clearSamples()
+  {
+    samples_.clear();
+  }
+
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr ee_target_pub_;
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Publisher<teleoperation::msg::TeleopTarget>::SharedPtr ee_target_pub_;
+  rclcpp::TimerBase::SharedPtr sampling_timer_;
+  rclcpp::TimerBase::SharedPtr publish_timer_;
 
   std::string vp_base_frame_;
   std::string gripper_base_frame_;
@@ -327,6 +475,8 @@ private:
   double pinch_threshold_{};
   double right_pinch_min_{};
   double right_pinch_max_{};
+  double translation_scale_{1.0};
+  double rotation_scale_{1.0};
 
   bool teleop_enabled_{false};
   bool offset_available_{false};
@@ -334,6 +484,14 @@ private:
   Eigen::Vector3d offset_pos_ = Eigen::Vector3d::Zero();
   Eigen::Quaterniond offset_rot_{0.0, 0.0, 0.0, 0.0};
   rclcpp::Time last_5hz_time_;
+
+  // Reference pose in mycobot_base used for movement scaling
+  Eigen::Vector3d ref_pos_mycobot_base_ = Eigen::Vector3d::Zero();
+  bool ref_pose_set_{false};
+
+  std::deque<Sample> samples_;
+  double smoothing_factor_{3.0};
+  std::size_t smoothing_window_{3};
 };
 
 int main(int argc, char ** argv)

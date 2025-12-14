@@ -8,9 +8,10 @@ import math
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import TransformStamped
 from scipy.spatial.transform import Rotation as R
 from tf2_ros import TransformBroadcaster
+from teleoperation.msg import TeleopTarget
 
 
 HELP_MESSAGE = """\nKeyboard EE teleop for /teleop/ee_target
@@ -24,6 +25,9 @@ Orientation (roll-pitch-yaw):
   u/o : +roll / -roll
   i/k : +pitch / -pitch
   j/l : +yaw / -yaw
+
+Gripper (0-100%):
+    z/x : close / open
 
 Other:
   space : reset pose
@@ -43,40 +47,38 @@ class KeyboardEeTeleop(Node):
     def __init__(self):
         super().__init__("keyboard_ee_teleop")
 
-        # Parameters
-        # Parameters (loaded from teleoperation/config/teleoperation.yaml or overrides)
-        # Frame in which ee_target is expressed; use mycobot_base by default
-        self.declare_parameter("frame_id", "mycobot_base")
-        self.declare_parameter("step_linear", 0.05)
-        self.declare_parameter("step_angular", 0.25)
+        self.frame_id = "mycobot_base"
+        self.step_linear = 0.025
+        self.step_angular = 0.25
 
-        self.frame_id = self.get_parameter("frame_id").value
-        self.step_linear = float(self.get_parameter("step_linear").value)
-        self.step_angular = float(self.get_parameter("step_angular").value)
+        # Gripper state in percent (0 = closed, 100 = open)
+        self.gripper_percent = 100
 
-        self.publisher = self.create_publisher(PoseStamped, "/teleop/ee_target", 10)
+        # Publisher for combined pose + gripper target
+        self.publisher = self.create_publisher(TeleopTarget, "/teleop/ee_target", 10)
 
         # TF broadcaster for ee_target in map frame
         self.tf_broadcaster = TransformBroadcaster(self)
         self.ee_frame = "ee_target"
 
         # Internal pose state (meters, radians)
-        self.x = 0.15
-        self.y = 0.0
-        self.z = 0.3
-        self.roll = -1.4
-        self.pitch = 1.0
-        self.yaw = -1.0
+        self.x = 0.2
+        self.y = -0.05
+        self.z = 0.35
+        self.roll = -0.15
+        self.pitch = 0.0
+        self.yaw = 0.0
 
         self.get_logger().info("Keyboard EE teleop started. Press 'h' for help.")
 
     def reset_pose(self):
-        self.x = 0.15
-        self.y = 0.0
-        self.z = 0.25
-        self.roll = 1.0
-        self.pitch = 1.0
-        self.yaw = 1.0
+        self.x = 0.2
+        self.y = -0.05
+        self.z = 0.35
+        self.roll = -0.15
+        self.pitch = 0.0
+        self.yaw = 0.0
+        self.gripper_percent = 100
         self.get_logger().info("Pose reset.")
 
     def handle_key(self, key: str) -> bool:
@@ -116,42 +118,53 @@ class KeyboardEeTeleop(Node):
             self.yaw += self.step_angular
         elif key == "l":
             self.yaw -= self.step_angular
+        # Gripper control
+        elif key == "z":
+            # Close gripper
+            self.gripper_percent = max(0, self.gripper_percent - 10)
+        elif key == "x":
+            # Open gripper
+            self.gripper_percent = min(100, self.gripper_percent + 10)
             
         print(f"Current pose: pos=({self.x:.2f}, {self.y:.2f}, {self.z:.2f}) "
-              f"orient=({self.roll:.2f}, {self.pitch:.2f}, {self.yaw:.2f})")
+              f"orient=({self.roll:.2f}, {self.pitch:.2f}, {self.yaw:.2f}), "
+              f"gripper={self.gripper_percent:d}%")
 
         return True
 
     def publish_pose(self):
-        msg = PoseStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = self.frame_id
+        msg = TeleopTarget()
+        msg.pose.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.header.frame_id = self.frame_id
 
-        msg.pose.position.x = float(self.x)
-        msg.pose.position.y = float(self.y)
-        msg.pose.position.z = float(self.z)
+        msg.pose.pose.position.x = float(self.x)
+        msg.pose.pose.position.y = float(self.y)
+        msg.pose.pose.position.z = float(self.z)
 
         # Convert roll, pitch, yaw (XYZ convention) to quaternion
         q = R.from_euler("xyz", [self.roll, self.pitch, self.yaw]).as_quat()
-        msg.pose.orientation.x = float(q[0])
-        msg.pose.orientation.y = float(q[1])
-        msg.pose.orientation.z = float(q[2])
-        msg.pose.orientation.w = float(q[3])
+        msg.pose.pose.orientation.x = float(q[0])
+        msg.pose.pose.orientation.y = float(q[1])
+        msg.pose.pose.orientation.z = float(q[2])
+        msg.pose.pose.orientation.w = float(q[3])
+
+        # Gripper command in percent
+        msg.gripper = int(self.gripper_percent)
 
         self.publisher.publish(msg)
 
         # Also publish as TF in the same frame (typically 'map')
         t = TransformStamped()
-        t.header.stamp = msg.header.stamp
+        t.header.stamp = msg.pose.header.stamp
         t.header.frame_id = self.frame_id
         t.child_frame_id = self.ee_frame
-        t.transform.translation.x = msg.pose.position.x
-        t.transform.translation.y = msg.pose.position.y
-        t.transform.translation.z = msg.pose.position.z
-        t.transform.rotation.x = msg.pose.orientation.x
-        t.transform.rotation.y = msg.pose.orientation.y
-        t.transform.rotation.z = msg.pose.orientation.z
-        t.transform.rotation.w = msg.pose.orientation.w
+        t.transform.translation.x = msg.pose.pose.position.x
+        t.transform.translation.y = msg.pose.pose.position.y
+        t.transform.translation.z = msg.pose.pose.position.z
+        t.transform.rotation.x = msg.pose.pose.orientation.x
+        t.transform.rotation.y = msg.pose.pose.orientation.y
+        t.transform.rotation.z = msg.pose.pose.orientation.z
+        t.transform.rotation.w = msg.pose.pose.orientation.w
 
         self.tf_broadcaster.sendTransform(t)
 

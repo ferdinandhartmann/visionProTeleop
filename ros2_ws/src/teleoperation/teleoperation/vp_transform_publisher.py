@@ -143,7 +143,13 @@ class VPTransformPublisher(Node):
         self.marker_pub = self.create_publisher(
             MarkerArray, "/visionpro/hand_markers", 10
         )
-        self.streamer = VisionProStreamer(ip=VISIONPRO_IP)
+        # Allow overriding the VisionPro IP via ROS parameters / YAML
+        self.declare_parameter("visionpro_ip", VISIONPRO_IP)
+        self.declare_parameter("pinch_threshold", 0.02)
+
+        visionpro_ip = self.get_parameter("visionpro_ip").get_parameter_value().string_value
+        self.pinch_threshold = self.get_parameter("pinch_threshold").get_parameter_value().double_value
+        self.streamer = VisionProStreamer(ip=visionpro_ip)
 
         self.timer = self.create_timer(0.01, self.update)
         
@@ -175,8 +181,8 @@ class VPTransformPublisher(Node):
 
         markers = MarkerArray()
 
-        pinch_threshold = 0.02
-        
+        pinch_threshold = self.pinch_threshold
+
         # Publish head in vp_base
         head_mat = data["head"][0]
         self.publish_tf("vp_base", "visionpro/head", head_mat)

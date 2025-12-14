@@ -101,16 +101,6 @@ def generate_launch_description():
         ],
         output="screen"
     )
-
-    teleop_control_node = Node(
-        package="teleoperation",
-        executable="teleop_control.py",
-        name="teleop_control",
-        output="screen",
-        parameters=[
-            teleop_config,
-        ],
-    )
     
     teleop_control_cpp_node = Node(
         package="teleoperation",
@@ -131,21 +121,6 @@ def generate_launch_description():
             "-d",
             os.path.join(config_folder, "visionpro.rviz"),
         ],
-    )
-    
-    camera_streamer_node = Node(
-        package="teleoperation",
-        executable="camera_streamer",
-        name="camera_streamer",
-        output="screen",
-    )
-
-    keyboard_ee_teleop_node = Node(
-        package="teleoperation",
-        executable="keyboard_ee_teleop",
-        name="keyboard_ee_teleop",
-        output="screen",
-        parameters=[teleop_config],
     )
 
     joint_state_to_mycobot_node = Node(
@@ -169,6 +144,13 @@ def generate_launch_description():
             )
         ],
     )
+    
+    camera_streamer_node = Node(
+        package="teleoperation",
+        executable="camera_streamer",
+        name="camera_streamer",
+        output="screen",
+    )
 
 
     nodes = [
@@ -184,7 +166,6 @@ def generate_launch_description():
         vp_transform_publisher_node,
         static_transform_map_vp_base_origin,
 
-        # teleop_control_node,
         teleop_control_cpp_node,
         inverse_kinematics_node,
         
@@ -192,8 +173,6 @@ def generate_launch_description():
 
         rviz2_node,
         
-        # keyboard_ee_teleop_node,
-
         # camera_streamer_node
     ]
 
