@@ -46,21 +46,38 @@ def main(args):
         from mujoco import viewer as mj_viewer
         viewer_handle = mj_viewer.launch_passive(model, data)
 
-    zero = True  # Set to True to move all joints to zero position
+
+    fixed_pos = True  # Set to True to move all joints to zero position
+    
+    movement = True # Set to True to have joints move back and forth
 
     logs_dir = ASSETS_DIR / "logs"
     episodes = sorted(logs_dir.glob("ep*.npz"))
-    if zero == True:
+    if fixed_pos == True:
         print("🔧 Setting all joints to zero")
         data.qpos[:] = 0.0
         data.qvel[:] = 0.0
-        data.qacc_warmstart[:] = 0.0
+        data.qacc_warmstart[:] = 1.0
         mujoco.mj_forward(model, data)
         start_time = time.time()
+        sign = 1.0
+        joints_angle = 0.0
         while True:
             if args.viewer == "ar" and streamer is not None:
                 streamer.update_sim()
             elif viewer_handle is not None and viewer_handle.is_running():
+                
+                if movement == True:
+                    if joints_angle > 1.2:
+                        sign = -1.0
+                    elif joints_angle < -1.2:
+                        sign = 1.0
+                    joints_angle += 0.005 * (sign)
+                
+                    data.qpos[:] = joints_angle  # Increment all joints slightly
+                    #data.ctrl[:] = joints_angle  # Increment all joints slightly
+
+                mujoco.mj_forward(model, data)
                 # For local viewer, just sync frames; qpos is constant here.
                 viewer_handle.sync()
             else:
