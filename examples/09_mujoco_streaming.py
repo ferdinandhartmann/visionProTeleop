@@ -12,42 +12,59 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "mujoco_demos"
 
 def main(args):
     import mujoco
-
     # Load the scene
-    xml_path = str(ASSETS_DIR / "scenes" / "franka_emika_panda" / "scene_blockpush.xml")
+    # Original demo path (kept for reference):
+    # xml_path = str(ASSETS_DIR / "scenes" / "franka_emika_panda" / "scene_blockpush.xml")
+    # Use custom mycobot scene instead:
     xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/scene_mycobot.xml"
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
-    from avp_stream import VisionProStreamer
-    streamer = VisionProStreamer(ip=args.ip, record=False)
+    streamer = None
+    viewer_handle = None
 
-    # attach_to format: [x, y, z, yaw_degrees]
-    attach_to = [0.2, 1.0, 0.7, -90]
+    if args.viewer == "ar":
+        # Vision Pro AR streaming via VisionProStreamer
+        from avp_stream import VisionProStreamer
+        streamer = VisionProStreamer(ip=args.ip, record=False)
 
-    streamer.configure_sim(
-        xml_path=xml_path,
-        model=model,
-        data=data,
-        relative_to=attach_to,
-        grpc_port=args.port,
-    )
+        # attach_to format: [x, y, z, yaw_degrees]
+        attach_to = [0.2, 1.0, 0.7, -90]
 
-    streamer.start_webrtc()
+        streamer.configure_sim(
+            xml_path=xml_path,
+            model=model,
+            data=data,
+            relative_to=attach_to,
+            grpc_port=args.port,
+            force_reload=True,
+        )
+
+        streamer.start_webrtc()
+    else:
+        # Local MuJoCo viewer (no streaming)
+        from mujoco import viewer as mj_viewer
+        viewer_handle = mj_viewer.launch_passive(model, data)
 
     zero = True  # Set to True to move all joints to zero position
 
     logs_dir = ASSETS_DIR / "logs"
     episodes = sorted(logs_dir.glob("ep*.npz"))
     if zero == True:
-        print("🔧 Setting all joints to zero position for 30s...")
+        print("🔧 Setting all joints to zero")
         data.qpos[:] = 0.0
         data.qvel[:] = 0.0
         data.qacc_warmstart[:] = 0.0
         mujoco.mj_forward(model, data)
         start_time = time.time()
-        while time.time() - start_time < 30:
-            streamer.update_sim()
+        while True:
+            if args.viewer == "ar" and streamer is not None:
+                streamer.update_sim()
+            elif viewer_handle is not None and viewer_handle.is_running():
+                # For local viewer, just sync frames; qpos is constant here.
+                viewer_handle.sync()
+            else:
+                break
             time.sleep(1 / 100.0)
     else:
         try:
@@ -81,7 +98,12 @@ def main(args):
                 for t in trange(T, desc=f"  Episode {ep_idx}", leave=False):
                     data.ctrl = ctrl_log[t]
                     mujoco.mj_step(model, data)
-                    streamer.update_sim()
+                    if args.viewer == "ar" and streamer is not None:
+                        streamer.update_sim()
+                    elif viewer_handle is not None and viewer_handle.is_running():
+                        viewer_handle.sync()
+                    else:
+                        break
                     time.sleep(1 / 1000.0)
 
                 print(f"  ✅ Episode {ep_idx} complete ({T} steps)")
