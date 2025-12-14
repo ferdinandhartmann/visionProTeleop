@@ -15,6 +15,7 @@ def main(args):
 
     # Load the scene
     xml_path = str(ASSETS_DIR / "scenes" / "franka_emika_panda" / "scene_blockpush.xml")
+    xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/scene_mycobot.xml"
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
@@ -34,48 +35,60 @@ def main(args):
 
     streamer.start_webrtc()
 
+    zero = True  # Set to True to move all joints to zero position
 
     logs_dir = ASSETS_DIR / "logs"
     episodes = sorted(logs_dir.glob("ep*.npz"))
+    if zero == True:
+        print("🔧 Setting all joints to zero position for 30s...")
+        data.qpos[:] = 0.0
+        data.qvel[:] = 0.0
+        data.qacc_warmstart[:] = 0.0
+        mujoco.mj_forward(model, data)
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            streamer.update_sim()
+            time.sleep(1 / 100.0)
+    else:
+        try:
+            for ep_idx in range(1, min(5, len(episodes) + 1)):
+                traj_path = logs_dir / f"ep{ep_idx}.npz"
+                if not traj_path.exists():
+                    continue
 
-    try:
-        for ep_idx in range(1, min(5, len(episodes) + 1)):
-            traj_path = logs_dir / f"ep{ep_idx}.npz"
-            if not traj_path.exists():
-                continue
+                print(f"📼 Playing episode {ep_idx}...")
+                traj = np.load(traj_path)
 
-            print(f"📼 Playing episode {ep_idx}...")
-            traj = np.load(traj_path)
+                qpos_log = traj["qpos"]
+                qvel_log = traj["qvel"]
+                ctrl_log = traj["ctrl"]
+                mocap_log = traj["mocap"]
 
-            qpos_log = traj["qpos"]
-            qvel_log = traj["qvel"]
-            ctrl_log = traj["ctrl"]
-            mocap_log = traj["mocap"]
+                T = qpos_log.shape[0]
 
-            T = qpos_log.shape[0]
+                # Initialize state
+                data.qpos[:] = qpos_log[0]
+                data.qvel[:] = qvel_log[0]
 
-            # Initialize state
-            data.qpos[:] = qpos_log[0]
-            data.qvel[:] = qvel_log[0]
+                if mocap_log.shape[0] > 0:
+                    data.mocap_pos[1] = mocap_log[0, :3]
+                    data.mocap_quat[1] = mocap_log[0, 3:]
 
-            if mocap_log.shape[0] > 0:
-                data.mocap_pos[1] = mocap_log[0, :3]
-                data.mocap_quat[1] = mocap_log[0, 3:]
+                data.qacc_warmstart[:] = 0.0
+                mujoco.mj_forward(model, data)
 
-            data.qacc_warmstart[:] = 0.0
-            mujoco.mj_forward(model, data)
+                # Replay trajectory
+                for t in trange(T, desc=f"  Episode {ep_idx}", leave=False):
+                    data.ctrl = ctrl_log[t]
+                    mujoco.mj_step(model, data)
+                    streamer.update_sim()
+                    time.sleep(1 / 1000.0)
 
-            # Replay trajectory
-            for t in trange(T, desc=f"  Episode {ep_idx}", leave=False):
-                data.ctrl = ctrl_log[t]
-                mujoco.mj_step(model, data)
-                streamer.update_sim()
-                time.sleep(1 / 1000.0)
+                print(f"  ✅ Episode {ep_idx} complete ({T} steps)")
+            
 
-            print(f"  ✅ Episode {ep_idx} complete ({T} steps)")
-
-    except KeyboardInterrupt:
-        print(f"\n\n🛑 Stopped by user")
+        except KeyboardInterrupt:
+            print(f"\n\n🛑 Stopped by user")
 
     print(f"\n✨ Demo complete!")
 
@@ -92,7 +105,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ip",
-        default="10.29.239.70",
+        default="192.168.50.153",
         help="Vision Pro IP address (only used with --viewer ar)",
     )
     parser.add_argument(
