@@ -235,7 +235,8 @@
 
     <!-- ================= KEYFRAME ================= -->
     <keyframe>
-        <key name="home" qpos="0 0 0 0 0 0"/>
+        <!-- Order matches joint1..joint6 followed by the gripper controller -->
+        <key name="home" qpos="0 0 0 0 0 0 0"/>
     </keyframe>
 
 </mujoco>
