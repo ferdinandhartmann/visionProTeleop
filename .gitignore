@@ -7,4 +7,6 @@
 **/install
 build/
 
-*.usdz
+# *.usdz
+
+__pycache__/

@@ -60,10 +60,11 @@ install(TARGETS teleop_control_cpp
 # ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
-  teleoperation/camera_streamer.py
-  teleoperation/joint_state_to_mycobot.py
-  teleoperation/keyboard_ee_teleop.py
-  teleoperation/vp_transform_publisher.py
+  scripts/camera_streamer.py
+  scripts/joint_state_to_mycobot.py
+  scripts/keyboard_ee_teleop.py
+  scripts/vp_transform_publisher.py
+  scripts/mujoco_streamer_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

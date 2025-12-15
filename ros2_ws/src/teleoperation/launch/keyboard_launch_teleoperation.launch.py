@@ -103,6 +103,17 @@ def generate_launch_description():
         parameters=[teleop_config],
     )
 
+    mujoco_streamer_node = Node(
+        package="teleoperation",
+        executable="mujoco_streamer_node.py",
+        name="mujoco_streamer",
+        output="screen",
+        parameters=[
+            teleop_config,
+            {"viewer": "mujoco"}, 
+        ],
+    )
+
 
     nodes = [
         model_launch_arg,
@@ -117,6 +128,7 @@ def generate_launch_description():
         teleop_control_cpp_node,
         inverse_kinematics_node,
         
+        mujoco_streamer_node,
         rviz2_node,
     ]
 

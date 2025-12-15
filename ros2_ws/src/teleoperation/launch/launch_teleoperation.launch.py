@@ -87,6 +87,9 @@ def generate_launch_description():
         executable="vp_transform_publisher.py",
         name="vp_transform_publisher",
         output="screen",
+        parameters=[
+            teleop_config,
+        ],
     )
     
     static_transform_map_vp_base_origin = Node(
@@ -146,6 +149,17 @@ def generate_launch_description():
         output="screen",
     )
 
+    mujoco_streamer_node = Node(
+        package="teleoperation",
+        executable="mujoco_streamer_node.py",
+        name="mujoco_streamer",
+        output="screen",
+        parameters=[
+            teleop_config,
+            {"viewer": "ar"}, 
+        ],
+    )
+
 
     nodes = [
         model_launch_arg,
@@ -163,9 +177,11 @@ def generate_launch_description():
         teleop_control_cpp_node,
         inverse_kinematics_node,
         
-        joint_state_to_mycobot_node,
+        # joint_state_to_mycobot_node,
 
         rviz2_node,
+        
+        mujoco_streamer_node,
         
         # camera_streamer_node
     ]

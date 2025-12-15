@@ -16,7 +16,7 @@ def main(args):
     # Original demo path (kept for reference):
     # xml_path = str(ASSETS_DIR / "scenes" / "franka_emika_panda" / "scene_blockpush.xml")
     # Use custom mycobot scene instead:
-    xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/scene_mycobot.xml"
+    xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/xml/scene_mycobot.xml"
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
@@ -29,7 +29,7 @@ def main(args):
         streamer = VisionProStreamer(ip=args.ip, record=False)
 
         # attach_to format: [x, y, z, yaw_degrees]
-        attach_to = [0.2, 1.0, 0.7, -90]
+        attach_to = [0.0, 0.6, 0.55, -90.0]
 
         streamer.configure_sim(
             xml_path=xml_path,
@@ -48,8 +48,8 @@ def main(args):
 
 
     fixed_pos = True  # Set to True to move all joints to zero position
-    
-    movement = True # Set to True to have joints move back and forth
+
+    movement = True  # Set to True to have joints move back and forth using motors
 
     logs_dir = ASSETS_DIR / "logs"
     episodes = sorted(logs_dir.glob("ep*.npz"))
@@ -57,32 +57,51 @@ def main(args):
         print("🔧 Setting all joints to zero")
         data.qpos[:] = 0.0
         data.qvel[:] = 0.0
+        data.ctrl[:] = 0.0
         data.qacc_warmstart[:] = 1.0
         mujoco.mj_forward(model, data)
-        start_time = time.time()
         sign = 1.0
         joints_angle = 0.0
+        joint_angle_max = 0.8
+        dt = model.opt.timestep  # e.g. 0.002 → 500 Hz
+
+        hold_steps = 100  # Number of steps to hold at each end
+        hold_counter = 0
         while True:
+            if movement is True:
+                if (joints_angle > joint_angle_max and sign > 0) or (joints_angle < -joint_angle_max and sign < 0):
+                    if hold_counter < hold_steps:
+                        hold_counter += 1
+                    else:
+                        sign *= -joint_angle_max
+                        hold_counter = 0
+                else:
+                    joints_angle += 0.005 * sign
+
+            # First N-1 actuators (arm joints) share the same command
+            data.ctrl[:-1] = joints_angle
+            # Last actuator (gripper) sweeps across its full range [-0.74, 0.15]
+            grip_min, grip_max = -0.74, 0.15
+            # Directly map joint angle to gripper range without normalizing to [0, 1]
+            data.ctrl[-1] = grip_min + (grip_max - grip_min) * (joints_angle / joint_angle_max)
+            # Clamp to valid range
+            data.ctrl[-1] = np.clip(data.ctrl[-1], grip_min, grip_max)
+            
+            # if joints_angle % 0.2 < 0.005:
+            #     print(f"🔧 Moving joints to angle: {joints_angle:.3f}, gripper: {data.ctrl[-1]:.3f}")
+
+            # Advance physics one step
+            mujoco.mj_step(model, data)
+
+            # Sync to viewer / AR streamer
             if args.viewer == "ar" and streamer is not None:
                 streamer.update_sim()
             elif viewer_handle is not None and viewer_handle.is_running():
-                
-                if movement == True:
-                    if joints_angle > 1.2:
-                        sign = -1.0
-                    elif joints_angle < -1.2:
-                        sign = 1.0
-                    joints_angle += 0.005 * (sign)
-                
-                    data.qpos[:] = joints_angle  # Increment all joints slightly
-                    #data.ctrl[:] = joints_angle  # Increment all joints slightly
-
-                mujoco.mj_forward(model, data)
-                # For local viewer, just sync frames; qpos is constant here.
                 viewer_handle.sync()
             else:
                 break
-            time.sleep(1 / 100.0)
+
+            time.sleep(dt)
     else:
         try:
             for ep_idx in range(1, min(5, len(episodes) + 1)):
@@ -111,9 +130,11 @@ def main(args):
                 data.qacc_warmstart[:] = 0.0
                 mujoco.mj_forward(model, data)
 
-                # Replay trajectory
+                # Replay trajectory using position targets (first nu joints)
+                nu = model.nu
                 for t in trange(T, desc=f"  Episode {ep_idx}", leave=False):
-                    data.ctrl = ctrl_log[t]
+                    # Use recorded joint positions as desired angles for the servos
+                    data.ctrl[:] = qpos_log[t, :nu]
                     mujoco.mj_step(model, data)
                     if args.viewer == "ar" and streamer is not None:
                         streamer.update_sim()
@@ -144,7 +165,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ip",
-        default="192.168.50.153",
+        # default="192.168.50.153",
+        # default="192.168.10.137",
+        default="192.168.10.113",
         help="Vision Pro IP address (only used with --viewer ar)",
     )
     parser.add_argument(

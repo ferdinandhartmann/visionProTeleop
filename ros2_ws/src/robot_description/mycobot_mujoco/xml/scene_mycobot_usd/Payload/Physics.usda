@@ -1,0 +1,651 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.1.0a3"
+    }
+    defaultPrim = "tn__mycobotscene_pC"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "tn__mycobotscene_pC" (
+    displayName = "mycobot scene"
+)
+{
+    def Scope "Physics"
+    {
+        def Material "PhysicsMaterial" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "MjcMaterialAPI"]
+        )
+        {
+            float physics:dynamicFriction = 1
+        }
+
+        def Material "PhysicsMaterial_1" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "MjcMaterialAPI"]
+        )
+        {
+            uniform double mjc:rollingfriction = 0.01
+            uniform double mjc:torsionalfriction = 0.1
+            float physics:dynamicFriction = 0.8
+        }
+
+        def MjcActuator "joint1_pos"
+        {
+            uniform double[] mjc:biasPrm = [0, -150, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:biasType = "affine"
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 2.79253
+            uniform double mjc:ctrlRange:min = -2.79253
+            uniform double[] mjc:gainPrm = [150, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint1>
+        }
+
+        def MjcActuator "joint2_pos"
+        {
+            uniform double[] mjc:biasPrm = [0, -150, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:biasType = "affine"
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 2.79253
+            uniform double mjc:ctrlRange:min = -2.79253
+            uniform double[] mjc:gainPrm = [150, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint2>
+        }
+
+        def MjcActuator "joint3_pos"
+        {
+            uniform double[] mjc:biasPrm = [0, -150, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:biasType = "affine"
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 2.79253
+            uniform double mjc:ctrlRange:min = -2.79253
+            uniform double[] mjc:gainPrm = [150, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint3>
+        }
+
+        def MjcActuator "joint4_pos"
+        {
+            uniform double[] mjc:biasPrm = [0, -150, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:biasType = "affine"
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 2.79253
+            uniform double mjc:ctrlRange:min = -2.79253
+            uniform double[] mjc:gainPrm = [150, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint4>
+        }
+
+        def MjcActuator "joint5_pos"
+        {
+            uniform double[] mjc:biasPrm = [0, -150, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:biasType = "affine"
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 2.79253
+            uniform double mjc:ctrlRange:min = -2.79253
+            uniform double[] mjc:gainPrm = [150, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint5>
+        }
+
+        def MjcActuator "joint6_pos"
+        {
+            uniform double[] mjc:biasPrm = [0, -150, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:biasType = "affine"
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 2.96706
+            uniform double mjc:ctrlRange:min = -2.96706
+            uniform double[] mjc:gainPrm = [150, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/joint6>
+        }
+
+        def MjcActuator "gripper_pos"
+        {
+            uniform double[] mjc:biasPrm = [0, -100, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:biasType = "affine"
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 0.15
+            uniform double mjc:ctrlRange:min = -0.74
+            uniform double[] mjc:gainPrm = [100, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_left3/gripper_controller>
+        }
+    }
+
+    def "Geometry"
+    {
+        over "floor" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+        }
+
+        def "mycobot_base" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+        )
+        {
+            over "Capsule" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                uniform int mjc:group = 3
+            }
+
+            def PhysicsFixedJoint "PhysicsFixedJoint"
+            {
+                rel physics:body0 = </tn__mycobotscene_pC>
+                rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base>
+                point3f physics:localPos0 = (0, 0, 0)
+                point3f physics:localPos1 = (0, 0, 0)
+                quatf physics:localRot0 = (-0.49999815, -0.5, 0.5, 0.50000185)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+            }
+
+            def "joint0" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                def PhysicsFixedJoint "PhysicsFixedJoint"
+                {
+                    rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base>
+                    rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0>
+                    point3f physics:localPos0 = (-1.323489e-23, 0.032, 0)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (0.70710546, -0.7071081, 5.551115e-17, -1.8734251e-18)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                }
+
+                def "joint1" (
+                    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                )
+                {
+                    over "Capsule" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                        uniform int mjc:group = 3
+                    }
+
+                    def PhysicsRevoluteJoint "joint1" (
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:actuatorfrcrange:max = 20
+                        uniform double mjc:actuatorfrcrange:min = -20
+                        uniform double mjc:armature = 0.05
+                        uniform double mjc:damping = 1.2
+                        uniform token physics:axis = "Z"
+                        rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0>
+                        rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1>
+                        point3f physics:localPos0 = (1.0746706e-22, 0.002, 0.132)
+                        point3f physics:localPos1 = (0, 0, 0)
+                        quatf physics:localRot0 = (0.70710546, 1.37536975e-17, -1.182098e-17, -0.7071081)
+                        quatf physics:localRot1 = (1, 0, 0, 0)
+                    }
+
+                    def "joint2" (
+                        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                    )
+                    {
+                        over "Capsule" (
+                            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                        )
+                        {
+                            rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                            uniform int mjc:group = 3
+                        }
+
+                        def PhysicsRevoluteJoint "joint2" (
+                            prepend apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:actuatorfrcrange:max = 20
+                            uniform double mjc:actuatorfrcrange:min = -20
+                            uniform double mjc:armature = 0.05
+                            uniform double mjc:damping = 1.2
+                            uniform token physics:axis = "Z"
+                            rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1>
+                            rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2>
+                            point3f physics:localPos0 = (4.3368087e-19, 1.00916035e-22, -0.001)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (0.499998, 0.500002, 0.5, -0.5)
+                            quatf physics:localRot1 = (1, 0, 0, 0)
+                        }
+
+                        def "joint3" (
+                            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                        )
+                        {
+                            over "Capsule" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                uniform int mjc:group = 3
+                            }
+
+                            def PhysicsRevoluteJoint "joint3" (
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:actuatorfrcrange:max = 20
+                                uniform double mjc:actuatorfrcrange:min = -20
+                                uniform double mjc:armature = 0.05
+                                uniform double mjc:damping = 1.2
+                                uniform token physics:axis = "Z"
+                                rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2>
+                                rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3>
+                                point3f physics:localPos0 = (-0.1104, 0, 1.0587912e-22)
+                                point3f physics:localPos1 = (0, 0, 0)
+                                quatf physics:localRot0 = (1, 0, 0, 0)
+                                quatf physics:localRot1 = (1, 0, 0, 0)
+                            }
+
+                            def "joint4" (
+                                prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                            )
+                            {
+                                over "Capsule" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                    uniform int mjc:group = 3
+                                }
+
+                                def PhysicsRevoluteJoint "joint4" (
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:actuatorfrcrange:max = 20
+                                    uniform double mjc:actuatorfrcrange:min = -20
+                                    uniform double mjc:armature = 0.05
+                                    uniform double mjc:damping = 1.2
+                                    uniform token physics:axis = "Z"
+                                    rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3>
+                                    rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4>
+                                    point3f physics:localPos0 = (-0.096, 4.3368087e-19, 0.06462)
+                                    point3f physics:localPos1 = (0, 0, 0)
+                                    quatf physics:localRot0 = (-0.7071053, -9.6778596e-17, 5.551115e-17, 0.70710826)
+                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                }
+
+                                def "joint5" (
+                                    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                )
+                                {
+                                    over "Capsule" (
+                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                    )
+                                    {
+                                        rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                        uniform int mjc:group = 3
+                                    }
+
+                                    def PhysicsRevoluteJoint "joint5" (
+                                        prepend apiSchemas = ["MjcJointAPI"]
+                                    )
+                                    {
+                                        uniform double mjc:actuatorfrcrange:max = 20
+                                        uniform double mjc:actuatorfrcrange:min = -20
+                                        uniform double mjc:armature = 0.05
+                                        uniform double mjc:damping = 1.2
+                                        uniform token physics:axis = "Z"
+                                        rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4>
+                                        rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5>
+                                        point3f physics:localPos0 = (0, -0.07318, 1.3877788e-17)
+                                        point3f physics:localPos1 = (0, 0, 0)
+                                        quatf physics:localRot0 = (-0.499998, -0.5, 0.5, -0.500002)
+                                        quatf physics:localRot1 = (1, 0, 0, 0)
+                                    }
+
+                                    def "joint6_flange" (
+                                        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                    )
+                                    {
+                                        over "Capsule" (
+                                            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                        )
+                                        {
+                                            rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                            uniform int mjc:group = 3
+                                        }
+
+                                        def PhysicsRevoluteJoint "joint6" (
+                                            prepend apiSchemas = ["MjcJointAPI"]
+                                        )
+                                        {
+                                            uniform double mjc:actuatorfrcrange:max = 20
+                                            uniform double mjc:actuatorfrcrange:min = -20
+                                            uniform double mjc:armature = 0.05
+                                            uniform double mjc:damping = 1.2
+                                            uniform token physics:axis = "Z"
+                                            rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5>
+                                            rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange>
+                                            point3f physics:localPos0 = (-1.3877788e-17, 0.0456, 0)
+                                            point3f physics:localPos1 = (0, 0, 0)
+                                            quatf physics:localRot0 = (-0.7071053, 0.70710826, 1.110223e-16, 7.8116767e-17)
+                                            quatf physics:localRot1 = (1, 0, 0, 0)
+                                        }
+
+                                        def "camera" (
+                                            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                        )
+                                        {
+                                            over "Capsule" (
+                                                prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                            )
+                                            {
+                                                rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                uniform int mjc:group = 3
+                                            }
+
+                                            def PhysicsFixedJoint "PhysicsFixedJoint"
+                                            {
+                                                rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange>
+                                                rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera>
+                                                point3f physics:localPos0 = (0.0205, -0.0205, 0.0025)
+                                                point3f physics:localPos1 = (0, 0, 0)
+                                                quatf physics:localRot0 = (-0.00027377016, -0.38268426, -0.92387915, -0.000113399605)
+                                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                            }
+
+                                            def "gripper_base" (
+                                                prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                            )
+                                            {
+                                                over "gripper_base" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                    uniform token physics:approximation = "convexHull"
+                                                }
+
+                                                def PhysicsFixedJoint "PhysicsFixedJoint"
+                                                {
+                                                    rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera>
+                                                    rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base>
+                                                    point3f physics:localPos0 = (-0.04, 0, -0.03725)
+                                                    point3f physics:localPos1 = (0, 0, 0)
+                                                    quatf physics:localRot0 = (0.2705958, 0.6532834, 0.27059674, 0.65328103)
+                                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                                }
+
+                                                def "gripper_left3" (
+                                                    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                                )
+                                                {
+                                                    over "gripper_left3" (
+                                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                    )
+                                                    {
+                                                        rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                        uniform token physics:approximation = "convexHull"
+                                                    }
+
+                                                    def PhysicsRevoluteJoint "gripper_controller" (
+                                                        prepend apiSchemas = ["MjcJointAPI"]
+                                                    )
+                                                    {
+                                                        uniform double mjc:actuatorfrcrange:max = 20
+                                                        uniform double mjc:actuatorfrcrange:min = -20
+                                                        uniform double mjc:armature = 0.05
+                                                        uniform double mjc:damping = 1.2
+                                                        uniform token physics:axis = "Y"
+                                                        rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base>
+                                                        rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_left3>
+                                                        point3f physics:localPos0 = (0.0022870183, -0.015707502, 0.044605516)
+                                                        point3f physics:localPos1 = (-0.001, -0.0045, -0.0095)
+                                                        quatf physics:localRot0 = (0.273017, 0.26765797, 0.6544939, 0.6522719)
+                                                        quatf physics:localRot1 = (1, 0, 0, 0)
+                                                        float physics:lowerLimit = -42.398876
+                                                        float physics:upperLimit = 8.594367
+                                                    }
+
+                                                    def "gripper_left1" (
+                                                        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                                    )
+                                                    {
+                                                        over "gripper_left1" (
+                                                            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                        )
+                                                        {
+                                                            rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                            uniform token physics:approximation = "convexHull"
+                                                        }
+
+                                                        over "gripper_left1_1" (
+                                                            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                        )
+                                                        {
+                                                            rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                            uniform int mjc:group = 3
+                                                            uniform token physics:approximation = "convexHull"
+                                                        }
+
+                                                        def PhysicsRevoluteJoint "gripper_left3_to_gripper_left1" (
+                                                            prepend apiSchemas = ["MjcJointAPI"]
+                                                        )
+                                                        {
+                                                            uniform double mjc:armature = 0.05
+                                                            uniform double mjc:damping = 1.2
+                                                            uniform token physics:axis = "Y"
+                                                            rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_left3>
+                                                            rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_left3/gripper_left1>
+                                                            point3f physics:localPos0 = (-0.0284, -0.004, -0.0248)
+                                                            point3f physics:localPos1 = (-0.0014, -0.02, -0.0248)
+                                                            quatf physics:localRot0 = (1, 0, 0, 0)
+                                                            quatf physics:localRot1 = (1, 0, 0, 0)
+                                                            float physics:lowerLimit = -28.64789
+                                                            float physics:upperLimit = 28.64789
+                                                        }
+                                                    }
+                                                }
+
+                                                def "gripper_left2" (
+                                                    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                                )
+                                                {
+                                                    over "gripper_left2" (
+                                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                    )
+                                                    {
+                                                        rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                        uniform token physics:approximation = "convexHull"
+                                                    }
+
+                                                    def PhysicsRevoluteJoint "gripper_base_to_gripper_left2" (
+                                                        prepend apiSchemas = ["MjcJointAPI"]
+                                                    )
+                                                    {
+                                                        uniform double mjc:armature = 0.05
+                                                        uniform double mjc:damping = 1.2
+                                                        uniform token physics:axis = "Y"
+                                                        rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base>
+                                                        rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_left2>
+                                                        point3f physics:localPos0 = (-0.01811032, -0.026218541, 0.045548238)
+                                                        point3f physics:localPos1 = (-0.001, -0.025, -0.03135)
+                                                        quatf physics:localRot0 = (0.273017, 0.26765797, 0.6544939, 0.6522719)
+                                                        quatf physics:localRot1 = (1, 0, 0, 0)
+                                                        float physics:lowerLimit = -45.836624
+                                                        float physics:upperLimit = 28.64789
+                                                    }
+                                                }
+
+                                                def "gripper_right3" (
+                                                    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                                )
+                                                {
+                                                    over "gripper_right3" (
+                                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                    )
+                                                    {
+                                                        rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                        uniform token physics:approximation = "convexHull"
+                                                    }
+
+                                                    over "gripper_right3_1" (
+                                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                    )
+                                                    {
+                                                        rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                        uniform int mjc:group = 3
+                                                        uniform token physics:approximation = "convexHull"
+                                                    }
+
+                                                    def PhysicsRevoluteJoint "gripper_base_to_gripper_right3" (
+                                                        prepend apiSchemas = ["MjcJointAPI"]
+                                                    )
+                                                    {
+                                                        uniform double mjc:armature = 0.05
+                                                        uniform double mjc:damping = 1.2
+                                                        uniform token physics:axis = "Y"
+                                                        rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base>
+                                                        rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_right3>
+                                                        point3f physics:localPos0 = (-0.015576407, 0.0021276851, 0.042398345)
+                                                        point3f physics:localPos1 = (0.00026, -0.0065, -0.0095)
+                                                        quatf physics:localRot0 = (0.273017, 0.26765797, 0.6544939, 0.6522719)
+                                                        quatf physics:localRot1 = (1, 0, 0, 0)
+                                                        float physics:lowerLimit = -8.594367
+                                                        float physics:upperLimit = 40.107044
+                                                    }
+
+                                                    def "gripper_right1" (
+                                                        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                                    )
+                                                    {
+                                                        over "gripper_right1" (
+                                                            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                        )
+                                                        {
+                                                            rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                            uniform token physics:approximation = "convexHull"
+                                                        }
+
+                                                        over "gripper_right1_1" (
+                                                            prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                        )
+                                                        {
+                                                            rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                            uniform int mjc:group = 3
+                                                            uniform token physics:approximation = "convexHull"
+                                                        }
+
+                                                        def PhysicsRevoluteJoint "gripper_right3_to_gripper_right1" (
+                                                            prepend apiSchemas = ["MjcJointAPI"]
+                                                        )
+                                                        {
+                                                            uniform double mjc:armature = 0.05
+                                                            uniform double mjc:damping = 1.2
+                                                            uniform token physics:axis = "Y"
+                                                            rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_right3>
+                                                            rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_right3/gripper_right1>
+                                                            point3f physics:localPos0 = (0.0268, -0.004, -0.025)
+                                                            point3f physics:localPos1 = (-0.0002, -0.02, -0.025)
+                                                            quatf physics:localRot0 = (1, 0, 0, 0)
+                                                            quatf physics:localRot1 = (1, 0, 0, 0)
+                                                            float physics:lowerLimit = -28.64789
+                                                            float physics:upperLimit = 28.64789
+                                                        }
+                                                    }
+                                                }
+
+                                                def "gripper_right2" (
+                                                    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                                                )
+                                                {
+                                                    over "gripper_right2" (
+                                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                                                    )
+                                                    {
+                                                        rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial>
+                                                        uniform token physics:approximation = "convexHull"
+                                                    }
+
+                                                    def PhysicsRevoluteJoint "gripper_base_to_gripper_right2" (
+                                                        prepend apiSchemas = ["MjcJointAPI"]
+                                                    )
+                                                    {
+                                                        uniform double mjc:armature = 0.05
+                                                        uniform double mjc:damping = 1.2
+                                                        uniform token physics:axis = "Y"
+                                                        rel physics:body0 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base>
+                                                        rel physics:body1 = </tn__mycobotscene_pC/Geometry/mycobot_base/joint0/joint1/joint2/joint3/joint4/joint5/joint6_flange/camera/gripper_base/gripper_right2>
+                                                        point3f physics:localPos0 = (-0.025894383, -0.018446777, 0.045457933)
+                                                        point3f physics:localPos1 = (-0, -0.025, -0.03135)
+                                                        quatf physics:localRot0 = (0.273017, 0.26765797, 0.6544939, 0.6522719)
+                                                        quatf physics:localRot1 = (1, 0, 0, 0)
+                                                        float physics:lowerLimit = -28.64789
+                                                        float physics:upperLimit = 45.836624
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        def "target" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+        )
+        {
+            bool physics:kinematicEnabled = 1
+
+            over "Sphere" (
+                prepend apiSchemas = ["MjcSiteAPI"]
+            )
+            {
+                uniform int mjc:group = 1
+            }
+
+            def PhysicsFixedJoint "PhysicsFixedJoint"
+            {
+                rel physics:body0 = </tn__mycobotscene_pC>
+                rel physics:body1 = </tn__mycobotscene_pC/Geometry/target>
+                point3f physics:localPos0 = (0.2, 0.2, 0.1)
+                point3f physics:localPos1 = (0, 0, 0)
+                quatf physics:localRot0 = (6.123234e-17, 1, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+            }
+        }
+
+        def "work_cube" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+        )
+        {
+            over "Box" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                rel material:binding:physics = </tn__mycobotscene_pC/Physics/PhysicsMaterial_1>
+            }
+
+            def PhysicsFixedJoint "PhysicsFixedJoint"
+            {
+                rel physics:body0 = </tn__mycobotscene_pC>
+                rel physics:body1 = </tn__mycobotscene_pC/Geometry/work_cube>
+                point3f physics:localPos0 = (0.32, -0.18, 0.08)
+                point3f physics:localPos1 = (0, 0, 0)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+            }
+        }
+    }
+}
+
+def PhysicsScene "PhysicsScene" (
+    prepend apiSchemas = ["MjcSceneAPI"]
+)
+{
+    uniform token mjc:compiler:angle = "radian"
+    uniform token mjc:option:integrator = "implicitfast"
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+}
+
