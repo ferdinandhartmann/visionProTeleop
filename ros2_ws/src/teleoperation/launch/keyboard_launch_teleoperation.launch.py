@@ -96,17 +96,11 @@ def generate_launch_description():
     )
     
     inverse_kinematics_node = Node(
-        package="inverse_kinematics",
+        package="teleoperation",
         executable="inverse_kinematics_node",
         name="inverse_kinematics_node",
         output="screen",
-        parameters=[
-            os.path.join(
-                get_package_share_directory("inverse_kinematics"),
-                "config",
-                "inverse_kinematics.yaml"
-            )
-        ],
+        parameters=[teleop_config],
     )
 
 
