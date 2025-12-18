@@ -1,7 +1,6 @@
 # VisionProTeleop with Video Streaming:  Examples
 
 
-
 ## Feature Comparison
 
 | Example | Description | Hardware Camera | Update Method | Audio | Stereo Video | MuJoCo |

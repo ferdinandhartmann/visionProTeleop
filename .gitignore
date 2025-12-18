@@ -10,3 +10,10 @@ build/
 # *.usdz
 
 __pycache__/
+
+.venv/
+
+*.xcuserstate
+xcuserdata/
+*.usdz
+*.log
