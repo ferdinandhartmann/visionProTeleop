@@ -1,14 +1,15 @@
 vp_transform_publisher:
   ros__parameters:
-    # visionpro_ip: "192.168.50.153" #jemaro room
-    visionpro_ip: "192.168.10.113" # ferdinand home
+    visionpro_ip: "192.168.50.153" #jemaro room
+    # visionpro_ip: "192.168.10.113" # ferdinand home
     # visionpro_ip: "192.168.10.137" # ferdinand home
     pinch_threshold: 0.02   # just for markers for rviz
 
 mujoco_streamer:
   ros__parameters:
     viewer: "ar"                          # "ar" or "mujoco", will be overridden by launch file 
-    visionpro_ip: "192.168.10.113"        # ferdinand
+    visionpro_ip: "192.168.50.153" #jemaro room
+    # visionpro_ip: "192.168.10.113"        # ferdinand
     # visionpro_ip: "192.168.10.137"        # angel
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
@@ -78,4 +79,10 @@ inverse_kinematics_node:
     # Note: values must be doubles (with .0) to match the
     # PARAMETER_DOUBLE_ARRAY type expected by the node.
     initial_joint_positions_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 45.0]
+
+sam_client:
+  ros__parameters:
+    watch_dir: "/home/ferdinand/Dropbox/sam_data"
+    server_url: "http://localhost:18000"
+    result_files: ["object_visual.obj", "object_collision.obj", "material_0.mtl", "material.png"]
 

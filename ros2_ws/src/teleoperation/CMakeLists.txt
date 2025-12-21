@@ -65,8 +65,15 @@ install(PROGRAMS
   scripts/keyboard_ee_teleop.py
   scripts/vp_transform_publisher.py
   scripts/mujoco_streamer_node.py
+  scripts/sam_client.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+install(PROGRAMS
+  scripts/start_sam_tunnel.sh
+  DESTINATION share/${PROJECT_NAME}/scripts
+)
+
 
 install(DIRECTORY
   launch

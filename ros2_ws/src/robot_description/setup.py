@@ -26,6 +26,14 @@ setup_cfg_content = """
 with open("setup.cfg", "w") as f:
     f.write(setup_cfg_content)
 
+# Helper function to include all files in a directory
+def package_files(directory):
+    paths = []
+    for (path, directories, filenames) in os.walk(directory):
+        for filename in filenames:
+            paths.append(os.path.join(path, filename))
+    return paths
+
 setup(
     name=package_name,
     version='0.0.0',
@@ -38,10 +46,9 @@ setup(
         # Install MyCobot URDFs
         ('share/' + package_name + '/urdf/mycobot_280_m5', glob('urdf/mycobot_280_m5/*')),
         ('share/' + package_name + '/urdf/adaptive_gripper', glob('urdf/adaptive_gripper/*')),
-        ('share/' + package_name + '/mycobot_mujoco/xml', glob('mycobot_mujoco/xml/*')),
-        ('share/' + package_name + '/mycobot_mujoco/meshes_mujoco', glob('mycobot_mujoco/meshes_mujoco/*')),
+        ('share/' + package_name + '/mycobot_mujoco/xml', package_files('mycobot_mujoco/xml')),
+        ('share/' + package_name + '/mycobot_mujoco/meshes_mujoco', package_files('mycobot_mujoco/meshes_mujoco')),
         
-
     ],
     install_requires=['setuptools'],
     zip_safe=True,
