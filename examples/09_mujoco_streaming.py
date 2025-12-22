@@ -16,7 +16,8 @@ def main(args):
     # Original demo path (kept for reference):
     # xml_path = str(ASSETS_DIR / "scenes" / "franka_emika_panda" / "scene_blockpush.xml")
     # Use custom mycobot scene instead:
-    xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/xml/scene_mycobot.xml"
+    # xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/xml/scene_mycobot.xml"
+    xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/ufactory_xarm7/scene.xml"
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
@@ -54,7 +55,7 @@ def main(args):
     logs_dir = ASSETS_DIR / "logs"
     episodes = sorted(logs_dir.glob("ep*.npz"))
     if fixed_pos == True:
-        print("🔧 Setting all joints to zero")
+        print("🔧 Moving joints")
         data.qpos[:] = 0.0
         data.qvel[:] = 0.0
         data.ctrl[:] = 0.0
@@ -77,18 +78,19 @@ def main(args):
                         hold_counter = 0
                 else:
                     joints_angle += 0.005 * sign
-
+                    
             # First N-1 actuators (arm joints) share the same command
-            data.ctrl[:-1] = joints_angle
+            data.ctrl[:-1] = 0.0
             # Last actuator (gripper) sweeps across its full range [-0.74, 0.15]
-            grip_min, grip_max = -0.74, 0.15
+            # grip_min, grip_max = -0.74, 0.15
+            grip_min, grip_max = 0.0, 255.0
             # Directly map joint angle to gripper range without normalizing to [0, 1]
             data.ctrl[-1] = grip_min + (grip_max - grip_min) * (joints_angle / joint_angle_max)
             # Clamp to valid range
             data.ctrl[-1] = np.clip(data.ctrl[-1], grip_min, grip_max)
             
-            # if joints_angle % 0.2 < 0.005:
-            #     print(f"🔧 Moving joints to angle: {joints_angle:.3f}, gripper: {data.ctrl[-1]:.3f}")
+            if joints_angle % 0.2 < 0.005:
+                print(f"🔧 Moving joints to angle: {joints_angle:.3f}, gripper: {data.ctrl[-1]:.3f}")
 
             # Advance physics one step
             mujoco.mj_step(model, data)
@@ -159,7 +161,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--viewer",
-        default="mujoco",
+        default="ar",
         choices=["mujoco", "ar"],
         help="Viewer type: 'mujoco' for local preview, 'ar' for Vision Pro streaming",
     )
@@ -167,7 +169,8 @@ if __name__ == "__main__":
         "--ip",
         # default="192.168.50.153",
         # default="192.168.10.137",
-        default="192.168.10.113",
+        # default="192.168.10.113",
+        default="192.168.10.191",
         help="Vision Pro IP address (only used with --viewer ar)",
     )
     parser.add_argument(

@@ -86,3 +86,7 @@ sam_client:
     server_url: "http://localhost:18000"
     result_files: ["object_visual.obj", "object_collision.obj", "material_0.mtl", "material.png"]
 
+    add_to_mujoco: true
+    mujoco_scene_name: "scene_mycobot"
+    
+

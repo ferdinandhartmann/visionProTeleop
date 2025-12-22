@@ -16,6 +16,9 @@ import io
 import json
 import ament_index_python.packages
 
+import xml.etree.ElementTree as ET
+import random
+
 class SamClient(Node):
 
     def __init__(self):
@@ -23,6 +26,8 @@ class SamClient(Node):
         self.get_logger().info("SAM client started")
 
         self.pending = {}  # basename -> files
+        
+        self.prompt_name = None
 
         # Load parameters
         self.declare_parameter("watch_dir", str(Path.home() / "Dropbox/sam_data"))
@@ -32,6 +37,18 @@ class SamClient(Node):
         self.watch_dir = Path(self.get_parameter("watch_dir").value)
         self.server_url = self.get_parameter("server_url").value
         self.result_files = self.get_parameter("result_files").value
+        
+        # Additional parameters for MuJoCo injection
+        self.declare_parameter("add_to_mujoco", False)
+        self.declare_parameter("mujoco_scene_name", "scene_mycobot")
+        
+        # Find mujoco_scene.xml in robot_description package if not absolute
+        mujoco_scene_name = self.get_parameter("mujoco_scene_name").value
+        robot_description_dir = ament_index_python.packages.get_package_share_directory("robot_description")
+        self.mujoco_scene_path = Path(robot_description_dir) / "mycobot_mujoco" / f"{mujoco_scene_name}.xml"
+        
+        self.add_to_mujoco = self.get_parameter("add_to_mujoco").value
+
 
         self.check_health()
 
@@ -132,14 +149,14 @@ class SamClient(Node):
                 data = r.json()
             except json.JSONDecodeError:
                 self.get_logger().error("Server returned invalid JSON, retrying...")
-                time.sleep(3)
+                time.sleep(4)
                 continue
             self.get_logger().info(f"Job status: {data['status']}")
             if data["status"] == "done":
                 self.get_logger().info(f"Job {job_id} done, downloading results")
                 self.download_results(job_id)
                 break
-            time.sleep(3)
+            time.sleep(4)
 
     def download_results(self, job_id):
         # Install folder (current)
@@ -166,14 +183,194 @@ class SamClient(Node):
         self.get_logger().info(f"Downloading files: {files}")
 
         for fname in files:
-            self.get_logger().info(f"Downloading {fname} for job {job_id}")
+            self.get_logger().info(f"Downloading {fname}")
             r = requests.get(f"{self.server_url}/download/{job_id}/{fname}", verify=False)
             # Save to both folders
             (install_out_dir / fname).write_bytes(r.content)
             (workspace_src_dir / fname).write_bytes(r.content)
-            self.get_logger().info(f"Saved {fname} to {install_out_dir} and {workspace_src_dir}")
+            self.get_logger().info(f"Saved {fname} to {install_out_dir}\nand {workspace_src_dir}")
+            
+            # If the file is a PNG and ends with '_material.png', save its name
+            if fname.endswith("_material.png"):
+                self.prompt_name = fname[:-len("_material.png")]
+                self.get_logger().info(f"Prompt/Object name identified: {self.prompt_name}")
 
         self.get_logger().info("All results downloaded")
+        
+        if self.add_to_mujoco:
+            self.get_logger().info("add_to_mujoco enabled -> updating MuJoCo scene")
+            self.add_object_to_mujoco(files)
+
+
+
+    def add_object_to_mujoco(self, files):
+        """
+        Injects a SAM-generated object into the MuJoCo scene XML.
+        Assumes files contain:
+        - *_visual.obj
+        - *_collision.obj
+        - *.png (texture)
+        """
+
+        if not self.mujoco_scene_path.exists():
+            self.get_logger().error(f"MuJoCo scene not found: {self.mujoco_scene_path}")
+            return
+        self.get_logger().info(f"Modifying MuJoCo scene: {self.mujoco_scene_path}")
+
+        tree = ET.parse(self.mujoco_scene_path)
+        root = tree.getroot()
+
+        asset = root.find("asset")
+        worldbody = root.find("worldbody")
+
+        if asset is None or worldbody is None:
+            self.get_logger().error("Invalid MuJoCo XML: missing <asset> or <worldbody>")
+            return
+        
+        # --- infer names ---
+        # Get all files that start with the object name (self.prompt_name)
+        obj_files = [f for f in files if f.startswith(self.prompt_name)]
+        texture_file = next(f for f in obj_files if f.endswith(".png"))
+        visual_mesh = next(f for f in obj_files if "visual" in f and f.endswith(".obj"))
+        collision_mesh = next(f for f in obj_files if "collision" in f and f.endswith(".obj"))
+
+        # Prevent duplicates
+        if worldbody.find(f".//body[@name='{self.prompt_name}']") is not None:
+            self.get_logger().info(f"Object '{self.prompt_name}' already exists in scene, skipping")
+            return
+
+        # ---------- ASSET ----------
+        ET.SubElement(
+            asset,
+            "texture",
+            name=f"{self.prompt_name}_tex",
+            type="2d",
+            file=f"meshes_mujoco/sam_models/{self.prompt_name}_material.png"
+        )
+
+        ET.SubElement(
+            asset,
+            "material",
+            name=f"{self.prompt_name}_mat",
+            texture=f"{self.prompt_name}_tex",
+            texrepeat="2 2",
+            reflectance="0",
+            shininess="0",
+            specular="0"
+        )
+
+        ET.SubElement(
+            asset,
+            "mesh",
+            name=f"{self.prompt_name}_visual",
+            file=f"sam_models/{visual_mesh}"
+        )
+
+        ET.SubElement(
+            asset,
+            "mesh",
+            name=f"{self.prompt_name}_collision",
+            file=f"sam_models/{collision_mesh}"
+        )
+
+        # ---------- WORLDBODY ----------
+        body = ET.SubElement(
+            worldbody,
+            "body",
+            name=self.prompt_name,
+            pos=f"{random.uniform(-0.4, 0.4):.2f} {random.uniform(-0.4, 0.4):.2f} {random.uniform(0.3, 0.8):.2f}",
+            euler="0.0 0.3 0"
+        )
+
+        ET.SubElement(body, "joint", type="free")
+
+        ET.SubElement(
+            body,
+            "geom",
+            type="mesh",
+            mesh=f"{self.prompt_name}_visual",
+            material=f"{self.prompt_name}_mat",
+            contype="0",
+            conaffinity="0"
+        )
+
+        ET.SubElement(
+            body,
+            "geom",
+            type="mesh",
+            mesh=f"{self.prompt_name}_collision",
+            mass="0.1",
+            contype="1",
+            conaffinity="1"
+        )
+
+
+        ET.indent(tree, space="  ", level=0)
+        
+        tree.write(self.mujoco_scene_path, encoding="utf-8", xml_declaration=True)
+        
+        
+        self.extend_home_keyframe_via_include()
+
+        self.get_logger().info(f"Added object '{self.prompt_name}' into MuJoCo scene.\nFINISHED!")
+            
+            
+    def extend_home_keyframe_via_include(self):
+        """
+        Finds the <include file="..."> in the scene XML,
+        opens the included robot XML,
+        and appends 7 zeros to the 'home' keyframe qpos
+        (idempotent).
+        """
+
+        # --- Parse scene XML ---
+        scene_tree = ET.parse(self.mujoco_scene_path)
+        scene_root = scene_tree.getroot()
+
+        include = scene_root.find("include")
+        if include is None or "file" not in include.attrib:
+            self.get_logger().error("No <include file='...'> found in MuJoCo scene")
+            return
+
+        include_file = include.attrib["file"]
+
+        # Resolve path relative to scene file
+        robot_xml_path = (self.mujoco_scene_path.parent / include_file).resolve()
+
+        if not robot_xml_path.exists():
+            self.get_logger().error(f"Included MuJoCo file not found: {robot_xml_path}")
+            return
+
+        self.get_logger().info(f"Modifying home keyframe in: {robot_xml_path}")
+
+        # --- Parse robot XML ---
+        robot_tree = ET.parse(robot_xml_path)
+        robot_root = robot_tree.getroot()
+
+        keyframe = robot_root.find("keyframe")
+        if keyframe is None:
+            self.get_logger().error("No <keyframe> block found in robot XML")
+            return
+
+        home = keyframe.find("key[@name='home']")
+        if home is None or "qpos" not in home.attrib:
+            self.get_logger().error("No 'home' keyframe with qpos found")
+            return
+
+        # --- Modify qpos ---
+        qpos_values = home.attrib["qpos"].split()
+        original_len = len(qpos_values)
+
+        qpos_values.extend(["0"] * 7)
+        home.attrib["qpos"] = " ".join(qpos_values)
+        
+        ET.indent(robot_tree, space="  ", level=0)
+        robot_tree.write(robot_xml_path, encoding="utf-8", xml_declaration=True)
+
+        self.get_logger().info(
+            f"Extended home qpos from {original_len} to {len(qpos_values)} entries"
+        )
+
 
 
 class FolderHandler(FileSystemEventHandler):

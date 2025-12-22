@@ -46,8 +46,9 @@ setup(
         # Install MyCobot URDFs
         ('share/' + package_name + '/urdf/mycobot_280_m5', glob('urdf/mycobot_280_m5/*')),
         ('share/' + package_name + '/urdf/adaptive_gripper', glob('urdf/adaptive_gripper/*')),
-        ('share/' + package_name + '/mycobot_mujoco/xml', package_files('mycobot_mujoco/xml')),
-        ('share/' + package_name + '/mycobot_mujoco/meshes_mujoco', package_files('mycobot_mujoco/meshes_mujoco')),
+        # ('share/' + package_name + '/mycobot_mujoco/xml', package_files('mycobot_mujoco/xml')),
+        ('share/' + package_name + '/mycobot_mujoco', package_files('mycobot_mujoco')),
+        # ('share/' + package_name + '/mycobot_mujoco/meshes_mujoco/sam_models', package_files('mycobot_mujoco/meshes_mujoco/sam_models')),
         
     ],
     install_requires=['setuptools'],

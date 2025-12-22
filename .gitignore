@@ -10,3 +10,9 @@ build/
 # *.usdz
 
 __pycache__/
+
+# **/sam_models/
+
+**/Payload/
+
+*.usdz
