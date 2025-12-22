@@ -54,8 +54,10 @@
                     <geom mesh="joint7_vis" pos="0 0 -0.012" class="visual" />
                     <body name="camera" pos="0.018 -0.018 0.0025" euler="0 3.141 0.7854">
                       <geom mesh="camera" pos="0 0 0" size="0.02" class="visual" />
+                      <geom mesh="camera" pos="0 0 0" size="0.02" class="collision" />
                       <body name="gripper_base" pos="-0.04 0.00 -0.03725" euler="0 1.5708 2.3562">
                         <geom pos="-0.0087164 -0.00825415 0.0509987" quat="-0.273017 -0.267658 -0.654494 -0.652272" type="mesh" mesh="gripper_base" rgba="0.85 0.85 0.85 1" />
+                        <geom pos="-0.0087164 -0.00825415 0.0509987" quat="-0.273017 -0.267658 -0.654494 -0.652272" type="mesh" mesh="gripper_base" class="collision" rgba="0.85 0.85 0.85 1" />
                         <body name="gripper_left3" pos="0.00826547 -0.00825205 0.0490971" quat="-0.273017 -0.267658 -0.654494 -0.652272">
                           <joint name="gripper_controller" pos="-0.001 -0.0045 -0.0095" axis="0 -1 0" actuatorfrcrange="-20 20" damping="1" armature="0.005" />
                           <geom pos="0.012 0.0025 -0.012" quat="1 0 0 0" type="mesh" mesh="gripper_left3" rgba="0.85 0.85 0.85 1" />

@@ -61,25 +61,23 @@ Eigen::Quaterniond quaternionFromEulerZ(double degrees)
 // Flip rotation about the X and Y axes (roll and pitch) while keeping yaw.
 Eigen::Quaterniond flipPitchAndRoll(const Eigen::Quaterniond & q)
 {
-    tf2::Quaternion tf_q(q.x(), q.y(), q.z(), q.w());
-    double roll, pitch, yaw;
-    tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-    roll = -roll;
-    pitch = -pitch;
-    tf2::Quaternion out;
-    out.setRPY(roll, pitch, yaw);
-    Eigen::Quaterniond eigen_out(out.w(), out.x(), out.y(), out.z());
-    eigen_out.normalize();
-    return eigen_out;
+  tf2::Quaternion tf_q(q.x(), q.y(), q.z(), q.w());
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
+  roll = -roll;
+  pitch = -pitch;
+  tf2::Quaternion out;
+  out.setRPY(roll, pitch, yaw);
+  Eigen::Quaterniond eigen_out(out.w(), out.x(), out.y(), out.z());
+  eigen_out.normalize();
+  return eigen_out;
 }
 }  // namespace
 
 class TeleopControl : public rclcpp::Node
 {
 public:
-  TeleopControl()
-  : Node("teleop_control")
-  {
+  TeleopControl(): Node("teleop_control"){
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
     tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
@@ -139,7 +137,7 @@ public:
     calibration_T(0, 3) = 0.0; // Traslación en X
     calibration_T(1, 3) = 0.0; // Traslación en Y
     calibration_T(2, 3) = 0.0; // Traslación en Z
-publishVpBaseCalibration(calibration_T);
+    publishVpBaseCalibration(calibration_T);
     const double sample_period = update_period_ / smoothing_factor_;
     auto sample_duration = std::chrono::duration<double>(sample_period);
 
@@ -269,7 +267,9 @@ private:
     if (!right_thumb || !right_index || !wrist_pose.first || !wrist_pose.second) {
       return;
     }
-    Eigen::Vector3d ee_pos = (*right_thumb + *right_index) / 2.0;
+    // Calculate end-effector pose of the hand tracking 
+    // Eigen::Vector3d ee_pos = (*right_thumb + *right_index) / 2.0;
+    Eigen::Vector3d ee_pos = wrist_pose.first.value();
     Eigen::Quaterniond wrist_ori = *wrist_pose.second;
 
     // Create a quaternion for -20 degrees about X axis
@@ -282,6 +282,10 @@ private:
     // Apply the -20deg X rotation before the Z rotation
     Eigen::Quaterniond ee_ori = multiplyQuat(wrist_ori, q_x_eigen);
     ee_ori = multiplyQuat(ee_ori, q_flip);
+
+    ee_pos.x() -= 0.06;
+    ee_pos.y() += 0.10;
+    ee_pos.z() += 0.03;
 
     publishEeTargetTf(ee_pos, ee_ori, "ee_target", vp_base_frame_);
 
@@ -348,7 +352,7 @@ private:
         Eigen::Vector3d ee_pos_mycobot_base = T_ee_target_offset_mycobot_base.block<3, 1>(0, 3);
         Eigen::Quaterniond ee_ori_mycobot_base(T_ee_target_offset_mycobot_base.block<3, 3>(0, 0));
         ee_ori_mycobot_base.normalize();
-        ee_ori_mycobot_base = flipPitchAndRoll(ee_ori_mycobot_base);
+        // ee_ori_mycobot_base = flipPitchAndRoll(ee_ori_mycobot_base);
 
         // Apply translation scaling relative to the reference (offset) pose
         if (!ref_pose_set_) {
