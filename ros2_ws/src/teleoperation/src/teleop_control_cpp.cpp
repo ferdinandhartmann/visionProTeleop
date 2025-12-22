@@ -133,8 +133,13 @@ public:
       rotation_scale_ = 1.0;
     }
 
-    publishVpBaseCalibration(Eigen::Matrix4d::Identity());
-
+    //publishVpBaseCalibration(Eigen::Matrix4d::Identity());
+    // rot matrix -90 axis Z
+    Eigen::Matrix4d calibration_T = createZRotationMatrix(-90.0); 
+    calibration_T(0, 3) = 0.0; // Traslación en X
+    calibration_T(1, 3) = 0.0; // Traslación en Y
+    calibration_T(2, 3) = 0.0; // Traslación en Z
+publishVpBaseCalibration(calibration_T);
     const double sample_period = update_period_ / smoothing_factor_;
     auto sample_duration = std::chrono::duration<double>(sample_period);
 
@@ -243,7 +248,13 @@ private:
     } else if (teleop_enabled_ && left_pinch > pinch_threshold_) {
       teleop_enabled_ = false;
       just_disabled = true;
-      publishVpBaseCalibration(Eigen::Matrix4d::Identity());
+      //publishVpBaseCalibration(Eigen::Matrix4d::Identity());
+      // back rot matrix -90 axis Z
+      Eigen::Matrix4d calibration_T = createZRotationMatrix(-90.0);
+      calibration_T(0, 3) = 0.0;
+      calibration_T(1, 3) = 0.0;
+      calibration_T(2, 3) = 0.0;
+      publishVpBaseCalibration(calibration_T);
       RCLCPP_INFO(this->get_logger(), "Teleop DISABLED (left pinch)");
     }
 
@@ -460,6 +471,18 @@ private:
   {
     samples_.clear();
   }
+
+  // Añade esto en el namespace anónimo (después de las otras funciones auxiliares)
+Eigen::Matrix4d createZRotationMatrix(double degrees)
+{
+    const double radians = degrees * M_PI / 180.0;
+    Eigen::Matrix4d R = Eigen::Matrix4d::Identity();
+    R(0, 0) = std::cos(radians);
+    R(0, 1) = -std::sin(radians);
+    R(1, 0) = std::sin(radians);
+    R(1, 1) = std::cos(radians);
+    return R;
+}
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
