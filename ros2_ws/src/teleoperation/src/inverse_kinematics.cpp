@@ -290,7 +290,8 @@ private:
     T = T * T_joint7_to_camera * T_camera_to_gripper;
 
     // Constant offset to place the pose in the grippers middle
-    constexpr double gripper_offset_front = 0.05;  
+    // constexpr double gripper_offset_front = 0.05;  // between the gripper end
+    constexpr double gripper_offset_front = -0.07;
     constexpr double gripper_offset_down = -0.01; 
     Eigen::Vector3d tool_offset = T.block<3, 3>(0, 0) * Eigen::Vector3d(0.0, gripper_offset_front, gripper_offset_down);
     T.block<3, 1>(0, 3) += tool_offset;
