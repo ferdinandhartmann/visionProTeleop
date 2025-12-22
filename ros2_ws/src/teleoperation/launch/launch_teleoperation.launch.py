@@ -156,7 +156,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             teleop_config,
-            {"viewer": "ar"}, 
+            {"viewer": "mujoco"}, 
         ],
     )
 

@@ -40,8 +40,8 @@ class MujocoStreamerNode(Node):
         self.declare_parameter("force_reload", True)
 
         # Resolve the default MuJoCo scene from the robot_description package.
-        robot_description_share = Path(get_package_share_directory("robot_description"))
-        default_xml = robot_description_share / "mycobot_mujoco/xml/scene_mycobot.xml"
+        robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
+        default_xml = robot_description_share / "mycobot_mujoco/scene_mycobot.xml"
         self.declare_parameter(
             "xml_path",
             str(default_xml),
@@ -152,12 +152,16 @@ class MujocoStreamerNode(Node):
         for name, position in joint_copy.items():
             idx = self.joint_name_to_qpos.get(name)
             if idx is None:
-                continue
+                    continue
             if name == "gripper_controller":
-                gripper_lower_limit = -0.74
-                gripper_upper_limit = 0.15
-                position = gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit) * (position / 100.0)
-                self.data.qpos[idx] = position
+                gripper_lower_limit = -0.25
+                gripper_upper_limit = 0.8
+                self.data.qpos[idx] = (gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit) * ((100 - position) / 100.0))
+                self.data.qpos[idx+1] = (gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit) * ((100 - position) / 100.0))
+                gripper_lower_limit = 0.0
+                gripper_upper_limit = 0.8
+                self.data.qpos[idx+2] = (gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit) * ((100 - position) / 100.0))
+                self.data.qpos[idx+3] = (gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit) * ((100 - position) / 100.0))
             else:
                 self.data.qpos[idx] = position
 
@@ -167,6 +171,9 @@ class MujocoStreamerNode(Node):
 
     def _update_scene(self) -> None:
         self._apply_joint_state()
+        
+        import mujoco
+        mujoco.mj_step(self.model, self.data)
 
         if self.streamer is not None:
             self.streamer.update_sim()

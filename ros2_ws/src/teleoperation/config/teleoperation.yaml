@@ -7,14 +7,14 @@ vp_transform_publisher:
 
 mujoco_streamer:
   ros__parameters:
-    viewer: "ar"                          # "ar" or "mujoco", will be overridden by launch file 
+    viewer: "mujoco"                          # "ar" or "mujoco", will be overridden by launch file 
     visionpro_ip: "192.168.50.153" #jemaro room
     # visionpro_ip: "192.168.10.113"        # ferdinand
     # visionpro_ip: "192.168.10.137"        # angel
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
     attach_to: [0.0, 0.6, 0.55, -90.0]    # y-axis goes from viewer straight to the distance
-    update_rate_hz: 60.0
+    update_rate_hz: 120.0
     force_reload: true
 
 teleop_control_cpp:

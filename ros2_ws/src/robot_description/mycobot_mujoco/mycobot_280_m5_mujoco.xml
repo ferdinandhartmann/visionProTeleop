@@ -33,6 +33,7 @@
       <geom mesh="mycobot_base" class="visual" />
       <body name="joint0" pos="0 0.032 0.0" euler="-1.5708 0 0">
         <geom mesh="joint_1_mycobot" pos="0 0 0" quat="0.000796327 0 0 1" class="visual" />
+
         <body name="joint1" pos="0.0 0.002 0.132" euler="0 0 -1.5708">
           <joint name="joint1" damping="1.2" armature="0.05" actuatorfrcrange="-20 20" />
           <geom mesh="joint2_vis" pos="0 0 -0.06096" quat="0.707105 0 0 -0.707108" class="visual" />
@@ -59,28 +60,28 @@
                           <joint name="gripper_controller" pos="-0.001 -0.0045 -0.0095" axis="0 -1 0" actuatorfrcrange="-20 20" damping="1" armature="0.005" />
                           <geom pos="0.012 0.0025 -0.012" quat="1 0 0 0" type="mesh" mesh="gripper_left3" rgba="0.85 0.85 0.85 1" />
                           <body name="gripper_left1" pos="-0.027 0.016 0">
-                            <joint name="gripper_left3_to_gripper_left1" pos="-0.0014 -0.02 -0.0248" axis="0 1 0" range="-0.5 0.5" />
+                            <joint name="gripper_left3_to_gripper_left1" pos="-0.0014 -0.02 -0.0248" axis="0 1 0" damping="1.2" armature="0.05" actuatorfrcrange="-20 20"/>
                             <geom pos="0.039 -0.0133 -0.012" type="mesh" mesh="gripper_left1" rgba="0.85 0.85 0.85 1" />
                             <geom pos="0.039 -0.0133 -0.012" type="mesh" mesh="gripper_left1" class="collision" rgba="0.85 0.85 0.85 1" />
                           </body>
                         </body>
-                        <body name="gripper_left2" pos="0.00318726 -0.00318167 0.070539" quat="-0.273017 -0.267658 -0.654494 -0.652272">
+                        <!-- <body name="gripper_left2" pos="0.00318726 -0.00318167 0.070539" quat="-0.273017 -0.267658 -0.654494 -0.652272">
                           <joint name="gripper_base_to_gripper_left2" pos="-0.001 -0.025 -0.03135" axis="0 1 0" range="-0.8 0.5" />
                           <geom pos="0.005 -0.0195 -0.012" quat="1 0 0 0" type="mesh" mesh="gripper_left2" rgba="0.85 0.85 0.85 1" />
-                        </body>
+                        </body> -->
                         <body name="gripper_right3" pos="-0.00871793 0.00870452 0.0489002" quat="-0.273017 -0.267658 -0.654494 -0.652272">
-                          <joint name="gripper_base_to_gripper_right3" pos="0.00026 -0.0065 -0.0095" axis="0 1 0" range="-0.15 0.7" />
+                          <joint name="gripper_base_to_gripper_right3" pos="0.00026 -0.0065 -0.0095" axis="0 1 0" damping="1.2" armature="0.05" actuatorfrcrange="-20 20"/>
                           <geom pos="-0.012 0.0025 -0.012" quat="1 0 0 0" type="mesh" mesh="gripper_right3" rgba="0.85 0.85 0.85 1" />
                           <body name="gripper_right1" pos="0.027 0.016 0">
-                            <joint name="gripper_right3_to_gripper_right1" pos="-0.0002 -0.02 -0.025" axis="0 1 0" range="-0.5 0.5" />
+                            <joint name="gripper_right3_to_gripper_right1" pos="-0.0002 -0.02 -0.025" axis="0 -1 0" damping="1.2" armature="0.05" actuatorfrcrange="-20 20"/>
                             <geom pos="-0.039 -0.0133 -0.012" type="mesh" mesh="gripper_right1" rgba="0.85 0.85 0.85 1" />
                             <geom pos="-0.039 -0.0133 -0.012" type="mesh" mesh="gripper_right1" class="collision" rgba="0.85 0.85 0.85 1" />
                           </body>
                         </body>
-                        <body name="gripper_right2" pos="-0.00388916 0.00388357 0.0704569" quat="-0.273017 -0.267658 -0.654494 -0.652272">
+                        <!-- <body name="gripper_right2" pos="-0.00388916 0.00388357 0.0704569" quat="-0.273017 -0.267658 -0.654494 -0.652272">
                           <joint name="gripper_base_to_gripper_right2" pos="-0.00 -0.025 -0.03135" axis="0 1 0" range="-0.5 0.8" />
                           <geom pos="-0.005 -0.0195 -0.012" quat="1 0 0 0" type="mesh" mesh="gripper_right2" rgba="0.85 0.85 0.85 1" />
-                        </body>
+                        </body> -->
                       </body>
                     </body>
                   </body>
@@ -93,26 +94,18 @@
     </body>
   </worldbody>
   <actuator>
-    <position name="joint1_pos" joint="joint1" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint2_pos" joint="joint2" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint3_pos" joint="joint3" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint4_pos" joint="joint4" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint5_pos" joint="joint5" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint6_pos" joint="joint6" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.96706 2.96706" />
-    <position name="gripper_pos" tendon="split" kp="60" ctrllimited="true" ctrlrange="-0.74 0.15" />
+    <position name="joint1_motor" joint="joint1" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint2_motor" joint="joint2" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint3_motor" joint="joint3" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint4_motor" joint="joint4" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint5_motor" joint="joint5" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint6_motor" joint="joint6" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.96706 2.96706" />
+    <position name="gripper_motor_left" joint="gripper_controller" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-0.25 0.8" />
+    <position name="gripper_motor_right" joint="gripper_base_to_gripper_right3" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-0.25 0.8" />
+    <position name="gripper_finger_left" joint="gripper_left3_to_gripper_left1" kp="60" dampratio="1" ctrllimited="true" ctrlrange="0.0 0.8" />
+    <position name="gripper_finger_right" joint="gripper_right3_to_gripper_right1" kp="60" dampratio="1" ctrllimited="true" ctrlrange="0.0 0.8" />
   </actuator>
-  <equality>
-    <connect body1="gripper_left1" body2="gripper_left2" anchor="0.006 0 -0.046" solref="0.005 1" />
-    <connect body1="gripper_right1" body2="gripper_right2" anchor="-0.007 0 -0.047" solref="0.005 1" />
-    <joint joint1="gripper_controller" joint2="gripper_base_to_gripper_right3" polycoef="0 1 0 0 0" solref="0.005 1" />
-  </equality>
-  <tendon>
-    <fixed name="split">
-      <joint joint="gripper_controller" coef="-0.4" />
-      <joint joint="gripper_base_to_gripper_right3" coef="-0.4" />
-    </fixed>
-  </tendon>
   <keyframe>
-    <key name="home" qpos="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" />
+    <key name="home" qpos="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" />
   </keyframe>
 </mujoco>

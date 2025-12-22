@@ -93,13 +93,13 @@
     </body>
   </worldbody>
   <actuator>
-    <position name="joint1_pos" joint="joint1" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint2_pos" joint="joint2" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint3_pos" joint="joint3" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint4_pos" joint="joint4" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint5_pos" joint="joint5" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
-    <position name="joint6_pos" joint="joint6" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.96706 2.96706" />
-    <position name="gripper_pos" tendon="gripper_controller_joint" kp="60" ctrllimited="true" ctrlrange="-0.74 0.15" />
+    <position name="joint1_motor" joint="joint1" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint2_motor" joint="joint2" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint3_motor" joint="joint3" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint4_motor" joint="joint4" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint5_motor" joint="joint5" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.79253 2.79253" />
+    <position name="joint6_motor" joint="joint6" kp="60" dampratio="1" ctrllimited="true" ctrlrange="-2.96706 2.96706" />
+    <position name="gripper_motor" tendon="gripper_controller_joint" kp="60" ctrllimited="true" ctrlrange="-0.74 0.15" />
   </actuator>
   <equality>
     <connect body1="gripper_left1" body2="gripper_left2" anchor="0.006 0 -0.046" solref="0.005 1" />
@@ -108,11 +108,11 @@
   </equality>
   <tendon>
     <fixed name="gripper_controller_joint">
-      <joint joint="gripper_controller" coef="-0.4" />
-      <joint joint="gripper_base_to_gripper_right3" coef="-0.4" />
+      <joint joint="gripper_controller" coef="0.4" />
+      <joint joint="gripper_base_to_gripper_right3" coef="0.4" />
     </fixed>
   </tendon>
   <keyframe>
-    <key name="home" qpos="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" />
+    <key name="home" qpos="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" />
   </keyframe>
 </mujoco>
