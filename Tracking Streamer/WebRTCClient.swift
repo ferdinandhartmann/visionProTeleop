@@ -12,6 +12,11 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
     private var handDataChannel: LKRTCDataChannel?
     private var simPosesDataChannel: LKRTCDataChannel?  // WebRTC data channel for sim pose streaming
     private var handStreamTask: Task<Void, Never>?
+    
+    // Pending renderers to attach once tracks arrive
+    private var pendingVideoRenderers: [LKRTCVideoRenderer] = []
+    private var pendingAudioRenderers: [LKRTCAudioRenderer] = []
+    
     private let handStreamIntervalNanoseconds: UInt64 = 2_000_000
     
     var onFrameReceived: ((CVPixelBuffer) -> Void)?
@@ -106,6 +111,8 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
         // Set remote description (offer)
         let remoteDesc = LKRTCSessionDescription(type: .offer, sdp: offerJson.sdp)
         try await peerConnection?.setRemoteDescription(remoteDesc)
+        
+        // Removed the block that adds receive-only transceivers for Unified Plan
         
         // Create answer
         guard let answer = try await peerConnection?.answer(for: LKRTCMediaConstraints(
@@ -221,20 +228,24 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
     }
     
     func addVideoRenderer(_ renderer: LKRTCVideoRenderer) {
+        // Always remember the renderer so we can attach it when the track arrives
+        pendingVideoRenderers.append(renderer)
         if let track = videoTrack {
             track.add(renderer)
             print("DEBUG: Video renderer attached to track - track enabled: \(track.isEnabled)")
         } else {
-            print("ERROR: Cannot attach renderer - no video track available")
+            print("INFO: Video track not yet available; renderer queued")
         }
     }
     
     func addAudioRenderer(_ renderer: LKRTCAudioRenderer) {
+        // Always remember the renderer so we can attach it when the track arrives
+        pendingAudioRenderers.append(renderer)
         if let track = audioTrack {
             track.add(renderer)
             print("DEBUG: Audio renderer attached to track - track enabled: \(track.isEnabled)")
         } else {
-            print("INFO: No audio track available (audio may not be enabled on server)")
+            print("INFO: Audio track not yet available; renderer queued")
         }
     }
     
@@ -271,6 +282,9 @@ extension WebRTCClient {
         }
         if let videoTrack = stream.videoTracks.first {
             self.videoTrack = videoTrack
+            // Attach any pending video renderers now that we have a track
+            for r in pendingVideoRenderers { videoTrack.add(r) }
+            print("DEBUG: Attached \(pendingVideoRenderers.count) pending video renderers (Plan-B)")
             print("DEBUG: Video track received - id: \(videoTrack.trackId), enabled: \(videoTrack.isEnabled)")
             Task { @MainActor in
                 DataManager.shared.connectionStatus = "Video track enabled, waiting for frames..."
@@ -278,6 +292,9 @@ extension WebRTCClient {
         }
         if let audioTrack = stream.audioTracks.first {
             self.audioTrack = audioTrack
+            // Attach any pending audio renderers now that we have a track
+            for r in pendingAudioRenderers { audioTrack.add(r) }
+            print("DEBUG: Attached \(pendingAudioRenderers.count) pending audio renderers (Plan-B)")
             print("DEBUG: Audio track received - id: \(audioTrack.trackId), enabled: \(audioTrack.isEnabled)")
             Task { @MainActor in
                 DataManager.shared.connectionStatus = "Audio track enabled"
@@ -365,6 +382,49 @@ extension WebRTCClient {
             }
         } else {
             print("DEBUG: Unknown data channel: \(dataChannel.label)")
+        }
+    }
+    
+    func peerConnection(_ peerConnection: LKRTCPeerConnection,
+                        didStartReceivingOn transceiver: LKRTCRtpTransceiver) {
+        if let vTrack = transceiver.receiver.track as? LKRTCVideoTrack {
+            self.videoTrack = vTrack
+            print("DEBUG: Transceiver started receiving - video track: \(vTrack.trackId) enabled: \(vTrack.isEnabled)")
+            for r in pendingVideoRenderers { vTrack.add(r) }
+            print("DEBUG: Transceiver - attached \(pendingVideoRenderers.count) pending video renderers")
+            Task { @MainActor in
+                DataManager.shared.connectionStatus = "Video track enabled, waiting for frames..."
+            }
+        } else if let aTrack = transceiver.receiver.track as? LKRTCAudioTrack {
+            self.audioTrack = aTrack
+            print("DEBUG: Transceiver started receiving - audio track: \(aTrack.trackId) enabled: \(aTrack.isEnabled)")
+            for r in pendingAudioRenderers { aTrack.add(r) }
+            print("DEBUG: Transceiver - attached \(pendingAudioRenderers.count) pending audio renderers")
+            Task { @MainActor in
+                DataManager.shared.connectionStatus = "Audio track enabled"
+            }
+        }
+    }
+    
+    func peerConnection(_ peerConnection: LKRTCPeerConnection,
+                        didAdd rtpReceiver: LKRTCRtpReceiver,
+                        streams: [LKRTCMediaStream]) {
+        if let vTrack = rtpReceiver.track as? LKRTCVideoTrack {
+            self.videoTrack = vTrack
+            print("DEBUG: Unified Plan - video track received: \(vTrack.trackId) enabled: \(vTrack.isEnabled)")
+            for r in pendingVideoRenderers { vTrack.add(r) }
+            print("DEBUG: Unified Plan - attached \(pendingVideoRenderers.count) pending video renderers")
+            Task { @MainActor in
+                DataManager.shared.connectionStatus = "Video track enabled, waiting for frames..."
+            }
+        } else if let aTrack = rtpReceiver.track as? LKRTCAudioTrack {
+            self.audioTrack = aTrack
+            print("DEBUG: Unified Plan - audio track received: \(aTrack.trackId) enabled: \(aTrack.isEnabled)")
+            for r in pendingAudioRenderers { aTrack.add(r) }
+            print("DEBUG: Unified Plan - attached \(pendingAudioRenderers.count) pending audio renderers")
+            Task { @MainActor in
+                DataManager.shared.connectionStatus = "Audio track enabled"
+            }
         }
     }
 }
@@ -546,3 +606,4 @@ extension OutputStream {
 }
 
 extension LKRTCDataChannel: @unchecked Sendable {}
+

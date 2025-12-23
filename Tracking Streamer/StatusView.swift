@@ -156,6 +156,12 @@ struct StatusOverlay: View {
                 // Toggle trigger to force MuJoCo status update
                 mujocoStatusUpdateTrigger.toggle()
                 
+                if let m = mujocoManager {
+                    print("🧩 [StatusView] MuJoCo simEnabled=\(m.simEnabled) bodies=\(m.bodyCount) freq=\(m.updateFrequency)Hz viaWebRTC=\(m.poseStreamingViaWebRTC) status=\(m.connectionStatus)")
+                } else {
+                    print("🧩 [StatusView] MuJoCo manager is nil")
+                }
+                
                 // Detect disconnection and maximize status view
                 if (wasPythonConnected && !pythonConnected) || (wasWebrtcConnected && !webrtcConnected) {
                     print("🔌 [StatusView] Connection lost - maximizing status view")
@@ -373,9 +379,9 @@ struct StatusOverlay: View {
                 ZStack {
                     Circle()
                         .fill(Color.white.opacity(0.3))
-                        .frame(width: 60, height: 60)
+                        .frame(width: 75, height: 75)
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .font(.system(size: 24, weight: .bold))
+                        .font(.system(size: 27  , weight: .bold))
                         .foregroundColor(.white)
                 }
             }
@@ -399,9 +405,9 @@ struct StatusOverlay: View {
                 ZStack {
                     Circle()
                         .fill(Color.red)
-                        .frame(width: 60, height: 60)
+                        .frame(width: 75, height: 75)
                     Text("✕")
-                        .font(.system(size: 27, weight: .bold))
+                        .font(.system(size: 32, weight: .bold))
                         .foregroundColor(.white)
                 }
             }
@@ -453,6 +459,71 @@ struct StatusOverlay: View {
                         .fontWeight(.medium)
                 }
                 .font(.body)
+            }
+        }
+    }
+    
+    private var mujocoInfoSection: some View {
+        Group {
+            if let m = mujocoManager {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        let simActive = m.simEnabled || m.bodyCount > 0
+                        Circle()
+                            .fill(simActive ? Color.orange : Color.gray)
+                            .frame(width: 12, height: 12)
+                        Text("MuJoCo:")
+                            .foregroundColor(.white.opacity(0.8))
+                        Text(m.connectionStatus)
+                            .foregroundColor(.white)
+                            .fontWeight(.medium)
+                    }
+                    .font(.body)
+
+                    HStack(spacing: 6) {
+                        Text("Host:")
+                            .foregroundColor(.white.opacity(0.8))
+                        Text(m.ipAddress)
+                            .foregroundColor(.white)
+                            .fontWeight(.medium)
+                        Text("•")
+                            .foregroundColor(.white.opacity(0.4))
+                        Text("gRPC \(m.grpcPort)")
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                    .font(.caption)
+
+                    HStack(spacing: 6) {
+                        Text("Stream:")
+                            .foregroundColor(.white.opacity(0.8))
+                        Text(m.poseStreamingViaWebRTC ? "WebRTC" : "gRPC")
+                            .foregroundColor(m.poseStreamingViaWebRTC ? .green : .orange)
+                            .fontWeight(.medium)
+                    }
+                    .font(.caption)
+
+                    HStack(spacing: 6) {
+                        Text("Bodies:")
+                            .foregroundColor(.white.opacity(0.8))
+                        Text("\(m.bodyCount)")
+                            .foregroundColor(.white)
+                    }
+                    .font(.caption)
+
+                    HStack(spacing: 6) {
+                        Text("Rate:")
+                            .foregroundColor(.white.opacity(0.8))
+                        if m.updateFrequency > 0 {
+                            Text(String(format: "%.0f Hz", m.updateFrequency))
+                                .foregroundColor(.white)
+                                .monospacedDigit()
+                        } else {
+                            Text("—")
+                                .foregroundColor(.white.opacity(0.6))
+                        }
+                    }
+                    .font(.caption)
+                }
             }
         }
     }
@@ -673,10 +744,10 @@ struct StatusOverlay: View {
                                     Text("Cancel")
                                         .fontWeight(.medium)
                                         .foregroundColor(.white)
-                                        .padding(.horizontal, 20)
-                                        .padding(.vertical, 10)
+                                        .padding(.horizontal, 30)
+                                        .padding(.vertical, 20)
                                         .background(Color.gray.opacity(0.5))
-                                        .cornerRadius(8)
+                                        .cornerRadius(10)
                                 }
                                 .buttonStyle(.plain)
                                 
@@ -687,10 +758,10 @@ struct StatusOverlay: View {
                                     Text("Exit")
                                         .fontWeight(.bold)
                                         .foregroundColor(.white)
-                                        .padding(.horizontal, 20)
-                                        .padding(.vertical, 10)
+                                        .padding(.horizontal, 30)
+                                        .padding(.vertical, 20)
                                         .background(Color.red)
-                                        .cornerRadius(8)
+                                        .cornerRadius(10)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -711,6 +782,11 @@ struct StatusOverlay: View {
             
             networkInfoSection
             
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            mujocoInfoSection
+            
             // Show detailed track information when connected (either WebRTC or UVC camera)
             let showStreamDetails = showVideoStatus && (webrtcConnected || (dataManager.videoSource == .uvcCamera && uvcCameraManager.isCapturing))
             if showStreamDetails {
@@ -722,8 +798,9 @@ struct StatusOverlay: View {
             
             // Show waiting message when no frames are available (only for video mode)
             // Don't show waiting for UVC if a camera is capturing
+            let simActive = mujocoManager?.simEnabled == true || (mujocoManager?.bodyCount ?? 0) > 0
             let isUVCActive = dataManager.videoSource == .uvcCamera && uvcCameraManager.isCapturing
-            if showVideoStatus && !hasFrames && !isUVCActive {
+            if showVideoStatus && !hasFrames && !isUVCActive && !simActive {
                 Divider()
                     .background(Color.white.opacity(0.3))
                 
@@ -733,7 +810,7 @@ struct StatusOverlay: View {
                         .scaleEffect(1.0)
                     Text(dataManager.videoSource == .uvcCamera ?
                          (uvcCameraManager.selectedDevice == nil ? "No USB camera detected" : "Waiting for camera...") :
-                         dataManager.connectionStatus)
+                         (mujocoManager?.connectionStatus ?? dataManager.connectionStatus))
                         .foregroundColor(.white.opacity(0.9))
                         .font(.body)
                         .fontWeight(.medium)
@@ -2251,3 +2328,4 @@ func createStatusEntity() -> Entity {
     statusEntity.name = "statusDisplay"
     return statusEntity
 }
+
