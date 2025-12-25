@@ -10,6 +10,16 @@ import argparse
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "mujoco_demos"
 
 
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+from avp_stream import VisionProStreamer
+
+
+
 def main(args):
     import mujoco
     # Load the scene
@@ -32,13 +42,13 @@ def main(args):
         # attach_to format: [x, y, z, yaw_degrees]
         attach_to = [0.0, 0.6, 0.55, -90.0]
 
-        streamer.configure_sim(
+        streamer.configure_mujoco(
             xml_path=xml_path,
             model=model,
             data=data,
             relative_to=attach_to,
             grpc_port=args.port,
-            force_reload=True,
+            force_reload=False,
         )
 
         streamer.start_webrtc()
@@ -51,6 +61,17 @@ def main(args):
     fixed_pos = True  # Set to True to move all joints to zero position
 
     movement = True  # Set to True to have joints move back and forth using motors
+
+    STREAM_CAMERA = True
+    
+    if STREAM_CAMERA:
+        from avp_stream import VisionProStreamer
+        # Start Vision Pro streaming
+        streamer_video = VisionProStreamer(ip=args.ip)
+        streamer_video.configure_video(device="/dev/video0", format="mjpeg", size="1280x720", fps=25)
+        streamer_video.start_webrtc(port=9999)
+        print("Vision Pro camera streaming enabled")
+        
 
     logs_dir = ASSETS_DIR / "logs"
     episodes = sorted(logs_dir.glob("ep*.npz"))
@@ -77,19 +98,24 @@ def main(args):
                         sign *= -joint_angle_max
                         hold_counter = 0
                 else:
-                    joints_angle += 0.005 * sign
+                    joints_angle += 0.004 * sign
                     
-            # First N-1 actuators (arm joints) share the same command
-            data.ctrl[:-1] = 0.0
-            # Last actuator (gripper) sweeps across its full range [-0.74, 0.15]
-            # grip_min, grip_max = -0.74, 0.15
-            grip_min, grip_max = 0.0, 255.0
-            # Directly map joint angle to gripper range without normalizing to [0, 1]
-            data.ctrl[-1] = grip_min + (grip_max - grip_min) * (joints_angle / joint_angle_max)
-            # Clamp to valid range
-            data.ctrl[-1] = np.clip(data.ctrl[-1], grip_min, grip_max)
+
+            # Arm Joints
+            data.ctrl[:-4] = joints_angle
             
-            if joints_angle % 0.2 < 0.005:
+
+            # Gripper
+            gripper_lower_limit = -0.25
+            gripper_upper_limit = 0.8
+            data.ctrl[-4:-2] = (gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit)) * (abs(joints_angle) / joint_angle_max)
+            
+            gripper_lower_limit = 0.0
+            gripper_upper_limit = 0.8
+            data.ctrl[-2:] = (gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit)) * (abs(joints_angle) / joint_angle_max)
+            
+            
+            if int(joints_angle / 0.002) % 100 == 0:
                 print(f"🔧 Moving joints to angle: {joints_angle:.3f}, gripper: {data.ctrl[-1]:.3f}")
 
             # Advance physics one step
@@ -102,7 +128,7 @@ def main(args):
                 viewer_handle.sync()
             else:
                 break
-
+            
             time.sleep(dt)
     else:
         try:
@@ -169,7 +195,8 @@ if __name__ == "__main__":
         "--ip",
         # default="192.168.50.153",
         # default="192.168.10.137",
-        default="192.168.10.113",
+        # default="192.168.10.113",
+        default="192.168.11.99",
         # default="192.168.10.191",
         help="Vision Pro IP address (only used with --viewer ar)",
     )
@@ -182,3 +209,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
+
+
+

@@ -8,10 +8,10 @@ def main(args):
     streamer = VisionProStreamer(ip=args.ip, record=True)
     
     streamer.configure_video(
-        device="0:none",
-        format="avfoundation",
-        size="640x480",
-        fps=30,
+        device="/dev/video0",
+        format="mjpeg",
+        size="1280x720",
+        fps=25,
     )
     streamer.start_webrtc(port=9999)
     
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Stream video from Python to VisionOS with hand tracking."
     )
-    parser.add_argument("--ip", type=str, required=True)
+    parser.add_argument("--ip", default="192.168.11.99", type=str)
     args = parser.parse_args()
 
     main(args)

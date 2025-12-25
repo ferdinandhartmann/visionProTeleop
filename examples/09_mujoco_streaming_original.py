@@ -33,6 +33,12 @@ def main(args):
     )
 
     streamer.start_webrtc()
+    
+    # Wait for connection and USDZ transfer
+    print("[CROSS-NETWORK] Waiting for WebRTC connection and scene transfer...")
+    if not streamer.wait_for_sim_channel(timeout=60.0):
+        print("Timeout or error waiting for connection!")
+        return
 
 
     logs_dir = ASSETS_DIR / "logs"
@@ -92,7 +98,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ip",
-        default="192.168.11.99",
+        default="10.29.239.70",
         help="Vision Pro IP address (only used with --viewer ar)",
     )
     parser.add_argument(
