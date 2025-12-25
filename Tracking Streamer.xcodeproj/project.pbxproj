@@ -64,8 +64,6 @@
 		C1EAFA852EDF477200549580 /* DropboxUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFA842EDF477200549580 /* DropboxUploader.swift */; };
 		C1EAFA872EDF477900549580 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFA862EDF477900549580 /* KeychainManager.swift */; };
 		C1EAFA8B2EDF528900549580 /* GoogleDriveUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFA8A2EDF528900549580 /* GoogleDriveUploader.swift */; };
-		C1EAFAAE2EE0898E00549580 /* opencv2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1EAFA342EDCF80A00549580 /* opencv2.xcframework */; };
-		C1EAFAAF2EE089A200549580 /* OpenCVWrapper.mm in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFA202EDCF22A00549580 /* OpenCVWrapper.mm */; };
 		C1EAFAB72EE0C33100549580 /* ExtrinsicCalibrationView_New.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFAB62EE0C33100549580 /* ExtrinsicCalibrationView_New.swift */; };
 		C1EAFABB2EE0CB1700549580 /* MultipeerCalibrationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFABA2EE0CB1700549580 /* MultipeerCalibrationManager.swift */; };
 		C1EAFABF2EE11B5D00549580 /* CameraCalibrationWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFABE2EE11B5D00549580 /* CameraCalibrationWizardView.swift */; };
@@ -137,7 +135,6 @@
 		C1EAF9762ED7EC9000549580 /* CombinedStreamingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CombinedStreamingView.swift; sourceTree = "<group>"; };
 		C1EAF9782EDBA73600549580 /* UVCCameraManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UVCCameraManager.swift; sourceTree = "<group>"; };
 		C1EAF97E2EDBB9C700549580 /* RecordingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingManager.swift; sourceTree = "<group>"; };
-		C1EAF9C72EDBF9C100549580 /* Tracking Viewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Tracking Viewer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1EAFA1F2EDCF22A00549580 /* OpenCVWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OpenCVWrapper.h; sourceTree = "<group>"; };
 		C1EAFA202EDCF22A00549580 /* OpenCVWrapper.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = OpenCVWrapper.mm; sourceTree = "<group>"; };
 		C1EAFA272EDCF5CF00549580 /* CameraCalibrationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCalibrationManager.swift; sourceTree = "<group>"; };
@@ -169,14 +166,6 @@
 				C1EAFA352EDCF80A00549580 /* opencv2.xcframework in Frameworks */,
 				C1DA80DC2ED0F61D00B55CC2 /* RealityKitContent in Frameworks */,
 				C1E05F782ECD84DF0018C506 /* LiveKitWebRTC in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		C1EAF9C42EDBF9C100549580 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				C1EAFAAE2EE0898E00549580 /* opencv2.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -235,7 +224,6 @@
 			isa = PBXGroup;
 			children = (
 				165ADB472B4B71B0008A756F /* Tracking Streamer.app */,
-				C1EAF9C72EDBF9C100549580 /* Tracking Viewer.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -365,28 +353,6 @@
 			productReference = 165ADB472B4B71B0008A756F /* Tracking Streamer.app */;
 			productType = "com.apple.product-type.application";
 		};
-		C1EAF9C62EDBF9C100549580 /* Tracking Viewer */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = C1EAF9CF2EDBF9C300549580 /* Build configuration list for PBXNativeTarget "Tracking Viewer" */;
-			buildPhases = (
-				C1EAF9C32EDBF9C100549580 /* Sources */,
-				C1EAF9C42EDBF9C100549580 /* Frameworks */,
-				C1EAF9C52EDBF9C100549580 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				C1EAF9C82EDBF9C100549580 /* Tracking Viewer */,
-			);
-			name = "Tracking Viewer";
-			packageProductDependencies = (
-			);
-			productName = "Tracking Viewer";
-			productReference = C1EAF9C72EDBF9C100549580 /* Tracking Viewer.app */;
-			productType = "com.apple.product-type.application";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -399,9 +365,6 @@
 				TargetAttributes = {
 					165ADB462B4B71B0008A756F = {
 						CreatedOnToolsVersion = 15.2;
-					};
-					C1EAF9C62EDBF9C100549580 = {
-						CreatedOnToolsVersion = 26.1.1;
 					};
 				};
 			};
@@ -427,7 +390,6 @@
 			projectRoot = "";
 			targets = (
 				165ADB462B4B71B0008A756F /* Tracking Streamer */,
-				C1EAF9C62EDBF9C100549580 /* Tracking Viewer */,
 			);
 		};
 /* End PBXProject section */
@@ -444,13 +406,6 @@
 				16EA6A632B68629200A3A740 /* screenshot1280w2.jpg in Resources */,
 				16267B502B57D172000CA8AD /* Localizable.xcstrings in Resources */,
 				165ADB532B4B71B2008A756F /* Assets.xcassets in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		C1EAF9C52EDBF9C100549580 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -508,14 +463,6 @@
 				C1EAFA292EDCF5CF00549580 /* CameraCalibrationManager.swift in Sources */,
 				C1EAFAB72EE0C33100549580 /* ExtrinsicCalibrationView_New.swift in Sources */,
 				C1EAFA2A2EDCF5CF00549580 /* CameraCalibrationView.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		C1EAF9C32EDBF9C100549580 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				C1EAFAAF2EE089A200549580 /* OpenCVWrapper.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -651,18 +598,21 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = "Tracking Streamer/VisionProTeleop.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 16;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = ATTMC2WVK2;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "$(TARGET_NAME)/Supporting files/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Tracking Streamer";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSCameraUsageDescription = "This app might use your cameras to sense the surrounding environments. ";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSAccessoryTrackingUsageDescription = "VisionProTeleop uses accessory tracking to stream spatial controller poses for teleoperation.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "VisionProTeleop needs camera access to display video from connected USB cameras (UVC devices).";
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "This app tracks your hand to teleoperate a robot. ";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app uses the local network to communicate with iPhone for real-time calibration synchronization.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app uses your microphone to communicate with the robot.";
 				INFOPLIST_KEY_NSWorldSensingUsageDescription = "This app senses your surronuding world to reconstruct a simulation.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -670,7 +620,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 2.51;
-				PRODUCT_BUNDLE_IDENTIFIER = improbable.younghyo.DexTeleop2;
+				PRODUCT_BUNDLE_IDENTIFIER = ferdinand.avp.teleop;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -690,18 +640,21 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = "Tracking Streamer/VisionProTeleop.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 16;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = ATTMC2WVK2;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "$(TARGET_NAME)/Supporting files/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Tracking Streamer";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSCameraUsageDescription = "This app might use your cameras to sense the surrounding environments. ";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSAccessoryTrackingUsageDescription = "VisionProTeleop uses accessory tracking to stream spatial controller poses for teleoperation.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "VisionProTeleop needs camera access to display video from connected USB cameras (UVC devices).";
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "This app tracks your hand to teleoperate a robot. ";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app uses the local network to communicate with iPhone for real-time calibration synchronization.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app uses your microphone to communicate with the robot.";
 				INFOPLIST_KEY_NSWorldSensingUsageDescription = "This app senses your surronuding world to reconstruct a simulation.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -709,7 +662,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 2.51;
-				PRODUCT_BUNDLE_IDENTIFIER = improbable.younghyo.DexTeleop2;
+				PRODUCT_BUNDLE_IDENTIFIER = ferdinand.apv.teleop;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -718,94 +671,6 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				XROS_DEPLOYMENT_TARGET = 2.1;
-			};
-			name = Release;
-		};
-		C1EAF9D02EDBF9C300549580 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "Tracking Viewer/Tracking Viewer.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
-				DEVELOPMENT_TEAM = ATTMC2WVK2;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "Tracking Viewer/Tracking-Viewer-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Tracking Manager";
-				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app uses the local network to communicate with Vision Pro for real-time calibration synchronization.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "improbable.younghyo.Tracking-Viewer";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "";
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		C1EAF9D12EDBF9C300549580 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "Tracking Viewer/Tracking Viewer.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
-				DEVELOPMENT_TEAM = ATTMC2WVK2;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "Tracking Viewer/Tracking-Viewer-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Tracking Manager";
-				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app uses the local network to communicate with Vision Pro for real-time calibration synchronization.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "improbable.younghyo.Tracking-Viewer";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "";
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -826,15 +691,6 @@
 			buildConfigurations = (
 				165ADB5B2B4B71B2008A756F /* Debug */,
 				165ADB5C2B4B71B2008A756F /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		C1EAF9CF2EDBF9C300549580 /* Build configuration list for PBXNativeTarget "Tracking Viewer" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				C1EAF9D02EDBF9C300549580 /* Debug */,
-				C1EAF9D12EDBF9C300549580 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -875,7 +731,7 @@
 		};
 		C1E05F762ECD84DF0018C506 /* XCRemoteSwiftPackageReference "webrtc-xcframework" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "git@github.com:livekit/webrtc-xcframework.git";
+			repositoryURL = "https://github.com/livekit/webrtc-xcframework.git";
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 137.7151.10;
