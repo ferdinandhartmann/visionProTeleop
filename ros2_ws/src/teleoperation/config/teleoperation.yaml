@@ -20,10 +20,12 @@ mujoco_streamer:
 
 camera_streamer:
   ros__parameters:
-    visionpro_ip: "192.168.11.99"
+    visionpro_ip: "192.168.10.113"
     resolution:  "320x240"  # "1280x720"
     # camera_input: "/dev/video4" # Robot camera
     camera_input: "/dev/video0" # Laptop camera
+    format: "v4l2" # on linux "v4l2", on windows "dshow", on mac "avfoundation"
+    fps: 25
 
 teleop_control_cpp:
   ros__parameters:

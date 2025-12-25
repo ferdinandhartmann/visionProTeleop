@@ -33,6 +33,9 @@ def main(args):
 
     streamer = None
     viewer_handle = None
+    
+    STREAM_CAMERA = True
+
 
     if args.viewer == "ar":
         # Vision Pro AR streaming via VisionProStreamer
@@ -50,8 +53,14 @@ def main(args):
             grpc_port=args.port,
             force_reload=False,
         )
+        
+        if STREAM_CAMERA:
+            from avp_stream import VisionProStreamer
+            streamer.configure_video(device="/dev/video0", format="v4l2", size="1280x720", fps=25)
+            print("Vision Pro camera streaming enabled")
+            
+        streamer.start_webrtc(port=9999)
 
-        streamer.start_webrtc()
     else:
         # Local MuJoCo viewer (no streaming)
         from mujoco import viewer as mj_viewer
@@ -62,16 +71,6 @@ def main(args):
 
     movement = True  # Set to True to have joints move back and forth using motors
 
-    STREAM_CAMERA = True
-    
-    if STREAM_CAMERA:
-        from avp_stream import VisionProStreamer
-        # Start Vision Pro streaming
-        streamer_video = VisionProStreamer(ip=args.ip)
-        streamer_video.configure_video(device="/dev/video0", format="mjpeg", size="1280x720", fps=25)
-        streamer_video.start_webrtc(port=9999)
-        print("Vision Pro camera streaming enabled")
-        
 
     logs_dir = ASSETS_DIR / "logs"
     episodes = sorted(logs_dir.glob("ep*.npz"))
@@ -114,9 +113,6 @@ def main(args):
             gripper_upper_limit = 0.8
             data.ctrl[-2:] = (gripper_lower_limit + (gripper_upper_limit - gripper_lower_limit)) * (abs(joints_angle) / joint_angle_max)
             
-            
-            if int(joints_angle / 0.002) % 100 == 0:
-                print(f"🔧 Moving joints to angle: {joints_angle:.3f}, gripper: {data.ctrl[-1]:.3f}")
 
             # Advance physics one step
             mujoco.mj_step(model, data)
@@ -195,8 +191,8 @@ if __name__ == "__main__":
         "--ip",
         # default="192.168.50.153",
         # default="192.168.10.137",
-        # default="192.168.10.113",
-        default="192.168.11.99",
+        default="192.168.10.113",
+        # default="192.168.11.99",
         # default="192.168.10.191",
         help="Vision Pro IP address (only used with --viewer ar)",
     )

@@ -21,12 +21,17 @@ class CameraStreamer(Node):
                 ('visionpro_ip', '192.168.11.99'),
                 ('resolution', '1280x720'),
                 ('camera_input', '/dev/video0')
+                ('format', 'v4l2'),
+                ('fps', 25),
             ]
         )
 
         self.visionpro_ip = self.get_parameter('visionpro_ip').get_parameter_value().string_value
         self.resolution = self.get_parameter('resolution').get_parameter_value().string_value
         self.camera_input = self.get_parameter('camera_input').get_parameter_value().string_value
+        self.format = self.get_parameter('format').get_parameter_value().string_value
+        self.fps = self.get_parameter('fps').get_parameter_value().integer_value
+        
 
         self.publisher = self.create_publisher(Image, "/webcam/image_raw", 10)
         self.bridge = CvBridge()
@@ -40,7 +45,7 @@ class CameraStreamer(Node):
         if USE_VISIONPRO:
             self.streamer = VisionProStreamer(ip=self.visionpro_ip)
             self.streamer.configure_video(
-                device=self.camera_input, format="mjpeg", size=self.resolution, fps=25
+                device=self.camera_input, format=self.format, size=self.resolution, fps=self.fps
             )
             self.streamer.start_webrtc(port=9999)
             self.get_logger().info("Vision Pro streaming enabled")
