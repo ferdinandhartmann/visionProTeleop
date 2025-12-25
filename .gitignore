@@ -17,3 +17,16 @@ __pycache__/
 
 *.usdz
 *.usda
+build/
+*.mp4
+# CloudKit private key - DO NOT COMMIT
+avp_stream/datasets/eckey.pem
+*.pem
+downloads/
+
+.DS_Store
+__pycache__/
+*.pyc
+xcuserdata/
+*.npz
+.DS_Store

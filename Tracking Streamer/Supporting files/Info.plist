@@ -2,8 +2,32 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Google OAuth URL Scheme for ASWebAuthenticationSession callback -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Google OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.613801329299-jcqrgumln3s9udtomsll5dahcbjcivej</string>
+			</array>
+		</dict>
+	</array>
+	
 	<key>NSCameraUsageDescription</key>
 	<string>VisionProTeleop needs camera access to display video from connected USB cameras (UVC devices).</string>
+	
+	<!-- Accessory Tracking (visionOS 26.0+) -->
+	<key>NSAccessoryTrackingUsageDescription</key>
+	<string>VisionProTeleop uses accessory tracking to stream spatial controller poses for teleoperation.</string>
+	<key>GCSupportedGameControllers</key>
+	<array>
+		<dict>
+			<key>ProfileName</key>
+			<string>SpatialGamepad</string>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -40,5 +64,14 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	
+	<!-- Multipeer Connectivity / Bonjour Services -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_vp-calibrate._tcp</string>
+		<string>_vp-calibrate._udp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>This app uses the local network to communicate with iPhone for real-time calibration synchronization.</string>
 </dict>
 </plist>

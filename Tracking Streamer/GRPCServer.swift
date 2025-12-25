@@ -11,24 +11,24 @@ final class GRPCServerManager: ObservableObject {
     
     func startServer(port: Int = 12345) async {
         self.currentPort = port
-        print("🚀 Starting gRPC server...")
+        dlog("🚀 Starting gRPC server...")
         do {
             // Create the service implementation
             let handTrackingService = HandTrackingServiceImpl()
-            print("✅ Created HandTrackingServiceImpl")
+            dlog("✅ Created HandTrackingServiceImpl")
             
             // Create the gRPC server with NIO transport
             let transport = HTTP2ServerTransport.Posix(
                 address: .ipv4(host: "0.0.0.0", port: currentPort),
                 transportSecurity: .plaintext
             )
-            print("✅ Created HTTP2ServerTransport on port \(currentPort)")
+            dlog("✅ Created HTTP2ServerTransport on port \(currentPort)")
             
             let server = GRPCServer(
                 transport: transport,
                 services: [handTrackingService]
             )
-            print("✅ Created GRPCServer with service")
+            dlog("✅ Created GRPCServer with service")
             
             self.grpcServer = server
             
@@ -37,23 +37,23 @@ final class GRPCServerManager: ObservableObject {
                 DataManager.shared.grpcServerReady = true
             }
             
-            print("🎯 Starting server.serve()...")
+            dlog("🎯 Starting server.serve()...")
             try await server.serve()
-            print("🚀 gRPC server started successfully on port \(currentPort)")
+            dlog("🚀 gRPC server started successfully on port \(currentPort)")
             
         } catch {
-            print("❌ Failed to start gRPC server: \(error)")
-            print("🔍 Error details: \(error.localizedDescription)")
+            dlog("❌ Failed to start gRPC server: \(error)")
+            dlog("🔍 Error details: \(error.localizedDescription)")
         }
     }
     
     func stopServer() async {
         if let server = self.grpcServer {
             server.beginGracefulShutdown()
-            print("🛑 gRPC server stopped")
+            dlog("🛑 gRPC server stopped")
             self.grpcServer = nil
         } else {
-            print("ℹ️ gRPC server was not running")
+            dlog("ℹ️ gRPC server was not running")
         }
     }
 }
@@ -63,7 +63,7 @@ final class GRPCServerManager: ObservableObject {
 struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServiceProtocol {
     
     init() {
-        print("🎯 HandTrackingServiceImpl initialized")
+        dlog("🎯 HandTrackingServiceImpl initialized")
     }
     
     func streamHandUpdates(
@@ -71,7 +71,7 @@ struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServicePr
         response: GRPCCore.RPCWriter<Handtracking_HandUpdate>,
         context: GRPCCore.ServerContext
     ) async throws {
-        print("📥 [DEBUG] streamHandUpdates called - client connected!")
+        dlog("📥 [DEBUG] streamHandUpdates called - client connected!")
         
         // Track if this is a WebRTC info-only connection (will close immediately)
         let isWebRTCInfoOnly = request.head.m00 == 999.0
@@ -79,20 +79,27 @@ struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServicePr
         // Check if this is a special "discovery" message from Python
         // Python will send a message with Head.m00 = 888.0 to announce its presence
         if request.head.m00 == 888.0 {
-            print("✨ [DEBUG] Discovery message detected!")
+            dlog("✨ [DEBUG] Discovery message detected!")
             let ip1 = Int(request.head.m01)
             let ip2 = Int(request.head.m02)
             let ip3 = Int(request.head.m03)
             let ip4 = Int(request.head.m10)
             let pythonIP = "\(ip1).\(ip2).\(ip3).\(ip4)"
-            print("🔍 Python client discovered at: \(pythonIP)")
-            print("💾 [DEBUG] Storing Python IP in DataManager...")
+            let versionCode = Int(request.head.m30)  // Library version (0 if old library)
+            dlog("🔍 Python client discovered at: \(pythonIP), version code: \(versionCode)")
+            dlog("💾 [DEBUG] Storing Python IP and version in DataManager...")
             await MainActor.run {
                 DataManager.shared.pythonClientIP = pythonIP
+                DataManager.shared.pythonLibraryVersionCode = versionCode
+                if versionCode > 0 && versionCode < DataManager.minimumPythonVersionCode {
+                    dlog("⚠️ [VERSION] Python library version \(versionCode) is older than minimum required \(DataManager.minimumPythonVersionCode)")
+                } else if versionCode == 0 {
+                    dlog("⚠️ [VERSION] Python library does not report version (likely < 2.2.2)")
+                }
             }
         } else if isWebRTCInfoOnly {
             // WebRTC server info message
-            print("🎞️ [DEBUG] WebRTC server info message detected (info-only connection)!")
+            dlog("🎞️ [DEBUG] WebRTC server info message detected (info-only connection)!")
             let ip1 = Int(request.head.m01)
             let ip2 = Int(request.head.m02)
             let ip3 = Int(request.head.m03)
@@ -103,11 +110,17 @@ struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServicePr
             let audioEnabled = request.head.m20 > 0.5
             let videoEnabled = request.head.m21 > 0.5
             let simEnabled = request.head.m22 > 0.5
+            let meshEnabled = request.head.m23 > 0.5
+            let versionCode = Int(request.head.m30)  // Library version (0 if old library)
             let host = "\(ip1).\(ip2).\(ip3).\(ip4)"
-            print("🎞️ WebRTC server available at: \(host):\(port) (video=\(videoEnabled), audio=\(audioEnabled), sim=\(simEnabled))")
-            print("💾 [DEBUG] Storing WebRTC info in DataManager...")
+            dlog("🎞️ WebRTC server available at: \(host):\(port) (video=\(videoEnabled), audio=\(audioEnabled), sim=\(simEnabled), mesh=\(meshEnabled), version=\(versionCode))")
+            dlog("💾 [DEBUG] Storing WebRTC info in DataManager...")
             
             await MainActor.run {
+                // Update version if provided (WebRTC info may come after discovery)
+                if versionCode > 0 {
+                    DataManager.shared.pythonLibraryVersionCode = versionCode
+                }
                 let hadConnection = DataManager.shared.webrtcServerInfo != nil
                 DataManager.shared.webrtcServerInfo = (host: host, port: port)
                 DataManager.shared.stereoEnabled = stereoVideo
@@ -119,15 +132,31 @@ struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServicePr
                     DataManager.shared.webrtcGeneration = 1
                 } else {
                     DataManager.shared.webrtcGeneration += 1
-                }
-                print("🔄 [DEBUG] Set WebRTC generation to \(DataManager.shared.webrtcGeneration)")
+                }  
+                dlog("🔄 [DEBUG] Set WebRTC generation to \(DataManager.shared.webrtcGeneration)")
             }
             
             // Send one response and return for info-only connections
             try await response.write(fill_handUpdate())
             return
+        } else if request.head.m00 == 778.0 {
+            // Python calibration mode signal
+            dlog("🎯 [DEBUG] Calibration mode signal detected!")
+            await MainActor.run {
+                DataManager.shared.pythonCalibrationActive = true
+                DataManager.shared.pythonCalibrationStep = Int(request.head.m01)
+                DataManager.shared.pythonCalibrationSamplesCollected = Int(request.head.m02)
+                DataManager.shared.pythonCalibrationSamplesNeeded = Int(request.head.m03)
+                DataManager.shared.pythonCalibrationTargetMarker = Int(request.head.m10)
+                DataManager.shared.pythonCalibrationMarkerDetected = request.head.m11 > 0.5
+                DataManager.shared.pythonCalibrationProgress = request.head.m12 / 100.0
+                DataManager.shared.pythonCalibrationStepStatus = Int(request.head.m13)
+            }
+            // Send response and return for calibration status messages
+            try await response.write(fill_handUpdate())
+            return
         } else {
-            print("⚠️ [DEBUG] Not a special message (expected m00=888.0 or 999.0, got \(request.head.m00))")
+            dlog("⚠️ [DEBUG] Not a special message (expected m00=888.0, 999.0, or 778.0, got \(request.head.m00))")
         }
         
         // Register for benchmark events
@@ -135,8 +164,41 @@ struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServicePr
             BenchmarkEventDispatcher.shared.register(responseWriter: response)
         }
         
-        print("🔄 [DEBUG] Starting hand tracking data stream...")
-        print("⏱️ [DEBUG] Starting hand tracking updates...")
+        // Check version compatibility - block streaming if incompatible
+        let versionCode = Int(request.head.m30)
+        let isVersionCompatible = versionCode >= DataManager.minimumPythonVersionCode
+        
+        if !isVersionCompatible {
+            dlog("🚫 [VERSION] Blocking hand tracking stream - Python library version \(versionCode) is below minimum \(DataManager.minimumPythonVersionCode)")
+            dlog("🚫 [VERSION] User must upgrade: pip install --upgrade avp-stream")
+            
+            // Keep connection alive but don't send useful hand tracking data
+            // Periodically write empty updates to detect when client disconnects
+            while !Task.isCancelled {
+                do {
+                    // Send an empty update (all zeros) - this allows us to detect disconnection
+                    // The Python side will receive this but it won't contain valid tracking data
+                    try await response.write(Handtracking_HandUpdate())
+                    try await Task.sleep(nanoseconds: 500_000_000)  // Check every 0.5 seconds
+                } catch {
+                    dlog("🔌 [VERSION] Client disconnected while blocked: \(error)")
+                    break
+                }
+            }
+            
+            // Cleanup on disconnect (same as normal disconnect)
+            dlog("🧹 [VERSION] Cleaning up after blocked client disconnect")
+            await MainActor.run {
+                DataManager.shared.pythonClientIP = nil
+                DataManager.shared.pythonLibraryVersionCode = 0
+                DataManager.shared.webrtcServerInfo = nil
+                DataManager.shared.webrtcGeneration = -1
+            }
+            return
+        }
+        
+        dlog("🔄 [DEBUG] Starting hand tracking data stream...")
+        dlog("⏱️ [DEBUG] Starting hand tracking updates...")
         
         var updateCount = 0
         
@@ -145,14 +207,14 @@ struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServicePr
             let handUpdate = fill_handUpdate()
             updateCount += 1
             
-            if updateCount == 1 || updateCount % 100 == 0 {
-                print("📤 [DEBUG] Sending hand update #\(updateCount)...")
-            }
+//            if updateCount == 1 || updateCount % 100 == 0 {
+//                dlog("📤 [DEBUG] Sending hand update #\(updateCount)...")
+//            }
             
             do {
                 try await response.write(handUpdate)
             } catch {
-                print("🔌 [DEBUG] Client disconnected or error writing: \(error)")
+                dlog("🔌 [DEBUG] Client disconnected or error writing: \(error)")
                 break
             }
             
@@ -160,17 +222,19 @@ struct HandTrackingServiceImpl: Handtracking_HandTrackingService.SimpleServicePr
             try await Task.sleep(nanoseconds: 5_000_000)
         }
         
-        print("🔌 [DEBUG] Stream ended. Sent \(updateCount) updates.")
+        dlog("🔌 [DEBUG] Stream ended. Sent \(updateCount) updates.")
         
         // Cleanup on disconnect
         if !isWebRTCInfoOnly {
             BenchmarkEventDispatcher.shared.clear()
             
             await MainActor.run {
-                print("🧹 [DEBUG] Cleaning up connection state after main client disconnect")
+                dlog("🧹 [DEBUG] Cleaning up connection state after main client disconnect")
                 DataManager.shared.pythonClientIP = nil
+                DataManager.shared.pythonLibraryVersionCode = 0  // Reset version on disconnect
                 DataManager.shared.webrtcServerInfo = nil
                 DataManager.shared.webrtcGeneration = -1
+                DataManager.shared.pythonCalibrationActive = false  // Reset calibration state
             }
         }
     }

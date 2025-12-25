@@ -90,7 +90,7 @@ if __name__ == "__main__":
 
     import argparse 
     parser = argparse.ArgumentParser(description="Synthetic Video Streamer for VisionPro")
-    parser.add_argument("--ip", type=str, required=True)
+    parser.add_argument("--ip", type=str, required=True, help="Vision Pro IP address (e.g., 192.168.1.100) or room code (e.g., ABC-1234)")
     parser.add_argument(
         "--hand-tracking-backend",
         type=str,
@@ -98,10 +98,14 @@ if __name__ == "__main__":
         choices=["grpc", "webrtc"],
         help="Transport used for hand tracking data (default: grpc)",
     )
+    parser.add_argument(
+        "--relay-only",
+        action="store_true",
+        help="Force TURN relay only (skip direct/STUN, for testing cross-network)",
+    )
     args = parser.parse_args()
-    # Create streamer
-    streamer = VisionProStreamer(ip=args.ip, ht_backend=args.hand_tracking_backend)
-    
+    # Create streamer (ip can be an IP address or room code)
+    streamer = VisionProStreamer(ip=args.ip, ht_backend=args.hand_tracking_backend, relay_only=args.relay_only)
     
     streamer.register_frame_callback(hand_tracking_visualizer(streamer))
     

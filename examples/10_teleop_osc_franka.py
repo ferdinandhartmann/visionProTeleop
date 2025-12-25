@@ -301,7 +301,7 @@ def reset_simulation(model, data, controller, streamer):
 
         frame = hand2pose(hand, side="right")
         data.mocap_pos[controller.mocap_id] = frame[:3, 3]
-        data.mocap_quat[controller.mocap_id] = R.from_matrix(frame[:3, :3]).as_quat()
+        data.mocap_quat[controller.mocap_id] = R.from_matrix(frame[:3, :3]).as_quat(scalar_first=True)
         
         mujoco.mj_forward(model, data)
         streamer.update_sim()
@@ -320,7 +320,7 @@ def reset_simulation(model, data, controller, streamer):
         mujoco.mj_forward(model, data)
 
         target_pos = frame[:3, 3]
-        target_quat = R.from_matrix(frame[:3, :3]).as_quat()
+        target_quat = R.from_matrix(frame[:3, :3]).as_quat(scalar_first=True)
 
         cur_pos = data.site(controller.site_id).xpos
         cur_quat = np.zeros(4)
@@ -386,7 +386,7 @@ def main(args):
     # attach_to format: [x, y, z, yaw_degrees]
     attach_to = [0.2, 1.0, 0.7, -90]
 
-    streamer.configure_sim(
+    streamer.configure_mujoco(
         xml_path=xml_path,
         model=model,
         data=data,
@@ -419,7 +419,7 @@ def main(args):
             frame = hand2pose(hand, side="right")
 
             data.mocap_pos[controller.mocap_id] = frame[:3, 3]
-            data.mocap_quat[controller.mocap_id] = R.from_matrix(frame[:3, :3]).as_quat()
+            data.mocap_quat[controller.mocap_id] = R.from_matrix(frame[:3, :3]).as_quat(scalar_first=True)
 
             controller.pose2torque(model, data)
             streamer.update_sim()
@@ -446,7 +446,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ip",
-        default="192.168.10.113",
+        default="192.168.86.21",
         help="Vision Pro IP address",
     )
     parser.add_argument(

@@ -35,15 +35,26 @@ struct VisionProTeleopApp: App {
     }
     
     init() {
-        print("🚀 [DEBUG] VisionProTeleopApp.init() - App launching...")
+        dlog("🚀 [DEBUG] VisionProTeleopApp.init() - App launching...")
         🧑HeadTrackingComponent.registerComponent()
         🧑HeadTrackingSystem.registerSystem()
         
         // Start gRPC server immediately when app launches
-        print("🌐 [DEBUG] Starting gRPC server on app launch...")
+        dlog("🌐 [DEBUG] Starting gRPC server on app launch...")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            print("🔧 [DEBUG] Calling startServer() from app init...")
+            dlog("🔧 [DEBUG] Calling startServer() from app init...")
             startServer()
+        }
+        
+        // Configure settings sync from iOS
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            Task { @MainActor in
+                VisionOSSettingsSync.shared.configure(
+                    dataManager: DataManager.shared,
+                    recordingManager: RecordingManager.shared
+                )
+                dlog("☁️ [DEBUG] VisionOS settings sync configured")
+            }
         }
     }
 }

@@ -5,6 +5,8 @@ import AVFoundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import GRPCProtobuf
+import PhotosUI
+import UniformTypeIdentifiers
 
 /// Protocol for MuJoCo manager to allow StatusOverlay to display status
 @MainActor
@@ -26,7 +28,7 @@ class NetworkInfoManager: ObservableObject {
     @Published var webrtcServerInfo: (host: String, port: Int)? = nil
     
     init() {
-        print("🔵 [StatusView] NetworkInfoManager init called")
+        dlog("🔵 [StatusView] NetworkInfoManager init called")
         updateNetworkInfo()
         
         // Periodically update status
@@ -45,12 +47,33 @@ class NetworkInfoManager: ObservableObject {
 /// Enum to track which settings panel is currently expanded
 enum ExpandedPanel: Equatable {
     case none
+    case settings  // Shows the settings menu (Layer 2)
     case videoSource
     case viewControls
     case recording
     case statusPosition
-    case calibration
-    case extrinsicCalibration
+    case cameraCalibration  // Unified camera calibration
+    case cloudStorageDebug
+    case visualizations  // Hand/head visualization toggles
+    case positionLayout  // Combined video view + controller position
+    case handTracking  // Hand tracking configuration (prediction, etc.)
+    case stereoBaseline  // Stereo IPD/baseline adjustment
+    case markerDetection  // ArUco marker detection settings
+    case accessoryTracking  // Spatial controller tracking (visionOS 26+)
+    case usdzCache  // USDZ scene cache management
+}
+
+/// App mode: Teleop (network-based teleoperation) vs Egorecord (local UVC recording)
+enum AppMode: String, CaseIterable {
+    case teleop = "teleop"
+    case egorecord = "egorecord"
+    
+    var displayName: String {
+        switch self {
+        case .teleop: return "Teleoperation"
+        case .egorecord: return "EgoRecord"
+        }
+    }
 }
 
 /// A floating status display that shows network connection info and follows the user's head
@@ -68,8 +91,8 @@ struct StatusOverlay: View {
     @Binding var previewStatusActive: Bool
     var mujocoManager: (any MuJoCoManager)?  // Optional MuJoCo manager for combined streaming
     @ObservedObject var dataManager = DataManager.shared
-    @StateObject private var uvcCameraManager = UVCCameraManager.shared
-    @StateObject private var recordingManager = RecordingManager.shared
+    @ObservedObject private var uvcCameraManager = UVCCameraManager.shared
+    @ObservedObject private var recordingManager = RecordingManager.shared
     @State private var ipAddresses: [(name: String, address: String)] = []
     @State private var pythonConnected: Bool = false
     @State private var pythonIP: String = "Not connected"
@@ -80,8 +103,21 @@ struct StatusOverlay: View {
     @State private var mujocoStatusUpdateTrigger: Bool = false  // Trigger for MuJoCo status updates
     @State private var showCalibrationSheet: Bool = false
     @State private var showExtrinsicCalibrationSheet: Bool = false
-    @StateObject private var calibrationManager = CameraCalibrationManager.shared
-    @StateObject private var extrinsicCalibrationManager = ExtrinsicCalibrationManager.shared
+    @State private var showCalibrationWizard: Bool = false
+    @State private var startCalibrationVerification: Bool = false
+
+    @ObservedObject private var calibrationManager = CameraCalibrationManager.shared
+    @ObservedObject private var extrinsicCalibrationManager = ExtrinsicCalibrationManager.shared
+    @ObservedObject private var cloudStorageSettings = CloudStorageSettings.shared
+    @ObservedObject private var signalingClient = SignalingClient.shared
+    
+    // App mode persistence
+    @AppStorage("appMode") private var appMode: AppMode = .teleop
+    // Remember the video source used in teleop mode so we can restore it when switching back from egorecord
+    @AppStorage("teleopVideoSource") private var teleopVideoSource: String = VideoSource.network.rawValue
+    
+    // Flashing animation for warnings
+    @State private var flashingOpacity: Double = 1.0
     
     init(hasFrames: Binding<Bool> = .constant(false), showVideoStatus: Bool = true, isMinimized: Binding<Bool> = .constant(false), showViewControls: Binding<Bool> = .constant(false), previewZDistance: Binding<Float?> = .constant(nil), previewActive: Binding<Bool> = .constant(false), userInteracted: Binding<Bool> = .constant(false), videoMinimized: Binding<Bool> = .constant(false), videoFixed: Binding<Bool> = .constant(false), previewStatusPosition: Binding<(x: Float, y: Float)?> = .constant(nil), previewStatusActive: Binding<Bool> = .constant(false), mujocoManager: (any MuJoCoManager)? = nil) {
         self._hasFrames = hasFrames
@@ -96,11 +132,10 @@ struct StatusOverlay: View {
         self._previewStatusPosition = previewStatusPosition
         self._previewStatusActive = previewStatusActive
         self.mujocoManager = mujocoManager
-        print("🟢 [StatusView] StatusOverlay init called, hasFrames: \(hasFrames.wrappedValue), showVideoStatus: \(showVideoStatus), mujocoEnabled: \(mujocoManager != nil)")
+//        dlog("🟢 [StatusView] StatusOverlay init called, hasFrames: \(hasFrames.wrappedValue), showVideoStatus: \(showVideoStatus), mujocoEnabled: \(mujocoManager != nil)")
     }
     
     var body: some View {
-        print("🟡 [StatusView] StatusOverlay body called")
         return ZStack {
             Group {
                 if isMinimized {
@@ -124,7 +159,7 @@ struct StatusOverlay: View {
             
             // Extrinsic calibration overlay
             if showExtrinsicCalibrationSheet {
-                ExtrinsicCalibrationView(onDismiss: {
+                ExtrinsicCalibrationViewNew(onDismiss: {
                     showExtrinsicCalibrationSheet = false
                 })
                 .frame(width: 500, height: 700)
@@ -132,37 +167,86 @@ struct StatusOverlay: View {
                 .cornerRadius(20)
                 .shadow(radius: 20)
             }
+            
+            // Camera Calibration Wizard overlay
+            if showCalibrationWizard {
+                CameraCalibrationWizardView(onDismiss: {
+                    showCalibrationWizard = false
+                    startCalibrationVerification = false
+                }, initialStep: startCalibrationVerification ? .verification : .setup)
+                .frame(width: 520, height: 720)
+                .background(.regularMaterial)
+                .cornerRadius(20)
+                .shadow(radius: 20)
+            }
+            
+            // Python Calibration Status Overlay (from calibration_server.py)
+            if dataManager.pythonCalibrationActive {
+                PythonCalibrationStatusOverlay(
+                    step: dataManager.pythonCalibrationStep,
+                    targetMarker: dataManager.pythonCalibrationTargetMarker,
+                    samplesCollected: dataManager.pythonCalibrationSamplesCollected,
+                    samplesNeeded: dataManager.pythonCalibrationSamplesNeeded,
+                    markerDetected: dataManager.pythonCalibrationMarkerDetected,
+                    progress: dataManager.pythonCalibrationProgress,
+                    stepStatus: dataManager.pythonCalibrationStepStatus
+                )
+            }
         }
         .onAppear {
-            print("🔴 [StatusView] StatusOverlay onAppear called")
+            dlog("🔴 [StatusView] StatusOverlay onAppear called")
             ipAddresses = getIPAddresses()
-            print("🔴 [StatusView] IP Addresses: \(ipAddresses)")
+            dlog("🔴 [StatusView] IP Addresses: \(ipAddresses)")
+            
+            // Flashing animation for warnings (gentle pulse 1.5s cycle)
+            Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
+                withAnimation(.easeInOut(duration: 0.75)) {
+                    flashingOpacity = flashingOpacity == 1.0 ? 0.4 : 1.0
+                }
+            }
             
             // Update status periodically
             Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                 let wasPythonConnected = pythonConnected
                 let wasWebrtcConnected = webrtcConnected
                 
-                if let pythonClientIP = DataManager.shared.pythonClientIP {
+                // Check for Python connection via either local gRPC or remote signaling
+                let localPythonConnected = DataManager.shared.pythonClientIP != nil
+                let remotePythonConnected = signalingClient.peerConnected
+                
+                if localPythonConnected {
                     pythonConnected = true
-                    pythonIP = pythonClientIP
+                    pythonIP = DataManager.shared.pythonClientIP ?? "Connected"
+                } else if remotePythonConnected {
+                    pythonConnected = true
+                    pythonIP = "Remote (\(signalingClient.roomCode))"
                 } else {
                     pythonConnected = false
                     pythonIP = "Not connected"
                 }
                 
-                webrtcConnected = DataManager.shared.webrtcServerInfo != nil
+                // Check for WebRTC connection via either local or remote
+                let localWebrtcConnected = DataManager.shared.webrtcServerInfo != nil
+                webrtcConnected = localWebrtcConnected || remotePythonConnected
                 
                 // Toggle trigger to force MuJoCo status update
                 mujocoStatusUpdateTrigger.toggle()
                 
                 // Detect disconnection and maximize status view
+                // But don't maximize if we're currently uploading to cloud - wait for upload to complete
                 if (wasPythonConnected && !pythonConnected) || (wasWebrtcConnected && !webrtcConnected) {
-                    print("🔌 [StatusView] Connection lost - maximizing status view")
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-                        isMinimized = false
-                        userInteracted = false  // Reset so it can auto-minimize again on next connection
-                        hasFrames = false  // Clear frames flag
+                    if recordingManager.isUploadingToCloud {
+                        dlog("🔌 [StatusView] Connection lost but upload in progress - staying minimized")
+                        // Just reset flags, don't maximize yet
+                        userInteracted = false
+                        hasFrames = false
+                    } else {
+                        dlog("🔌 [StatusView] Connection lost - maximizing status view")
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                            isMinimized = false
+                            userInteracted = false  // Reset so it can auto-minimize again on next connection
+                            hasFrames = false  // Clear frames flag
+                        }
                     }
                 }
                 
@@ -171,13 +255,27 @@ struct StatusOverlay: View {
                      // Only minimize on Python connection if NOT in video mode (hand tracking only)
                      // In video mode, we wait for frames to arrive (handled in ImmersiveView)
                      if !showVideoStatus {
-                         print("🔌 [StatusView] Connection established - minimizing status view")
+                         dlog("🔌 [StatusView] Connection established - minimizing status view")
                          if !userInteracted {
                              withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
                                  isMinimized = true
                              }
                          }
                      }
+                }
+                
+                // Check if upload just finished and we should maximize (deferred maximize after upload)
+                // If no Python connected, not uploading, and still minimized without user interaction
+                if !pythonConnected && !recordingManager.isUploadingToCloud && isMinimized && !userInteracted {
+                    // Additional check: only maximize if we were waiting for upload to finish
+                    // This is triggered periodically, so we need to detect the transition
+                    // We rely on the fact that hasFrames was set to false when connection was lost
+                    if !hasFrames {
+                        dlog("☁️ [StatusView] Upload completed and no connection - maximizing status view")
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                            isMinimized = false
+                        }
+                    }
                 }
             }
         }
@@ -215,15 +313,156 @@ struct StatusOverlay: View {
                 .cornerRadius(20)
             }
             
+            // Cloud upload progress indicator (show above buttons when uploading)
+            if recordingManager.isUploadingToCloud {
+                VStack(spacing: 6) {
+                    // Destination header
+                    HStack(spacing: 6) {
+                        Image(systemName: recordingManager.cloudProvider.icon)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(recordingManager.cloudProvider.color)
+                        
+                        Text("Uploading to \(recordingManager.cloudProvider.displayName)")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                        
+                        // Spinning indicator
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: recordingManager.cloudProvider.color))
+                            .scaleEffect(0.7)
+                    }
+                    
+                    // Current file being uploaded
+                    if !recordingManager.cloudUploadCurrentFileName.isEmpty {
+                        Text(recordingManager.cloudUploadCurrentFileName)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    
+                    let progress = recordingManager.cloudUploadTotalFiles > 0 
+                        ? Double(recordingManager.cloudUploadCurrentFile) / Double(recordingManager.cloudUploadTotalFiles) 
+                        : 0.0
+                    
+                    // Progress bar with percentage
+                    HStack(spacing: 8) {
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(0.2))
+                                .frame(width: 120, height: 8)
+                            
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(recordingManager.cloudProvider.color)
+                                .frame(width: 120 * progress, height: 8)
+                                .animation(.easeInOut(duration: 0.3), value: progress)
+                        }
+                        
+                        Text("\(recordingManager.cloudUploadCurrentFile)/\(recordingManager.cloudUploadTotalFiles)")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                        
+                        Text("(\(Int(progress * 100))%)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(recordingManager.cloudProvider.color.opacity(0.25))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(recordingManager.cloudProvider.color.opacity(0.5), lineWidth: 1)
+                        )
+                )
+            }
+            
+            // USDZ transfer progress indicator (show above buttons when transferring)
+            if dataManager.usdzTransferInProgress {
+                VStack(spacing: 6) {
+                    // Header
+                    HStack(spacing: 6) {
+                        Image(systemName: "cube.transparent.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.purple)
+                        
+                        Text("Loading 3D Scene")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                        
+                        // Spinning indicator
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .purple))
+                            .scaleEffect(0.7)
+                    }
+                    
+                    // Filename
+                    if !dataManager.usdzTransferFilename.isEmpty {
+                        Text(dataManager.usdzTransferFilename)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    
+                    // Progress bar with percentage
+                    HStack(spacing: 8) {
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(0.2))
+                                .frame(width: 140, height: 8)
+                            
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.purple)
+                                .frame(width: 140 * CGFloat(dataManager.usdzTransferProgress), height: 8)
+                                .animation(.easeInOut(duration: 0.2), value: dataManager.usdzTransferProgress)
+                        }
+                        
+                        Text("\(Int(dataManager.usdzTransferProgress * 100))%")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                    }
+                    
+                    // Size info
+                    Text("\(dataManager.usdzTransferReceivedChunks)/\(dataManager.usdzTransferTotalChunks) chunks • \(dataManager.usdzTransferTotalSizeKB) KB")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.purple.opacity(0.25))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(Color.purple.opacity(0.5), lineWidth: 1)
+                        )
+                )
+            }
+            
             HStack(spacing: 16) {
                 if showLocalExitConfirmation {
-                    // Confirmation mode
-                    Text("Exit?")
-                        .font(.headline)
-                        .foregroundColor(.white)
+                    // Confirmation mode with upload warning
+                    VStack(spacing: 8) {
+                        if recordingManager.isUploadingToCloud {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.orange)
+                                Text("Upload in progress!")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                        Text("Exit?")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                    }
                     
                     Button {
-                        print("❌ [StatusView] Exiting app now")
+                        dlog("❌ [StatusView] Exiting app now")
                         exit(0)
                     } label: {
                         ZStack {
@@ -337,7 +576,7 @@ struct StatusOverlay: View {
                     
                     // Exit button
                     Button {
-                        print("🔴 [StatusView] Exit button tapped (minimized)")
+                        dlog("🔴 [StatusView] Exit button tapped (minimized)")
                         withAnimation {
                             showLocalExitConfirmation = true
                         }
@@ -354,6 +593,22 @@ struct StatusOverlay: View {
                     .buttonStyle(.plain)
                 }
             }
+            
+            // Storage location indicator (minimal line below buttons)
+            HStack(spacing: 4) {
+                if recordingManager.storageLocation == .cloud {
+                    Image(systemName: recordingManager.cloudProvider.icon)
+                        .font(.system(size: 10))
+                    Text(recordingManager.cloudProvider.displayName)
+                        .font(.system(size: 10))
+                } else {
+                    Image(systemName: "internaldrive")
+                        .font(.system(size: 10))
+                    Text("Local")
+                        .font(.system(size: 10))
+                }
+            }
+            .foregroundColor(.white.opacity(0.5))
         }
         .padding(30)
         .background(Color.black.opacity(0.6))
@@ -362,99 +617,384 @@ struct StatusOverlay: View {
     }
 
     private var headerSection: some View {
-        HStack {
-            // Minimize button
-            Button {
-                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-                    isMinimized = true
-                    userInteracted = true  // Mark that user has interacted
+        VStack(spacing: 12) {
+            HStack {
+                // Minimize button
+                Button {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                        isMinimized = true
+                        userInteracted = true  // Mark that user has interacted
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.3))
+                            .frame(width: 60, height: 60)
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundColor(.white)
+                    }
                 }
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.3))
-                        .frame(width: 60, height: 60)
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(.white)
+                .buttonStyle(.plain)
+                
+                Spacer()
+                
+                Text("VisionProTeleop")
+                    .font(.system(size: 26, weight: .bold))
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                Button {
+                    dlog("🔴 [StatusView] Exit button tapped (expanded)")
+                    withAnimation {
+                        showLocalExitConfirmation = true
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 60, height: 60)
+                        Text("✕")
+                            .font(.system(size: 27, weight: .bold))
+                            .foregroundColor(.white)
+                    }
                 }
+                .buttonStyle(.plain)
+                .contentShape(Circle())
             }
-            .buttonStyle(.plain)
-            
-            Spacer()
-            
-            Text("VisionProTeleop")
-                .font(.title3)
-                .fontWeight(.bold)
-                .foregroundColor(.white)
-            
-            Spacer()
-            
-            Button {
-                print("🔴 [StatusView] Exit button tapped (expanded)")
-                withAnimation {
-                    showLocalExitConfirmation = true
-                }
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 60, height: 60)
-                    Text("✕")
-                        .font(.system(size: 27, weight: .bold))
-                        .foregroundColor(.white)
-                }
-            }
-            .buttonStyle(.plain)
-            .contentShape(Circle())
         }
+    }
+    
+    private var modeToggleSection: some View {
+        HStack(spacing: 0) {
+            ForEach(AppMode.allCases, id: \.self) { mode in
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        // When switching to egorecord, save current video source and force UVC
+                        if mode == .egorecord && appMode == .teleop {
+                            teleopVideoSource = dataManager.videoSource.rawValue
+                            dataManager.videoSource = .uvcCamera
+                        }
+                        // When switching back to teleop, restore the previous video source
+                        else if mode == .teleop && appMode == .egorecord {
+                            if let savedSource = VideoSource(rawValue: teleopVideoSource) {
+                                dataManager.videoSource = savedSource
+                            }
+                        }
+                        appMode = mode
+                    }
+                } label: {
+                    Text(mode.displayName)
+                        .foregroundColor(appMode == mode ? .white : .white.opacity(0.5))
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .font(.system(size: 20, weight: .bold))
+                        .background(
+                            appMode == mode 
+                                ? (mode == .teleop ? Color.blue : Color.orange)
+                                : Color.clear
+                        )
+                        .cornerRadius(16)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(Color.white.opacity(0.15))
+        .cornerRadius(20)
     }
 
     private var networkInfoSection: some View {
-        Group {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(ipAddresses, id: \.address) { ip in
-                    HStack {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 12, height: 12)
-                        Text("\(ip.name):")
-                            .foregroundColor(.white.opacity(0.8))
-                        Text(ip.address)
-                            .foregroundColor(.white)
-                            .fontWeight(.medium)
+        VStack(alignment: .leading, spacing: 12) {
+            // Side-by-side layout: Local Network | Remote
+            HStack(alignment: .top, spacing: 20) {
+                // LEFT: Local Network (IP Addresses)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wifi")
+                            .font(.system(size: 12))
+                            .foregroundColor(.blue.opacity(0.8))
+                        Text("Local Network")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white.opacity(0.6))
                     }
-                    .font(.body)
+                    
+                    ForEach(ipAddresses, id: \.address) { ip in
+                        HStack(spacing: 8) {
+                            Text(ip.name)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.5))
+                                .frame(width: 45, alignment: .trailing)
+                            Text(ip.address)
+                                .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.white)
+                        }
+                    }
+                }
+                
+                // Vertical Divider
+                Rectangle()
+                    .fill(Color.white.opacity(0.15))
+                    .frame(width: 1, height: 60)
+                
+                // RIGHT: Remote (Room Code)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 12))
+                            .foregroundColor(.cyan.opacity(0.8))
+                        Text("Remote")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    
+                    Text(signalingClient.roomCode)
+                        .font(.system(size: 22, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan)
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
             
-            HStack {
-                Circle()
-                    .fill(pythonConnected ? Color.green : Color.red)
-                    .frame(width: 12, height: 12)
-                Text("Python Client:")
-                    .foregroundColor(.white.opacity(0.8))
-                Text(pythonIP)
-                    .foregroundColor(.white)
-                    .fontWeight(.medium)
-            }
-            .font(.body)
-            
-            // Only show WebRTC status if video streaming is enabled
-            if showVideoStatus {
-                HStack {
-                    Circle()
-                        .fill(webrtcConnected ? Color.green : Color.orange)
-                        .frame(width: 12, height: 12)
-                    Text("WebRTC:")
-                        .foregroundColor(.white.opacity(0.8))
-                    Text(webrtcConnected ? "Connected" : "Waiting...")
-                        .foregroundColor(.white)
-                        .fontWeight(.medium)
+            // Connection status cards - show when Python connected via either method
+            HStack(spacing: 8) {
+                // Python connection card (local gRPC)
+                connectionStatusCard(
+                    icon: "terminal.fill",
+                    title: "Python",
+                    status: pythonConnected ? pythonIP : "Waiting...",
+                    isConnected: pythonConnected,
+                    accentColor: .green
+                )
+                
+                // WebRTC connection card (only if video mode)
+                if showVideoStatus {
+                    connectionStatusCard(
+                        icon: "video.fill",
+                        title: "WebRTC",
+                        status: webrtcConnected ? (DataManager.shared.webRTCConnectionType.isEmpty ? "Connected" : "Connected (\(DataManager.shared.webRTCConnectionType))") : "Waiting...",
+                        isConnected: webrtcConnected,
+                        accentColor: .purple
+                    )
                 }
-                .font(.body)
             }
         }
+    }
+
+    // New styled row for status items (Room Code, Status)
+    private func statusRow(icon: String, label: String, value: String, valueColor: Color, iconColor: Color, showActivitySpinner: Bool = false) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15))
+                .foregroundColor(iconColor.opacity(0.9))
+                .frame(width: 20)
+            
+            Text(label)
+                .font(.subheadline) // Approx 15pt
+                .foregroundColor(.white.opacity(0.7))
+            
+            Spacer()
+            
+            if showActivitySpinner {
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .frame(width: 16, height: 16)
+                    .padding(.trailing, 4)
+            }
+            
+            Text(value)
+                .font(.system(size: 15, weight: .bold, design: .monospaced))
+                .foregroundColor(valueColor)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.white.opacity(0.08))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+        )
+    }
+
+    private func connectionStatusCard(icon: String, title: String, status: String, isConnected: Bool, accentColor: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                    .foregroundColor(isConnected ? accentColor : .white.opacity(0.4))
+                Text(title)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white.opacity(0.7))
+                Spacer()
+                Circle()
+                    .fill(isConnected ? accentColor : Color.white.opacity(0.2))
+                    .frame(width: 6, height: 6)
+            }
+            
+            Text(status)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundColor(isConnected ? .white : .white.opacity(0.4))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isConnected ? accentColor.opacity(0.15) : Color.white.opacity(0.05))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isConnected ? accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
+        )
+    }
+    
+    private var egorecordInfoSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Info description
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.white.opacity(0.5))
+                
+                Text("Records egocentric video and hand/head tracking. This mode requires:")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            
+            // Requirements list - horizontal layout
+            HStack(spacing: 12) {
+                requirementRow(number: "1", text: "Camera")
+                requirementRow(number: "2", text: "Dev Strap")
+                requirementRow(number: "3", text: "Cam Mount")
+            }
+            .padding(.leading, 26) // Align with text above
+        }
+    }
+    
+    private func requirementRow(number: String, text: String) -> some View {
+        HStack(spacing: 8) {
+            Text(number + ".")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.white.opacity(0.6))
+                .frame(width: 14, alignment: .leading)
+            Text(text)
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.8))
+        }
+    }
+    
+    private var teleopInfoSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Info description
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.white.opacity(0.5))
+                
+                Text("Requires a Python client to receive hand tracking data and stream back:")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            
+            // Capabilities list
+            HStack(spacing: 16) {
+                capabilityRow(icon: "video.fill", text: "Video")
+                capabilityRow(icon: "waveform", text: "Audio")
+                capabilityRow(icon: "cube.transparent", text: "Sim states")
+            }
+            .padding(.leading, 26) // Align with text above
+        }
+    }
+    
+    private func capabilityRow(icon: String, text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.5))
+                .frame(width: 14)
+            Text(text)
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.8))
+        }
+    }
+    
+    // MARK: - Version Incompatibility Warning
+    
+    private var versionWarningBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header with warning icon
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.yellow)
+                    .opacity(flashingOpacity)
+                
+                Text("Python Library Update Required")
+                    .font(.callout)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+            }
+            
+            // Version info
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Your version:")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                    Spacer()
+                    Text(dataManager.pythonLibraryVersionString)
+                        .font(.system(.caption, design: .monospaced))
+                        .fontWeight(.medium)
+                        .foregroundColor(.red)
+                }
+                
+                HStack {
+                    Text("Minimum required:")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                    Spacer()
+                    Text(DataManager.minimumPythonVersionString)
+                        .font(.system(.caption, design: .monospaced))
+                        .fontWeight(.medium)
+                        .foregroundColor(.green)
+                }
+            }
+            .padding(8)
+            .background(Color.black.opacity(0.3))
+            .cornerRadius(6)
+            
+            // Upgrade instructions
+            HStack(spacing: 4) {
+                Text("Run:")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+                Text("pip install --upgrade avp-stream")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.cyan)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(Color.black.opacity(0.4))
+                    .cornerRadius(4)
+            }
+            
+            // Warning message
+            Text("Hand tracking is blocked until you upgrade. Please update your Python library and restart.")
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.orange.opacity(0.2))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.orange.opacity(0.5), lineWidth: 1)
+                )
+        )
     }
 
     private var streamDetailsSection: some View {
@@ -468,18 +1008,25 @@ struct StatusOverlay: View {
                 Text(isUVCMode ? "USB Cam" : "Video")
                     .font(.caption2)
                     .fontWeight(.semibold)
-                    .foregroundColor(videoActive ? .blue : .gray)
+                    .foregroundColor(videoActive ? .white : .white.opacity(0.4))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background((videoActive ? Color.blue : Color.gray).opacity(0.2))
+                    .background(Color.white.opacity(videoActive ? 0.2 : 0.08))
                     .cornerRadius(8)
                 
                 if isUVCMode {
                     // UVC camera info
                     if uvcCameraManager.isCapturing {
-                        Text("Mono")
-                            .font(.caption)
-                            .foregroundColor(.white.opacity(0.9))
+                        if uvcCameraManager.stereoEnabled {
+                            Text("Stereo")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .fontWeight(.medium)
+                        } else {
+                            Text("Mono")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                        }
                         
                         if uvcCameraManager.frameWidth > 0 {
                             Text("\(uvcCameraManager.frameWidth)×\(uvcCameraManager.frameHeight)")
@@ -507,12 +1054,12 @@ struct StatusOverlay: View {
                     if dataManager.stereoEnabled {
                         Text("Stereo")
                             .font(.caption)
-                            .foregroundColor(.cyan)
+                            .foregroundColor(.white)
                             .fontWeight(.medium)
                     } else {
                         Text("Mono")
                             .font(.caption)
-                            .foregroundColor(.white.opacity(0.9))
+                            .foregroundColor(.white.opacity(0.7))
                     }
                     
                     // Stats
@@ -547,10 +1094,10 @@ struct StatusOverlay: View {
                 Text("Audio")
                     .font(.caption2)
                     .fontWeight(.semibold)
-                    .foregroundColor(dataManager.audioEnabled ? .green : .gray)
+                    .foregroundColor(dataManager.audioEnabled ? .white : .white.opacity(0.4))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background((dataManager.audioEnabled ? Color.green : Color.gray).opacity(0.2))
+                    .background(Color.white.opacity(dataManager.audioEnabled ? 0.2 : 0.08))
                     .cornerRadius(8)
                 
                 // Status
@@ -558,12 +1105,12 @@ struct StatusOverlay: View {
                     if dataManager.stereoAudioEnabled {
                         Text("Stereo")
                             .font(.caption)
-                            .foregroundColor(.green)
+                            .foregroundColor(.white)
                             .fontWeight(.medium)
                     } else {
                         Text("Mono")
                             .font(.caption)
-                            .foregroundColor(.white.opacity(0.9))
+                            .foregroundColor(.white.opacity(0.7))
                     }
                     
                     // Stats
@@ -597,10 +1144,10 @@ struct StatusOverlay: View {
                 Text("Sim")
                     .font(.caption2)
                     .fontWeight(.semibold)
-                    .foregroundColor(simActive ? .orange : .gray)
+                    .foregroundColor(simActive ? .white : .white.opacity(0.4))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background((simActive ? Color.orange : Color.gray).opacity(0.2))
+                    .background(Color.white.opacity(simActive ? 0.2 : 0.08))
                     .cornerRadius(8)
                 
                 if let mujoco = mujocoManager, simActive {
@@ -608,12 +1155,12 @@ struct StatusOverlay: View {
                     if mujoco.poseStreamingViaWebRTC {
                         Text("WebRTC")
                             .font(.caption)
-                            .foregroundColor(.green)
+                            .foregroundColor(.white)
                             .fontWeight(.medium)
                     } else {
                         Text("gRPC")
                             .font(.caption)
-                            .foregroundColor(.orange)
+                            .foregroundColor(.white.opacity(0.8))
                             .fontWeight(.medium)
                     }
                     
@@ -639,17 +1186,95 @@ struct StatusOverlay: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .padding(.vertical, 8)
+        .padding(10)
+        .background(Color.white.opacity(0.05))
+        .cornerRadius(10)
+    }
+    
+    private var usdzTransferProgressSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header with icon and filename
+            HStack(spacing: 8) {
+                Image(systemName: "cube.transparent.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.purple)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Loading 3D Scene")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                    
+                    if !dataManager.usdzTransferFilename.isEmpty {
+                        Text(dataManager.usdzTransferFilename)
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.6))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                
+                Spacer()
+                
+                // Percentage
+                Text("\(Int(dataManager.usdzTransferProgress * 100))%")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(.purple)
+            }
+            
+            // Progress bar
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.white.opacity(0.15))
+                    .frame(height: 8)
+                
+                GeometryReader { geo in
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.purple, Color.purple.opacity(0.7)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: geo.size.width * CGFloat(dataManager.usdzTransferProgress), height: 8)
+                        .animation(.easeInOut(duration: 0.2), value: dataManager.usdzTransferProgress)
+                }
+                .frame(height: 8)
+            }
+            
+            // Stats
+            HStack {
+                Text("\(dataManager.usdzTransferReceivedChunks)/\(dataManager.usdzTransferTotalChunks) chunks")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
+                
+                Spacer()
+                
+                Text("\(dataManager.usdzTransferTotalSizeKB) KB")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.purple.opacity(0.15))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.purple.opacity(0.3), lineWidth: 1)
+                )
+        )
     }
 
     private var expandedView: some View {
-        HStack(alignment: .top, spacing: 0) {
-            // Left column - Main status panel
+        HStack(alignment: .center, spacing: 0) {
+            // Panel 1 (Left) - Main status panel
             leftColumnView
             
-            // Right column - Expanded settings panel (if any)
+            // Panel 2 (Right) - Settings panel (switches between menu and content)
             if expandedPanel != .none {
-                rightColumnView
+                settingsPanelView
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: expandedPanel)
@@ -663,6 +1288,28 @@ struct StatusOverlay: View {
                             Text("Are you sure you want to exit?")
                                 .font(.headline)
                                 .foregroundColor(.white)
+                            
+                            // Upload in progress warning
+                            if recordingManager.isUploadingToCloud {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(.orange)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Upload in Progress")
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
+                                            .foregroundColor(.orange)
+                                        Text("\(recordingManager.cloudUploadCurrentFile)/\(recordingManager.cloudUploadTotalFiles) files uploading to \(recordingManager.cloudProvider.displayName)")
+                                            .font(.caption)
+                                            .foregroundColor(.white.opacity(0.7))
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .background(Color.orange.opacity(0.2))
+                                .cornerRadius(10)
+                            }
                             
                             HStack(spacing: 20) {
                                 Button {
@@ -681,10 +1328,10 @@ struct StatusOverlay: View {
                                 .buttonStyle(.plain)
                                 
                                 Button {
-                                    print("❌ [StatusView] Exiting app now")
+                                    dlog("❌ [StatusView] Exiting app now")
                                     exit(0)
                                 } label: {
-                                    Text("Exit")
+                                    Text(recordingManager.isUploadingToCloud ? "Exit Anyway" : "Exit")
                                         .fontWeight(.bold)
                                         .foregroundColor(.white)
                                         .padding(.horizontal, 20)
@@ -703,21 +1350,57 @@ struct StatusOverlay: View {
     }
     
     private var leftColumnView: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 12) {
             headerSection
             
             Divider()
                 .background(Color.white.opacity(0.3))
             
-            networkInfoSection
+            // Info sections
+            if appMode == .teleop {
+                teleopInfoSection
+            } else if appMode == .egorecord {
+                egorecordInfoSection
+            }
             
-            // Show detailed track information when connected (either WebRTC or UVC camera)
-            let showStreamDetails = showVideoStatus && (webrtcConnected || (dataManager.videoSource == .uvcCamera && uvcCameraManager.isCapturing))
-            if showStreamDetails {
+            Divider()
+                .background(Color.white.opacity(0.3))
+            
+            // Mode toggle (between info sections and network info)
+            HStack {
+                Spacer()
+                modeToggleSection
+                Spacer()
+            }
+            
+            // Network info only shown in Teleop mode
+            if appMode == .teleop {
+                // Version incompatibility warning (shown prominently when connected but incompatible)
+                if dataManager.shouldShowVersionWarning {
+                    versionWarningBanner
+                }
+                
                 Divider()
                     .background(Color.white.opacity(0.2))
                 
-                streamDetailsSection
+                networkInfoSection
+                
+                // Show detailed track information when connected (either WebRTC or UVC camera)
+                let showStreamDetails = showVideoStatus && (webrtcConnected || (dataManager.videoSource == .uvcCamera && uvcCameraManager.isCapturing))
+                if showStreamDetails {
+                    Divider()
+                        .background(Color.white.opacity(0.2))
+                    
+                    streamDetailsSection
+                }
+                
+                // USDZ transfer progress (shown when loading 3D scene)
+                if dataManager.usdzTransferInProgress {
+                    Divider()
+                        .background(Color.white.opacity(0.2))
+                    
+                    usdzTransferProgressSection
+                }
             }
             
             // Show waiting message when no frames are available (only for video mode)
@@ -741,140 +1424,177 @@ struct StatusOverlay: View {
                 }
             }
             
-            // Menu items section
-            if showVideoStatus {
+            // Settings button - opens Layer 2 settings menu
+            Divider()
+                .background(Color.white.opacity(0.3))
+            
+            Button {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    expandedPanel = expandedPanel == .none ? .settings : .none
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundColor(expandedPanel != .none ? .blue : .white.opacity(0.9))
+                        .frame(width: 24)
+                    Text("Settings")
+                        .font(.body)
+                        .fontWeight(.medium)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(expandedPanel != .none ? .blue : .white.opacity(0.5))
+                }
+                .foregroundColor(expandedPanel != .none ? .blue : .white.opacity(0.9))
+                .padding(.vertical, 12)
+                .padding(.horizontal, 4)
+                .background(expandedPanel != .none ? Color.blue.opacity(0.15) : Color.clear)
+                .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            
+            // Egorecord mode: Start Recording button with requirement checks
+            if appMode == .egorecord {
                 Divider()
                     .background(Color.white.opacity(0.3))
                 
-                // Video Source menu item
-                menuItem(
-                    icon: dataManager.videoSource.icon,
-                    title: "Video Source",
-                    subtitle: dataManager.videoSource.rawValue,
-                    isExpanded: expandedPanel == .videoSource,
-                    accentColor: .blue
-                ) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        expandedPanel = expandedPanel == .videoSource ? .none : .videoSource
-                    }
-                }
+                // Check requirements
+                let hasIntrinsic = uvcCameraManager.selectedDevice.map { calibrationManager.hasCalibration(for: $0.id) } ?? false
+                let hasExtrinsic = uvcCameraManager.selectedDevice.map { extrinsicCalibrationManager.hasCalibration(for: $0.id) } ?? false
+                let isCalibrated = hasIntrinsic && hasExtrinsic
                 
-                // Modify Video View menu item
-                menuItem(
-                    icon: "slider.horizontal.3",
-                    title: "Modify Video View",
-                    subtitle: "\(String(format: "%.1f", -dataManager.videoPlaneZDistance))m",
-                    isExpanded: expandedPanel == .viewControls,
-                    accentColor: .green
-                ) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        if expandedPanel == .viewControls {
-                            expandedPanel = .none
-                            previewZDistance = nil
-                            previewActive = false
-                            hidePreviewTask?.cancel()
-                        } else {
-                            expandedPanel = .viewControls
+                // Cloud storage configured check (only for non-iCloud providers)
+                let isCloudConfigured: Bool = {
+                    if recordingManager.storageLocation == .local { return true }
+                    switch recordingManager.cloudProvider {
+                    case .iCloudDrive: return true
+                    case .dropbox: return cloudStorageSettings.isDropboxAvailable
+                    case .googleDrive: return cloudStorageSettings.isGoogleDriveAvailable
+                    }
+                }()
+                
+                let canRecord = isCalibrated && isCloudConfigured && uvcCameraManager.selectedDevice != nil
+                
+                // Allow recording without full requirements (hand-tracking only mode)
+                // Users can always record hand tracking data, even without camera or calibration
+                let canRecordHandTrackingOnly = isCloudConfigured
+                
+                // Requirement indicators (warnings, not blockers)
+                if !canRecord {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !isCalibrated && uvcCameraManager.selectedDevice != nil {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                                Text("Camera calibration required for video")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                            .opacity(flashingOpacity)
+                        }
+                        if !isCloudConfigured {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "icloud.slash.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.orange)
+                                    Text("\(recordingManager.cloudProvider.displayName) not configured")
+                                        .font(.caption)
+                                        .foregroundColor(.orange)
+                                }
+                                .opacity(flashingOpacity)
+                                
+                                // Show Google Drive sign-in button if Google Drive is selected
+                                if recordingManager.cloudProvider == .googleDrive {
+                                    Button {
+                                        // Minimize status view so OAuth window is visible
+                                        // Set directly first, then animate
+                                        expandedPanel = .none
+                                        isMinimized = true
+                                        userInteracted = true
+                                        
+                                        Task {
+                                            // Delay to let UI update and minimize
+                                            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                                            await GoogleDriveAuthManager.shared.startOAuthFlow()
+                                            // Restore after OAuth completes
+                                            await MainActor.run {
+                                                isMinimized = false
+                                            }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "person.crop.circle.badge.plus")
+                                                .font(.caption)
+                                            Text("Sign in to Google Drive")
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(Color.blue)
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.top, 4)
+                                }
+                            }
+                        }
+                        if uvcCameraManager.selectedDevice == nil {
+                            HStack(spacing: 6) {
+                                Image(systemName: "video.slash.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.yellow)
+                                Text("No USB camera - hand tracking only")
+                                    .font(.caption)
+                                    .foregroundColor(.yellow)
+                            }
                         }
                     }
-                }
-            }
-            
-            Divider()
-                .background(Color.white.opacity(0.3))
-            
-            // Recording menu item
-            menuItem(
-                icon: recordingManager.isRecording ? "record.circle.fill" : "record.circle",
-                title: "Recording",
-                subtitle: recordingManager.isRecording ? recordingManager.formatDuration(recordingManager.recordingDuration) : recordingManager.storageLocation.rawValue,
-                isExpanded: expandedPanel == .recording,
-                accentColor: .red,
-                iconColor: recordingManager.isRecording ? .red : nil
-            ) {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                    expandedPanel = expandedPanel == .recording ? .none : .recording
-                }
-            }
-            
-            // Camera Calibration menu item (show when UVC camera is active)
-            if dataManager.videoSource == .uvcCamera {
-                let hasCalibration = uvcCameraManager.selectedDevice.map { calibrationManager.hasCalibration(for: $0.id) } ?? false
-                menuItem(
-                    icon: "camera.viewfinder",
-                    title: "Intrinsic Calibration",
-                    subtitle: hasCalibration ? "Calibrated" : "Not Calibrated",
-                    isExpanded: expandedPanel == .calibration,
-                    accentColor: .cyan,
-                    iconColor: hasCalibration ? .green : .orange
-                ) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        expandedPanel = expandedPanel == .calibration ? .none : .calibration
-                    }
+                    .padding(.vertical, 6)
                 }
                 
-                // Extrinsic Calibration menu item (head-to-camera transform)
-                let hasExtrinsicCalibration = uvcCameraManager.selectedDevice.map { extrinsicCalibrationManager.hasCalibration(for: $0.id) } ?? false
-                menuItem(
-                    icon: "arrow.triangle.swap",
-                    title: "Extrinsic Calibration",
-                    subtitle: hasExtrinsicCalibration ? "Calibrated" : "Not Calibrated",
-                    isExpanded: expandedPanel == .extrinsicCalibration,
-                    accentColor: .purple,
-                    iconColor: hasExtrinsicCalibration ? .green : .orange
-                ) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        expandedPanel = expandedPanel == .extrinsicCalibration ? .none : .extrinsicCalibration
-                    }
-                }
-            }
-            
-            Divider()
-                .background(Color.white.opacity(0.3))
-            
-            // Controller Position menu item
-            menuItem(
-                icon: "move.3d",
-                title: "Controller Position",
-                subtitle: nil,
-                isExpanded: expandedPanel == .statusPosition,
-                accentColor: .purple
-            ) {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                    if expandedPanel == .statusPosition {
-                        expandedPanel = .none
-                        previewStatusPosition = nil
-                        previewStatusActive = false
-                        hidePreviewTask?.cancel()
+                // Start Recording button
+                Button {
+                    if !recordingManager.isRecording {
+                        recordingManager.startRecording()
+                        // Auto-minimize and hide video in egorecord mode
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                            isMinimized = true
+                            videoMinimized = true
+                            userInteracted = true
+                        }
                     } else {
-                        expandedPanel = .statusPosition
+                        recordingManager.stopRecordingManually()
                     }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: recordingManager.isRecording ? "stop.fill" : "record.circle.fill")
+                            .font(.system(size: 20, weight: .bold))
+                        Text(recordingManager.isRecording ? "Stop Recording" : "Start Recording")
+                            .font(.headline)
+                            .fontWeight(.bold)
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        recordingManager.isRecording 
+                            ? Color.red
+                            : (canRecordHandTrackingOnly ? Color.red.opacity(0.9) : Color.gray.opacity(0.5))
+                    )
+                    .cornerRadius(12)
                 }
+                .buttonStyle(.plain)
+                .disabled(!canRecordHandTrackingOnly && !recordingManager.isRecording)
             }
-            
-            Divider()
-                .background(Color.white.opacity(0.3))
-            
-            // Hand visibility toggle
-            HStack {
-                Image(systemName: dataManager.upperLimbVisible ? "hand.raised.fill" : "hand.raised.slash.fill")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundColor(dataManager.upperLimbVisible ? .cyan : .white.opacity(0.6))
-                    .frame(width: 24)
-                Text("Show Hands")
-                    .font(.body)
-                    .fontWeight(.medium)
-                    .foregroundColor(.white.opacity(0.9))
-                Spacer()
-                Toggle("", isOn: $dataManager.upperLimbVisible)
-                    .labelsHidden()
-                    .tint(.cyan)
-            }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 4)
+
         }
         .padding(24)
-        .frame(width: 352)
+        .frame(width: 400)
         .background(Color.black.opacity(0.7))
         .cornerRadius(16)
     }
@@ -900,7 +1620,7 @@ struct StatusOverlay: View {
                     .foregroundColor(isExpanded ? accentColor : .white.opacity(0.5))
             }
             .foregroundColor(isExpanded ? accentColor : .white.opacity(0.9))
-            .padding(.vertical, 8)
+            .padding(.vertical, 12)
             .padding(.horizontal, 4)
             .background(isExpanded ? accentColor.opacity(0.15) : Color.clear)
             .cornerRadius(8)
@@ -908,15 +1628,43 @@ struct StatusOverlay: View {
         .buttonStyle(.plain)
     }
     
-    private var rightColumnView: some View {
+    // MARK: - Settings Panel View (combines menu and content in one panel)
+    
+    private var settingsPanelView: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Panel header
             HStack {
+                // Back button (only shown when viewing specific settings)
+                if expandedPanel != .settings {
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            expandedPanel = .settings
+                            previewZDistance = nil
+                            previewActive = false
+                            previewStatusPosition = nil
+                            previewStatusActive = false
+                            hidePreviewTask?.cancel()
+                        }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.2))
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                
                 Text(panelTitle)
                     .font(.body)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
                 Spacer()
+                
+                // Close button
                 Button {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                         expandedPanel = .none
@@ -931,8 +1679,8 @@ struct StatusOverlay: View {
                         Circle()
                             .fill(Color.white.opacity(0.2))
                             .frame(width: 44, height: 44)
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .bold))
+                        Image(systemName: "xmark")
+                            .font(.system(size: 16, weight: .bold))
                             .foregroundColor(.white)
                     }
                 }
@@ -942,7 +1690,204 @@ struct StatusOverlay: View {
             Divider()
                 .background(Color.white.opacity(0.3))
             
-            // Panel content
+            // Panel content - either menu or specific settings
+            if expandedPanel == .settings {
+                settingsMenuContent
+            } else {
+                settingsDetailContent
+            }
+        }
+        .padding(24)
+        .frame(width: 340)
+        .background(Color.black.opacity(0.7))
+        .cornerRadius(16)
+        .padding(.leading, 8)
+    }
+    
+    // MARK: - Settings Menu Content
+    
+    private var settingsMenuContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Video Source menu item (only in video mode)
+            if showVideoStatus {
+                menuItem(
+                    icon: dataManager.videoSource.icon,
+                    title: "Video Source",
+                    subtitle: dataManager.videoSource.rawValue,
+                    isExpanded: false,
+                    accentColor: .blue
+                ) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        expandedPanel = .videoSource
+                    }
+                }
+                
+                // Video Plane menu item
+                menuItem(
+                    icon: "rectangle.on.rectangle",
+                    title: "Video Plane",
+                    subtitle: String(format: "%.1fm, %d%%", -dataManager.videoPlaneZDistance, Int(dataManager.videoPlaneScale * 100)),
+                    isExpanded: expandedPanel == .viewControls,
+                    accentColor: .blue
+                ) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        expandedPanel = expandedPanel == .viewControls ? .settings : .viewControls
+                    }
+                }
+                
+                // Controller Position menu item
+                menuItem(
+                    icon: "arrow.up.and.down.and.arrow.left.and.right",
+                    title: "Controller Position",
+                    subtitle: nil,
+                    isExpanded: expandedPanel == .statusPosition,
+                    accentColor: .purple
+                ) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        expandedPanel = expandedPanel == .statusPosition ? .settings : .statusPosition
+                    }
+                }
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Recording menu item
+            menuItem(
+                icon: recordingManager.isRecording ? "record.circle.fill" : "record.circle",
+                title: "Recording",
+                subtitle: recordingManager.isRecording 
+                    ? recordingManager.formatDuration(recordingManager.recordingDuration) 
+                    : (recordingManager.storageLocation == .cloud 
+                        ? recordingManager.cloudProvider.displayName 
+                        : "Local"),
+                isExpanded: false,
+                accentColor: .red,
+                iconColor: recordingManager.isRecording ? .red : nil
+            ) {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    expandedPanel = .recording
+                }
+            }
+            
+            // Camera Calibration menu item (Egorecord mode only)
+            if appMode == .egorecord {
+                let hasIntrinsic = uvcCameraManager.selectedDevice.map { calibrationManager.hasCalibration(for: $0.id) } ?? false
+                let hasExtrinsic = uvcCameraManager.selectedDevice.map { extrinsicCalibrationManager.hasCalibration(for: $0.id) } ?? false
+                let isCalibrated = hasIntrinsic && hasExtrinsic
+                
+                cameraCalibrationMenuItem
+                    .opacity(isCalibrated ? 1.0 : flashingOpacity)
+            }
+            
+            // Teleop-only menu items
+            if appMode == .teleop {
+                Divider()
+                    .background(Color.white.opacity(0.2))
+                
+                // Visualizations
+                let activeCount = [dataManager.upperLimbVisible, dataManager.showHeadBeam, dataManager.showHandJoints].filter { $0 }.count
+                
+                menuItem(
+                    icon: "eye.fill",
+                    title: "Visualizations",
+                    subtitle: "\(activeCount)/3 active",
+                    isExpanded: false,
+                    accentColor: .cyan
+                ) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        expandedPanel = .visualizations
+                    }
+                }
+                
+                // Hand Tracking Config
+                let predictionMs = Int(dataManager.handPredictionOffset * 1000)
+                menuItem(
+                    icon: dataManager.showHandJoints ? "hand.raised.fingers.spread.fill" : "hand.raised.fingers.spread",
+                    title: "Hand Tracking",
+                    subtitle: "\(predictionMs)ms prediction",
+                    isExpanded: false,
+                    accentColor: .orange,
+                    iconColor: dataManager.showHandJoints ? .green : nil
+                ) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        expandedPanel = .handTracking
+                    }
+                }
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            let offsetPercent = dataManager.stereoBaselineOffset * 100
+            let offsetLabel = abs(offsetPercent) < 0.05 ? "Default" : String(format: "%+.1f%%", offsetPercent)
+            
+            menuItem(
+                icon: "eyes",
+                title: "Stereo Baseline",
+                subtitle: offsetLabel,
+                isExpanded: false,
+                accentColor: .indigo
+            ) {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    expandedPanel = .stereoBaseline
+                }
+            }
+            
+            // Marker Detection (Teleop mode only)
+            if appMode == .teleop {
+                let markerManager = MarkerDetectionManager.shared
+                menuItem(
+                    icon: markerManager.isEnabled ? "viewfinder.circle.fill" : "viewfinder.circle",
+                    title: "Marker Detection",
+                    subtitle: markerManager.isEnabled ? "\(markerManager.detectedMarkers.count) detected" : "Off",
+                    isExpanded: false,
+                    accentColor: .orange,
+                    iconColor: markerManager.isEnabled ? .green : nil
+                ) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        expandedPanel = .markerDetection
+                    }
+                }
+                
+                // USDZ Cache (Teleop mode - for MuJoCo/Isaac sim scenes)
+                let cacheManager = UsdzCacheManager.shared
+                menuItem(
+                    icon: "archivebox.fill",
+                    title: "USDZ Cache",
+                    subtitle: cacheManager.formattedCacheSize,
+                    isExpanded: false,
+                    accentColor: .purple
+                ) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        expandedPanel = .usdzCache
+                    }
+                }
+                
+                // Accessory Tracking (visionOS 26+ only)
+                if #available(visionOS 26.0, *) {
+                    let accessoryManager = AccessoryTrackingManager.shared
+                    menuItem(
+                        icon: accessoryManager.isEnabled ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle",
+                        title: "Stylus Tracking",
+                        subtitle: accessoryManager.isEnabled ? (accessoryManager.stylusAnchorEntity != nil ? "Active" : "Searching") : "Off",
+                        isExpanded: false,
+                        accentColor: .cyan,
+                        iconColor: accessoryManager.isEnabled ? .green : nil
+                    ) {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            expandedPanel = .accessoryTracking
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Settings Detail Content
+    
+    private var settingsDetailContent: some View {
+        Group {
             switch expandedPanel {
             case .videoSource:
                 videoSourcePanelContent
@@ -952,29 +1897,50 @@ struct StatusOverlay: View {
                 recordingPanelContent
             case .statusPosition:
                 statusPositionPanelContent
-            case .calibration:
-                calibrationPanelContent
-            case .extrinsicCalibration:
-                extrinsicCalibrationPanelContent
-            case .none:
+            case .positionLayout:
+                positionLayoutPanelContent
+            case .cameraCalibration:
+                cameraCalibrationPanelContent
+            case .cloudStorageDebug:
+                cloudStorageDebugPanelContent
+            case .visualizations:
+                visualizationsPanelContent
+            case .handTracking:
+                handTrackingPanelContent
+            case .stereoBaseline:
+                stereoBaselinePanelContent
+            case .markerDetection:
+                markerDetectionPanelContent
+            case .usdzCache:
+                usdzCachePanelContent
+            case .accessoryTracking:
+                if #available(visionOS 26.0, *) {
+                    accessoryTrackingPanelContent
+                } else {
+                    EmptyView()
+                }
+            case .settings, .none:
                 EmptyView()
             }
         }
-        .padding(24)
-        .frame(width: 300)
-        .background(Color.black.opacity(0.7))
-        .cornerRadius(16)
-        .padding(.leading, 8)
     }
     
     private var panelTitle: String {
         switch expandedPanel {
+        case .settings: return "Settings"
         case .videoSource: return "Video Source"
-        case .viewControls: return "Video View"
+        case .viewControls: return "Video Plane"
         case .recording: return "Recording"
         case .statusPosition: return "Controller Position"
-        case .calibration: return "Camera Calibration"
-        case .extrinsicCalibration: return "Extrinsic Calibration"
+        case .positionLayout: return "Position & Layout"
+        case .cameraCalibration: return "Camera Calibration"
+        case .cloudStorageDebug: return "Cloud Storage Debug"
+        case .visualizations: return "Visualizations"
+        case .handTracking: return "Hand Tracking"
+        case .stereoBaseline: return "Stereo Baseline"
+        case .markerDetection: return "Marker Detection"
+        case .usdzCache: return "USDZ Cache"
+        case .accessoryTracking: return "Accessory Tracking"
         case .none: return ""
         }
     }
@@ -982,39 +1948,48 @@ struct StatusOverlay: View {
     // MARK: - Right Panel Content Views
     
     private var videoSourcePanelContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Network Stream option
+        VStack(alignment: .leading, spacing: 10) {
+            // Network Stream option (disabled in Egorecord mode)
+            let networkDisabled = appMode == .egorecord
+            
             Button {
-                withAnimation {
-                    dataManager.videoSource = .network
+                if !networkDisabled {
+                    withAnimation {
+                        dataManager.videoSource = .network
+                    }
                 }
             } label: {
-                HStack {
+                HStack(spacing: 12) {
                     Image(systemName: "wifi")
-                        .font(.system(size: 14))
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
+                        .font(.system(size: 18, weight: .medium))
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 3) {
                         Text("Network Stream")
-                            .font(.caption)
+                            .font(.subheadline)
                             .fontWeight(.medium)
-                        Text("WebRTC from Python")
-                            .font(.caption2)
+                        Text(networkDisabled ? "Not available in Egorecord" : "WebRTC from Python")
+                            .font(.caption)
                             .foregroundColor(.white.opacity(0.5))
                     }
                     Spacer()
-                    if dataManager.videoSource == .network {
-                        Image(systemName: "checkmark.circle.fill")
+                    if networkDisabled {
+                        Image(systemName: "lock.fill")
                             .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.3))
+                    } else if dataManager.videoSource == .network {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 18))
                             .foregroundColor(.green)
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(dataManager.videoSource == .network ? Color.blue.opacity(0.3) : Color.white.opacity(0.1))
-                .cornerRadius(8)
-                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(networkDisabled ? Color.white.opacity(0.05) : (dataManager.videoSource == .network ? Color.blue.opacity(0.3) : Color.white.opacity(0.1)))
+                .cornerRadius(10)
+                .foregroundColor(networkDisabled ? .white.opacity(0.4) : .white)
             }
             .buttonStyle(.plain)
+            .disabled(networkDisabled)
             
             // USB Camera option
             Button {
@@ -1029,29 +2004,29 @@ struct StatusOverlay: View {
                     }
                 }
             } label: {
-                HStack {
+                HStack(spacing: 12) {
                     Image(systemName: "cable.connector")
-                        .font(.system(size: 14))
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
+                        .font(.system(size: 18, weight: .medium))
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 3) {
                         Text("USB Camera")
-                            .font(.caption)
+                            .font(.subheadline)
                             .fontWeight(.medium)
                         Text("UVC via Developer Strap")
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundColor(.white.opacity(0.5))
                     }
                     Spacer()
                     if dataManager.videoSource == .uvcCamera {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 14))
+                            .font(.system(size: 18))
                             .foregroundColor(.green)
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
                 .background(dataManager.videoSource == .uvcCamera ? Color.blue.opacity(0.3) : Color.white.opacity(0.1))
-                .cornerRadius(8)
+                .cornerRadius(10)
                 .foregroundColor(.white)
             }
             .buttonStyle(.plain)
@@ -1062,8 +2037,9 @@ struct StatusOverlay: View {
                     .background(Color.white.opacity(0.3))
                 
                 Text("Available Cameras")
-                    .font(.caption2)
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white.opacity(0.6))
                 
                 ForEach(uvcCameraManager.availableDevices.prefix(2)) { device in
                     Button {
@@ -1073,27 +2049,83 @@ struct StatusOverlay: View {
                             await MainActor.run { uvcCameraManager.startCapture() }
                         }
                     } label: {
-                        HStack {
+                        HStack(spacing: 12) {
                             Image(systemName: "video.fill")
-                                .font(.system(size: 12))
-                                .frame(width: 16)
+                                .font(.system(size: 16, weight: .medium))
+                                .frame(width: 22)
                             Text(device.name)
-                                .font(.caption)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
                                 .lineLimit(1)
                             Spacer()
                             if uvcCameraManager.selectedDevice?.id == device.id && uvcCameraManager.isCapturing {
                                 Circle()
                                     .fill(Color.green)
-                                    .frame(width: 6, height: 6)
+                                    .frame(width: 8, height: 8)
                             }
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 14)
                         .background(uvcCameraManager.selectedDevice?.id == device.id ? Color.green.opacity(0.2) : Color.white.opacity(0.1))
-                        .cornerRadius(8)
+                        .cornerRadius(10)
                         .foregroundColor(.white.opacity(0.9))
                     }
                     .buttonStyle(.plain)
+                }
+                
+                // Stereo/Mono picker (show when camera is capturing)
+                if uvcCameraManager.isCapturing {
+                    Divider()
+                        .background(Color.white.opacity(0.3))
+                    
+                    Text("Feed Type")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white.opacity(0.6))
+                    
+                    HStack(spacing: 10) {
+                        // Mono option
+                        Button {
+                            uvcCameraManager.setStereoMode(false)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "rectangle")
+                                    .font(.system(size: 14, weight: .medium))
+                                Text("Mono")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(!uvcCameraManager.stereoEnabled ? .white : .white.opacity(0.6))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(!uvcCameraManager.stereoEnabled ? Color.cyan.opacity(0.4) : Color.white.opacity(0.1))
+                            .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                        
+                        // Stereo option
+                        Button {
+                            uvcCameraManager.setStereoMode(true)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "rectangle.split.2x1")
+                                    .font(.system(size: 14, weight: .medium))
+                                Text("Stereo")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(uvcCameraManager.stereoEnabled ? .white : .white.opacity(0.6))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(uvcCameraManager.stereoEnabled ? Color.cyan.opacity(0.4) : Color.white.opacity(0.1))
+                            .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Text("Stereo: Side-by-side left/right feed")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.4))
                 }
             }
         }
@@ -1101,6 +2133,34 @@ struct StatusOverlay: View {
     
     private var viewControlsPanelContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Size control
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Size")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                    Spacer()
+                    Text("\(Int(dataManager.videoPlaneScale * 100))%")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .monospacedDigit()
+                }
+                
+                Slider(value: Binding(
+                    get: { dataManager.videoPlaneScale },
+                    set: { newValue in
+                        dataManager.videoPlaneScale = newValue
+                        previewActive = true
+                        hidePreviewTask?.cancel()
+                        hidePreviewTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            if !Task.isCancelled { previewActive = false }
+                        }
+                    }
+                ), in: 0.5...2.0, step: 0.1)
+                .tint(.purple)
+            }
+            
             // Distance control
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -1189,6 +2249,7 @@ struct StatusOverlay: View {
                 .buttonStyle(.plain)
                 
                 Button {
+                    dataManager.videoPlaneScale = 1.0
                     dataManager.videoPlaneZDistance = -10.0
                     dataManager.videoPlaneYPosition = 0.0
                     dataManager.videoPlaneAutoPerpendicular = false
@@ -1217,140 +2278,413 @@ struct StatusOverlay: View {
     }
     
     private var recordingPanelContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 16) {
             if recordingManager.isRecording {
                 // Active recording display
-                HStack {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 10, height: 10)
-                    Text(recordingManager.formatDuration(recordingManager.recordingDuration))
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundColor(.red)
-                        .monospacedDigit()
-                    Text("• \(recordingManager.frameCount) frames")
-                        .font(.caption2)
-                        .foregroundColor(.white.opacity(0.6))
-                    if recordingManager.isAutoRecording {
-                        Text("(auto)")
-                            .font(.caption2)
-                            .foregroundColor(.orange.opacity(0.8))
-                    }
-                    Spacer()
-                }
-                
-                Button { recordingManager.stopRecordingManually() } label: {
-                    HStack {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 12, weight: .bold))
-                        Text("Stop Recording")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                    }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color.red)
-                    .cornerRadius(8)
-                }
-                .buttonStyle(.plain)
-            } else if recordingManager.isSaving {
-                HStack {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                        .scaleEffect(0.6)
-                    Text("Saving...")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.8))
-                }
-            } else {
-                // Auto-recording toggle
-                HStack {
-                    Toggle(isOn: $recordingManager.autoRecordingEnabled) {
-                        HStack(spacing: 6) {
-                            Image(systemName: recordingManager.autoRecordingEnabled ? "record.circle.fill" : "record.circle")
-                                .font(.system(size: 14))
-                                .foregroundColor(recordingManager.autoRecordingEnabled ? .orange : .white.opacity(0.6))
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Auto-Record")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                Text("Start when video frames arrive")
+                VStack(alignment: .leading, spacing: 12) {
+                    // Recording indicator header
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 10, height: 10)
+                            .shadow(color: .red.opacity(0.6), radius: 4)
+                        
+                        Text("Recording")
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .foregroundColor(.red)
+                        
+                        Spacer()
+                        
+                        if recordingManager.isAutoRecording {
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 10))
+                                Text("Auto")
                                     .font(.caption2)
-                                    .foregroundColor(.white.opacity(0.5))
                             }
+                            .foregroundColor(.orange)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.orange.opacity(0.2))
+                            .cornerRadius(6)
                         }
                     }
-                    .toggleStyle(SwitchToggleStyle(tint: .orange))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(recordingManager.autoRecordingEnabled ? Color.orange.opacity(0.15) : Color.white.opacity(0.1))
-                .cornerRadius(8)
-                
-                Divider()
-                    .background(Color.white.opacity(0.2))
-                    .padding(.vertical, 4)
-                
-                // Save location options
-                ForEach(RecordingStorageLocation.allCases, id: \.self) { location in
-                    Button { recordingManager.storageLocation = location } label: {
-                        HStack {
-                            Image(systemName: location.icon)
-                                .font(.system(size: 14))
-                                .frame(width: 20)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(location.rawValue)
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                Text(storageDescription(for: location))
-                                    .font(.caption2)
-                                    .foregroundColor(.white.opacity(0.5))
-                            }
-                            Spacer()
-                            if recordingManager.storageLocation == location {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.green)
-                            }
+                    
+                    // Stats row
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Duration")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.5))
+                            Text(recordingManager.formatDuration(recordingManager.recordingDuration))
+                                .font(.title3)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .monospacedDigit()
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(recordingManager.storageLocation == location ? Color.green.opacity(0.2) : Color.white.opacity(0.1))
-                        .cornerRadius(8)
+                        
+                        Divider()
+                            .frame(height: 36)
+                            .background(Color.white.opacity(0.2))
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Frames")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.5))
+                            Text("\(recordingManager.frameCount)")
+                                .font(.title3)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .monospacedDigit()
+                        }
+                        
+                        Spacer()
+                    }
+                    .padding(12)
+                    .background(Color.red.opacity(0.15))
+                    .cornerRadius(10)
+                    
+                    // Stop button
+                    Button { recordingManager.stopRecordingManually() } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 14, weight: .bold))
+                            Text("Stop Recording")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                        }
                         .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.red)
+                        .cornerRadius(12)
                     }
                     .buttonStyle(.plain)
                 }
-                
-                Button { recordingManager.startRecording() } label: {
-                    HStack {
-                        Image(systemName: "record.circle")
-                            .font(.system(size: 14, weight: .bold))
-                        Text("Start Recording")
-                            .font(.caption)
-                            .fontWeight(.semibold)
+            } else if recordingManager.isSaving {
+                HStack(spacing: 12) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(0.8)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Saving Recording")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                        Text("Please wait...")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
                     }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color.red.opacity(0.8))
-                    .cornerRadius(8)
+                    Spacer()
                 }
-                .buttonStyle(.plain)
+                .padding(14)
+                .background(Color.white.opacity(0.1))
+                .cornerRadius(12)
+            } else if recordingManager.isUploadingToCloud {
+                // Cloud upload progress display
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "icloud.and.arrow.up")
+                            .font(.system(size: 18))
+                            .foregroundColor(recordingManager.cloudProvider.color)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Uploading to \(recordingManager.cloudProvider.displayName)")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.white)
+                            Text("Keep the app open until complete")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        Spacer()
+                    }
+                    
+                    // Progress bar
+                    let progress = recordingManager.cloudUploadTotalFiles > 0 
+                        ? Double(recordingManager.cloudUploadCurrentFile) / Double(recordingManager.cloudUploadTotalFiles) 
+                        : 0.0
+                    
+                    VStack(spacing: 8) {
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.white.opacity(0.15))
+                                    .frame(height: 8)
+                                
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(recordingManager.cloudProvider.color)
+                                    .frame(width: geometry.size.width * progress, height: 8)
+                                    .animation(.easeInOut(duration: 0.3), value: progress)
+                            }
+                        }
+                        .frame(height: 8)
+                        
+                        HStack {
+                            Text("\(recordingManager.cloudUploadCurrentFile) of \(recordingManager.cloudUploadTotalFiles) files")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.6))
+                            Spacer()
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundColor(recordingManager.cloudProvider.color)
+                        }
+                    }
+                }
+                .padding(14)
+                .background(recordingManager.cloudProvider.color.opacity(0.12))
+                .cornerRadius(12)
+            } else {
+                // Recording configuration
+                VStack(alignment: .leading, spacing: 16) {
+                    // Auto-recording toggle with description
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: $recordingManager.autoRecordingEnabled) {
+                            HStack(spacing: 10) {
+                                ZStack {
+                                    Circle()
+                                        .fill(recordingManager.autoRecordingEnabled ? Color.orange.opacity(0.2) : Color.white.opacity(0.1))
+                                        .frame(width: 36, height: 36)
+                                    Image(systemName: recordingManager.autoRecordingEnabled ? "record.circle.fill" : "record.circle")
+                                        .font(.system(size: 18, weight: .medium))
+                                        .foregroundColor(recordingManager.autoRecordingEnabled ? .orange : .white.opacity(0.5))
+                                }
+                                
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Auto-Record")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(.white)
+                                    Text("Automatically start when video frames arrive")
+                                        .font(.caption2)
+                                        .foregroundColor(.white.opacity(0.5))
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: .orange))
+                    }
+                    .padding(12)
+                    .background(recordingManager.autoRecordingEnabled ? Color.orange.opacity(0.1) : Color.white.opacity(0.05))
+                    .cornerRadius(12)
+                    
+                    // Storage Location Section
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "externaldrive.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.6))
+                            Text("Storage Location")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.white.opacity(0.6))
+                                .textCase(.uppercase)
+                                .tracking(0.5)
+                        }
+                        
+                        // Storage options
+                        VStack(spacing: 8) {
+                            storageOptionRow(
+                                icon: "internaldrive",
+                                label: "Local Storage",
+                                description: "Save to device, transfer via Files app",
+                                isSelected: recordingManager.storageLocation == .local,
+                                color: .green
+                            ) {
+                                recordingManager.storageLocation = .local
+                            }
+                            
+                            storageOptionRow(
+                                icon: "icloud.fill",
+                                label: "iCloud Drive",
+                                description: "Sync across your Apple devices",
+                                isSelected: recordingManager.storageLocation == .cloud && recordingManager.cloudProvider == .iCloudDrive,
+                                color: .blue
+                            ) {
+                                recordingManager.storageLocation = .cloud
+                                recordingManager.cloudProvider = .iCloudDrive
+                                KeychainManager.shared.save(CloudStorageProvider.iCloudDrive.rawValue, forKey: .selectedCloudProvider)
+                            }
+                            
+                            storageOptionRow(
+                                icon: "g.circle.fill",
+                                label: "Google Drive",
+                                description: cloudStorageSettings.isGoogleDriveAvailable ? "Upload to your Google account" : "Sign in required",
+                                isSelected: recordingManager.storageLocation == .cloud && recordingManager.cloudProvider == .googleDrive,
+                                color: Color(red: 0.26, green: 0.52, blue: 0.96),
+                                showWarning: !cloudStorageSettings.isGoogleDriveAvailable
+                            ) {
+                                recordingManager.storageLocation = .cloud
+                                recordingManager.cloudProvider = .googleDrive
+                                KeychainManager.shared.save(CloudStorageProvider.googleDrive.rawValue, forKey: .selectedCloudProvider)
+                            }
+                            
+                            storageOptionRow(
+                                icon: "shippingbox.fill",
+                                label: "Dropbox",
+                                description: cloudStorageSettings.isDropboxAvailable ? "Upload to your Dropbox account" : "Sign in required",
+                                isSelected: recordingManager.storageLocation == .cloud && recordingManager.cloudProvider == .dropbox,
+                                color: Color(red: 0, green: 0.4, blue: 1),
+                                showWarning: !cloudStorageSettings.isDropboxAvailable
+                            ) {
+                                recordingManager.storageLocation = .cloud
+                                recordingManager.cloudProvider = .dropbox
+                                KeychainManager.shared.save(CloudStorageProvider.dropbox.rawValue, forKey: .selectedCloudProvider)
+                            }
+                        }
+                    }
+                    
+                    // Sign-in prompt for Google Drive
+                    if recordingManager.storageLocation == .cloud && recordingManager.cloudProvider == .googleDrive && !cloudStorageSettings.isGoogleDriveAvailable {
+                        Button {
+                            expandedPanel = .none
+                            isMinimized = true
+                            userInteracted = true
+                            Task {
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                await GoogleDriveAuthManager.shared.startOAuthFlow()
+                                await MainActor.run { isMinimized = false }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.crop.circle.badge.plus")
+                                    .font(.system(size: 14))
+                                Text("Sign in to Google Drive")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color(red: 0.26, green: 0.52, blue: 0.96))
+                            .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
     }
     
-    private func storageDescription(for location: RecordingStorageLocation) -> String {
-        switch location {
-        case .local:
-            return "App-only storage"
-        case .iCloudDrive:
-            return "Syncs across devices"
-        case .documentsFolder:
-            return "Accessible via Files app"
+    // Helper for storage option rows with descriptions
+    private func storageOptionRow(icon: String, label: String, description: String, isSelected: Bool, color: Color, showWarning: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(isSelected ? color.opacity(0.2) : Color.white.opacity(0.08))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(isSelected ? color : .white.opacity(0.5))
+                }
+                
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(label)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(isSelected ? .white : .white.opacity(0.8))
+                        if showWarning {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    Text(description)
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                
+                Spacer()
+                
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(color)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(isSelected ? color.opacity(0.12) : Color.white.opacity(0.04))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? color.opacity(0.4) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
+    // Legacy helper for backwards compatibility
+    private func storageOptionButton(icon: String, label: String, isSelected: Bool, color: Color, showWarning: Bool = false, action: @escaping () -> Void) -> some View {
+        storageOptionRow(icon: icon, label: label, description: "", isSelected: isSelected, color: color, showWarning: showWarning, action: action)
+    }
+    
+    private var cloudStorageDebugPanelContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header
+            Text("iCloud Keychain Sync Debug")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.white)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Current settings
+            VStack(alignment: .leading, spacing: 6) {
+                DebugInfoRow(label: "Selected Provider", value: recordingManager.cloudProvider.displayName)
+                DebugInfoRow(label: "Is Dropbox Available", value: CloudStorageSettings.shared.isDropboxAvailable ? "Yes" : "No")
+                if let lastSync = CloudStorageSettings.shared.lastSyncTime {
+                    DebugInfoRow(label: "Last Sync", value: lastSync.formatted(date: .omitted, time: .shortened))
+                }
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Raw keychain values
+            Text("Raw Keychain Values:")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.white.opacity(0.8))
+            
+            VStack(alignment: .leading, spacing: 6) {
+                let keychain = KeychainManager.shared
+                DebugInfoRow(label: "Provider Key", value: keychain.loadString(forKey: .selectedCloudProvider) ?? "nil")
+                DebugInfoRow(label: "Access Token", value: keychain.exists(key: .dropboxAccessToken) ? "✓ Present" : "✗ Missing")
+                DebugInfoRow(label: "Refresh Token", value: keychain.exists(key: .dropboxRefreshToken) ? "✓ Present" : "✗ Missing")
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Refresh button
+            Button {
+                CloudStorageSettings.shared.forceRefresh()
+                recordingManager.loadCloudSettings()
+            } label: {
+                HStack {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Force Refresh from Keychain")
+                }
+                .font(.caption)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(Color.blue.opacity(0.3))
+                .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            
+            // Help text
+            Text("Note: iCloud Keychain sync can take up to a few minutes. Ensure both devices use the same Apple ID with iCloud Keychain enabled.")
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
     
@@ -1447,185 +2781,1489 @@ struct StatusOverlay: View {
         }
     }
     
-    private var calibrationPanelContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Camera status
-            if let device = uvcCameraManager.selectedDevice {
-                let hasCalibration = calibrationManager.hasCalibration(for: device.id)
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(device.name)
-                        .font(.caption)
-                        .fontWeight(.medium)
+    // MARK: - Position & Layout Panel (Combined)
+    
+    private var positionLayoutPanelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Section 1: Video Plane Position
+            VStack(alignment: .leading, spacing: 10) {
+                // Section header
+                HStack(spacing: 8) {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.blue)
+                    Text("Video Plane")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
                         .foregroundColor(.white)
-                    
-                    HStack(spacing: 4) {
-                        Image(systemName: hasCalibration ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                            .font(.caption)
-                            .foregroundColor(hasCalibration ? .green : .orange)
-                        Text(hasCalibration ? "Calibrated" : "Not Calibrated")
-                            .font(.caption)
-                            .foregroundColor(hasCalibration ? .green : .orange)
-                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(hasCalibration ? Color.green.opacity(0.15) : Color.orange.opacity(0.15))
-                .cornerRadius(8)
                 
-                // Show calibration details if available
-                if hasCalibration, let calibration = calibrationManager.allCalibrations[device.id] {
-                    VStack(alignment: .leading, spacing: 6) {
-                        // Left camera intrinsics (or mono)
-                        Text(calibration.isStereo ? "Left Intrinsic Matrix K_L" : "Intrinsic Matrix K")
-                            .font(.caption2)
-                            .fontWeight(.medium)
+                // Size control
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Size")
+                            .font(.caption)
                             .foregroundColor(.white.opacity(0.7))
-                        
-                        let fx = calibration.leftIntrinsics.fx
-                        let fy = calibration.leftIntrinsics.fy
-                        let cx = calibration.leftIntrinsics.cx
-                        let cy = calibration.leftIntrinsics.cy
-                        
-                        // Display as 3x3 matrix
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("⎡ \(String(format: "%7.1f", fx))   \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", cx)) ⎤")
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundColor(.cyan)
-                            Text("⎢ \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", fy))   \(String(format: "%7.1f", cy)) ⎥")
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundColor(.cyan)
-                            Text("⎣ \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", 1.0)) ⎦")
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundColor(.cyan)
-                        }
-                        
-                        Text("Reproj: \(String(format: "%.4f px", calibration.leftIntrinsics.reprojectionError))")
-                            .font(.caption2)
-                            .foregroundColor(calibration.leftIntrinsics.reprojectionError < 0.5 ? .green : (calibration.leftIntrinsics.reprojectionError < 1.0 ? .orange : .red))
-                        
-                        // Right camera intrinsics (stereo only)
-                        if calibration.isStereo, let rightIntrinsics = calibration.rightIntrinsics {
-                            Text("Right Intrinsic Matrix K_R")
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                                .foregroundColor(.white.opacity(0.7))
-                                .padding(.top, 4)
-                            
-                            let rfx = rightIntrinsics.fx
-                            let rfy = rightIntrinsics.fy
-                            let rcx = rightIntrinsics.cx
-                            let rcy = rightIntrinsics.cy
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("⎡ \(String(format: "%7.1f", rfx))   \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", rcx)) ⎤")
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundColor(.orange)
-                                Text("⎢ \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", rfy))   \(String(format: "%7.1f", rcy)) ⎥")
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundColor(.orange)
-                                Text("⎣ \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", 0.0))   \(String(format: "%7.1f", 1.0)) ⎦")
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundColor(.orange)
-                            }
-                            
-                            Text("Reproj: \(String(format: "%.4f px", rightIntrinsics.reprojectionError))")
-                                .font(.caption2)
-                                .foregroundColor(rightIntrinsics.reprojectionError < 0.5 ? .green : (rightIntrinsics.reprojectionError < 1.0 ? .orange : .red))
-                            
-                            // Stereo extrinsics
-                            if let stereo = calibration.stereoExtrinsics {
-                                Text("Stereo Reproj: \(String(format: "%.4f px", stereo.stereoReprojectionError))")
-                                    .font(.caption2)
-                                    .foregroundColor(stereo.stereoReprojectionError < 1.0 ? .green : (stereo.stereoReprojectionError < 2.0 ? .orange : .red))
-                                    .padding(.top, 2)
-                            }
-                        }
-                        
-                        // Image size and metadata
-                        HStack {
-                            Text(calibration.isStereo ? "Stereo" : "Mono")
-                                .font(.caption2)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(calibration.isStereo ? Color.blue.opacity(0.3) : Color.gray.opacity(0.3))
-                                .cornerRadius(3)
-                            Text("\(calibration.leftIntrinsics.imageWidth)×\(calibration.leftIntrinsics.imageHeight)")
-                                .font(.caption2)
-                                .foregroundColor(.white.opacity(0.5))
-                            Text("•")
-                                .foregroundColor(.white.opacity(0.3))
-                            Text("\(calibration.sampleCount) samples")
-                                .font(.caption2)
-                                .foregroundColor(.white.opacity(0.5))
-                        }
-                        .padding(.top, 4)
-                        
-                        Text(calibration.calibrationDate, style: .date)
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.4))
+                        Spacer()
+                        Text("\(Int(dataManager.videoPlaneScale * 100))%")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .monospacedDigit()
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.1))
-                    .cornerRadius(8)
+                    
+                    Slider(value: Binding(
+                        get: { dataManager.videoPlaneScale },
+                        set: { newValue in
+                            dataManager.videoPlaneScale = newValue
+                            previewActive = true
+                            hidePreviewTask?.cancel()
+                            hidePreviewTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                if !Task.isCancelled { previewActive = false }
+                            }
+                        }
+                    ), in: 0.5...2.0, step: 0.1)
+                    .tint(.purple)
                 }
                 
-                // Why calibration matters
-                if !hasCalibration {
+                // Distance control
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Distance")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                        Spacer()
+                        Text("\(String(format: "%.1f", -dataManager.videoPlaneZDistance))m")
+                            .font(.caption)
+                                .foregroundColor(.white)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(value: Binding(
+                            get: { -dataManager.videoPlaneZDistance },
+                            set: { positiveValue in
+                                let negativeValue = -positiveValue
+                                dataManager.videoPlaneZDistance = negativeValue
+                                previewZDistance = negativeValue
+                                hidePreviewTask?.cancel()
+                                hidePreviewTask = Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                    if !Task.isCancelled { previewZDistance = nil }
+                                }
+                            }
+                        ), in: 2.0...20.0, step: 0.5)
+                        .tint(.blue)
+                    }
+                    
+                    // Height control
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Why Calibrate?")
-                            .font(.caption2)
-                            .fontWeight(.medium)
+                        HStack {
+                            Text("Height")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                            Spacer()
+                            Text("\(String(format: "%.2f", dataManager.videoPlaneYPosition))m")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(value: Binding(
+                            get: { dataManager.videoPlaneYPosition },
+                            set: { newValue in
+                                dataManager.videoPlaneYPosition = newValue
+                                previewActive = true
+                                hidePreviewTask?.cancel()
+                                hidePreviewTask = Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                    if !Task.isCancelled { previewActive = false }
+                                }
+                            }
+                        ), in: -2.0...2.0, step: 0.1)
+                        .tint(.green)
+                    }
+                    
+                    // Lock to world toggle
+                    HStack {
+                        Text("Lock To World")
+                            .font(.caption)
                             .foregroundColor(.white.opacity(0.8))
-                        Text("Intrinsic calibration enables accurate pose estimation and is stored with recordings for later analysis.")
+                        Spacer()
+                        Toggle("", isOn: $videoFixed)
+                            .labelsHidden()
+                            .tint(.orange)
+                    }
+                    
+                    // Action buttons
+                    HStack(spacing: 8) {
+                        Button {
+                            withAnimation { videoMinimized.toggle() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: videoMinimized ? "eye.fill" : "eye.slash.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text(videoMinimized ? "Show" : "Hide")
+                                    .font(.caption2)
+                            }
+                            .foregroundColor(.blue)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.15))
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Button {
+                            dataManager.videoPlaneZDistance = -10.0
+                            dataManager.videoPlaneYPosition = 0.0
+                            dataManager.videoPlaneAutoPerpendicular = false
+                            previewZDistance = -10.0
+                            previewActive = true
+                            hidePreviewTask?.cancel()
+                            hidePreviewTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                if !Task.isCancelled {
+                                    previewZDistance = nil
+                                    previewActive = false
+                                }
+                            }
+                        } label: {
+                            Text("Reset")
+                                .font(.caption2)
+                                .foregroundColor(.blue)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.15))
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(12)
+                .background(Color.blue.opacity(0.1))
+                .cornerRadius(10)
+                
+                // Section 2: Controller Position
+                VStack(alignment: .leading, spacing: 10) {
+                    // Section header
+                    HStack(spacing: 8) {
+                        Image(systemName: "move.3d")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.purple)
+                        Text("Controller")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
+                    }
+                    
+                    Text("Adjust where the minimized control buttons appear in your view.")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.5))
+                    
+                    // X position control
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("X (Left-Right)")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                            Spacer()
+                            Text("\(String(format: "%.2f", dataManager.statusMinimizedXPosition))m")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(value: Binding(
+                            get: { dataManager.statusMinimizedXPosition },
+                            set: { newValue in
+                                dataManager.statusMinimizedXPosition = newValue
+                                previewStatusPosition = (x: newValue, y: dataManager.statusMinimizedYPosition)
+                                previewStatusActive = true
+                                hidePreviewTask?.cancel()
+                                hidePreviewTask = Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                    if !Task.isCancelled {
+                                        previewStatusPosition = nil
+                                        previewStatusActive = false
+                                    }
+                                }
+                            }
+                        ), in: -0.5...0.5, step: 0.05)
+                        .tint(.purple)
+                    }
+                    
+                    // Y position control
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Y (Up-Down)")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                            Spacer()
+                            Text("\(String(format: "%.2f", dataManager.statusMinimizedYPosition))m")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(value: Binding(
+                            get: { dataManager.statusMinimizedYPosition },
+                            set: { newValue in
+                                dataManager.statusMinimizedYPosition = newValue
+                                previewStatusPosition = (x: dataManager.statusMinimizedXPosition, y: newValue)
+                                previewStatusActive = true
+                                hidePreviewTask?.cancel()
+                                hidePreviewTask = Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                    if !Task.isCancelled {
+                                        previewStatusPosition = nil
+                                        previewStatusActive = false
+                                    }
+                                }
+                            }
+                        ), in: -0.5...0.5, step: 0.05)
+                        .tint(.purple)
+                    }
+                    
+                    Button {
+                        dataManager.statusMinimizedXPosition = 0.0
+                        dataManager.statusMinimizedYPosition = -0.3
+                        previewStatusPosition = (x: 0.0, y: -0.3)
+                        previewStatusActive = true
+                        hidePreviewTask?.cancel()
+                        hidePreviewTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            if !Task.isCancelled {
+                                previewStatusPosition = nil
+                                previewStatusActive = false
+                            }
+                        }
+                    } label: {
+                        Text("Reset")
+                            .font(.caption2)
+                            .foregroundColor(.purple)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(0.15))
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(12)
+                .background(Color.purple.opacity(0.1))
+                .cornerRadius(10)
+            }
+    }
+    
+    // MARK: - Visualizations Panel
+    
+    private var visualizationsPanelContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Description
+            Text("Control what visual elements are rendered in the immersive space.")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Show Hands toggle
+            visualizationToggleRow(
+                icon: dataManager.upperLimbVisible ? "hand.raised.fill" : "hand.raised.slash.fill",
+                title: "Hands Over AR",
+                description: "When enabled, your real hands appear on top of all AR content (video, 3D models). When disabled, hands are hidden behind AR objects.",
+                isOn: $dataManager.upperLimbVisible,
+                accentColor: .cyan
+            )
+            
+            Divider()
+                .background(Color.white.opacity(0.15))
+            
+            // Head Beam toggle
+            visualizationToggleRow(
+                icon: dataManager.showHeadBeam ? "rays" : "circle.dashed",
+                title: "Head Gaze Ray",
+                description: "Projects a ray from your head showing where you're looking. Helpful for debugging head tracking or aiming at objects.",
+                isOn: $dataManager.showHeadBeam,
+                accentColor: .yellow
+            )
+            
+            Divider()
+                .background(Color.white.opacity(0.15))
+            
+            // Hand Joints toggle
+            visualizationToggleRow(
+                icon: dataManager.showHandJoints ? "circle.grid.3x3.fill" : "circle.grid.3x3",
+                title: "Hand Tracking",
+                description: "Shows small spheres at each of the 27 tracked hand joints. Useful for debugging finger tracking accuracy.",
+                isOn: $dataManager.showHandJoints,
+                accentColor: .orange
+            )
+            
+            // Hand Joints Opacity slider (always shown, disabled when hand tracking is off)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "circle.lefthalf.filled")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(dataManager.showHandJoints ? .orange.opacity(0.7) : .white.opacity(0.3))
+                        .frame(width: 28)
+                    
+                    Text("Skeleton Opacity")
+                        .font(.subheadline)
+                        .foregroundColor(dataManager.showHandJoints ? .white.opacity(0.9) : .white.opacity(0.4))
+                    
+                    Spacer()
+                    
+                    Text("\(Int(dataManager.handJointsOpacity * 100))%")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(dataManager.showHandJoints ? .orange : .white.opacity(0.3))
+                        .frame(width: 50, alignment: .trailing)
+                }
+                
+                Slider(
+                    value: Binding(
+                        get: { Double(dataManager.handJointsOpacity) },
+                        set: { dataManager.handJointsOpacity = Float($0) }
+                    ),
+                    in: 0.1...1.0,
+                    step: 0.05
+                )
+                .tint(dataManager.showHandJoints ? .orange : .gray)
+                .disabled(!dataManager.showHandJoints)
+                .frame(height: 30)
+                .padding(.leading, 36)
+            }
+            .padding(.top, 8)
+            .opacity(dataManager.showHandJoints ? 1.0 : 0.5)
+        }
+    }
+    
+    private func visualizationToggleRow(icon: String, title: String, description: String, isOn: Binding<Bool>, accentColor: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(isOn.wrappedValue ? accentColor : .white.opacity(0.4))
+                    .frame(width: 28)
+                
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                Toggle("", isOn: isOn)
+                    .labelsHidden()
+                    .tint(accentColor)
+            }
+            
+            Text(description)
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 36)
+        }
+        .padding(.vertical, 4)
+    }
+    
+    // MARK: - Hand Tracking Panel
+    
+    private var handTrackingPanelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Description
+            Text("Configure hand tracking settings. Enable skeleton overlay and adjust prediction to reduce perceived latency.")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Enable Skeleton Overlay toggle
+            Toggle(isOn: $dataManager.showHandJoints) {
+                HStack(spacing: 10) {
+                    Image(systemName: dataManager.showHandJoints ? "hand.raised.fingers.spread.fill" : "hand.raised.fingers.spread")
+                        .font(.system(size: 18))
+                        .foregroundColor(dataManager.showHandJoints ? .orange : .white.opacity(0.6))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Enable Skeleton Overlay")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                        Text("Visualize 27 hand joints as spheres with bone connections")
                             .font(.caption2)
                             .foregroundColor(.white.opacity(0.5))
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.05))
-                    .cornerRadius(8)
+                }
+            }
+            .tint(.orange)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Prediction offset section
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: "clock.arrow.2.circlepath")
+                        .font(.system(size: 18))
+                        .foregroundColor(.cyan)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Prediction Offset")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                        Text("Query predicted hand poses ahead of time")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    Spacer()
+                    Text("\(Int(dataManager.handPredictionOffset * 1000)) ms")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.cyan)
+                        .monospacedDigit()
                 }
                 
-                // Calibrate button
-                Button {
-                    print("🔘 [StatusView] Start Calibration button tapped!")
-                    print("🔘 [StatusView] showCalibrationSheet was: \(showCalibrationSheet)")
-                    showCalibrationSheet = true
-                    print("🔘 [StatusView] showCalibrationSheet now: \(showCalibrationSheet)")
-                } label: {
-                    HStack {
-                        Image(systemName: "camera.viewfinder")
-                            .font(.system(size: 12, weight: .bold))
-                        Text(hasCalibration ? "Recalibrate" : "Start Calibration")
+                Slider(
+                    value: $dataManager.handPredictionOffset,
+                    in: 0.0...0.1,
+                    step: 0.005
+                )
+                .tint(.cyan)
+                
+                // Explanation
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle.fill")
                             .font(.caption)
-                            .fontWeight(.semibold)
+                            .foregroundColor(.cyan.opacity(0.8))
+                        Text("How it works")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                    
+                    Text("Uses ARKit's handAnchors(at:) API to query predicted hand poses at a future timestamp. This compensates for system latency, making the skeleton feel more responsive.")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.5))
+                        .lineSpacing(2)
+                    
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("0 ms")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .foregroundColor(.white.opacity(0.7))
+                            Text("No prediction")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                        Spacer()
+                        VStack(alignment: .center, spacing: 2) {
+                            Text("33 ms")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .foregroundColor(.cyan)
+                            Text("Recommended")
+                                .font(.caption2)
+                                .foregroundColor(.cyan.opacity(0.7))
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("100 ms")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .foregroundColor(.orange)
+                            Text("May overshoot")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color.cyan.opacity(0.1))
+                .cornerRadius(10)
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Opacity slider
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "circle.lefthalf.filled")
+                        .font(.system(size: 16))
+                        .foregroundColor(.orange.opacity(0.8))
+                    Text("Skeleton Opacity")
+                        .font(.subheadline)
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text("\(Int(dataManager.handJointsOpacity * 100))%")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.orange)
+                }
+                
+                Slider(
+                    value: $dataManager.handJointsOpacity,
+                    in: 0.1...1.0,
+                    step: 0.05
+                )
+                .tint(.orange)
+            }
+        }
+    }
+    
+    // MARK: - Stereo Baseline Panel
+    
+    private var stereoBaselinePanelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Description
+            Text("Adjust stereo baseline to match your IPD. This works by asymmetrically cropping the left and right views.")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Baseline offset slider
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Baseline Adjustment")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                    Spacer()
+                    let offsetPercent = dataManager.stereoBaselineOffset * 100
+                    Text(abs(offsetPercent) < 0.05 ? "Default" : String(format: "%+.1f%%", offsetPercent))
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .monospacedDigit()
+                }
+                
+                Slider(value: $dataManager.stereoBaselineOffset, in: -0.20...0.20, step: 0.001)
+                    .tint(.indigo)
+                
+                // Explanation
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("← Narrower")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.orange)
+                        Text("For wider IPD")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Wider →")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.cyan)
+                        Text("For narrower IPD")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                }
+            }
+            
+            // Reset button
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    dataManager.stereoBaselineOffset = 0.0
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 12, weight: .bold))
+                    Text("Reset to Default")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.white.opacity(0.15))
+                .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            .disabled(abs(dataManager.stereoBaselineOffset) < 0.0005)
+            .opacity(abs(dataManager.stereoBaselineOffset) < 0.0005 ? 0.5 : 1.0)
+        }
+    }
+    
+    // MARK: - Marker Detection Panel
+    
+    @ObservedObject private var markerDetectionManager = MarkerDetectionManager.shared
+    
+    private var markerDetectionPanelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Description
+            Text("Detect ArUco markers and stream their world poses to Python. Enable to track printed markers with your Vision Pro camera.")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Enable toggle
+            Toggle(isOn: $markerDetectionManager.isEnabled) {
+                HStack(spacing: 8) {
+                    Image(systemName: markerDetectionManager.isEnabled ? "viewfinder.circle.fill" : "viewfinder.circle")
+                        .font(.system(size: 16))
+                        .foregroundColor(markerDetectionManager.isEnabled ? .green : .white.opacity(0.6))
+                    Text("Enable Detection")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                }
+            }
+            .tint(.green)
+            
+            // Status
+            if markerDetectionManager.isEnabled {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(markerDetectionManager.detectedMarkers.isEmpty ? Color.orange : Color.green)
+                        .frame(width: 8, height: 8)
+                    Text(markerDetectionManager.statusMessage)
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.1))
+                .cornerRadius(8)
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Marker size slider
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Expected Marker Size")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text(String(format: "%.0f cm", markerDetectionManager.markerSizeMeters * 100))
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .monospacedDigit()
+                }
+                
+                Slider(value: $markerDetectionManager.markerSizeMeters, in: 0.02...0.50, step: 0.01)
+                    .tint(.orange)
+                
+                Text("Set this to match your printed marker's physical size for best tracking accuracy.")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            
+            // Detected markers list with estimated size
+            if !markerDetectionManager.detectedMarkers.isEmpty {
+                Divider()
+                    .background(Color.white.opacity(0.2))
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Detected Markers")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white.opacity(0.7))
+                    
+                    ForEach(Array(markerDetectionManager.detectedMarkers.keys.sorted()), id: \.self) { markerId in
+                        if let marker = markerDetectionManager.detectedMarkers[markerId] {
+                            HStack(spacing: 12) {
+                                Image(systemName: "qrcode.viewfinder")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.orange)
+                                Text("ID \(markerId)")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.white)
+                                Spacer()
+                                Text(String(format: "~%.1f cm", marker.estimatedSizeMeters * 100))
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                                    .fontWeight(.medium)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.05))
+                            .cornerRadius(6)
+                        }
+                    }
+                }
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Custom Images section
+            customImagesSection
+        }
+    }
+    
+    // MARK: - USDZ Cache Panel Content
+    
+    private var usdzCachePanelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            let cacheManager = UsdzCacheManager.shared
+            
+            // Description
+            Text("Cached USDZ scenes are reused when connecting to the same MuJoCo/Isaac sim scene, speeding up reconnection.")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Cache stats
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Cached Files")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                    Text("\(cacheManager.getCachedFiles().count)")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Total Size")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                    Text(cacheManager.formattedCacheSize)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.purple)
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.1))
+            .cornerRadius(8)
+            
+            // Cached files list
+            let cachedFiles = cacheManager.getCachedFiles()
+            if !cachedFiles.isEmpty {
+                Divider()
+                    .background(Color.white.opacity(0.2))
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Cached Scenes")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white.opacity(0.7))
+                    
+                    ScrollView {
+                        VStack(spacing: 6) {
+                            ForEach(cachedFiles, id: \.cacheKey) { fileInfo in
+                                HStack(spacing: 12) {
+                                    Image(systemName: "cube.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.purple)
+                                    
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(fileInfo.filename)
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        
+                                        let sizeStr = fileInfo.size > 1024 * 1024 
+                                            ? String(format: "%.1f MB", Double(fileInfo.size) / 1024 / 1024)
+                                            : String(format: "%.0f KB", Double(fileInfo.size) / 1024)
+                                        Text(sizeStr)
+                                            .font(.caption2)
+                                            .foregroundColor(.white.opacity(0.5))
+                                    }
+                                    
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.05))
+                                .cornerRadius(6)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 150)
+                }
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Clear cache button
+            Button {
+                cacheManager.clearCache()
+            } label: {
+                HStack {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 14))
+                    Text("Clear All Cache")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(cachedFiles.isEmpty ? Color.white.opacity(0.1) : Color.red.opacity(0.3))
+                .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            .disabled(cachedFiles.isEmpty)
+            .opacity(cachedFiles.isEmpty ? 0.5 : 1.0)
+            
+            Text("Clearing the cache will force re-download of scenes on next connection.")
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.5))
+        }
+    }
+    
+    // MARK: - Accessory Tracking Panel Content (visionOS 26+)
+    
+    @available(visionOS 26.0, *)
+    private var accessoryTrackingPanelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            let accessoryManager = AccessoryTrackingManager.shared
+            
+            // Description
+            Text("Track spatial stylus (Apple Pencil Pro) and visualize its pose in 3D.")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Enable toggle
+            Toggle(isOn: Binding(
+                get: { accessoryManager.isEnabled },
+                set: { accessoryManager.isEnabled = $0 }
+            )) {
+                HStack(spacing: 8) {
+                    Image(systemName: accessoryManager.isEnabled ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle")
+                        .font(.system(size: 16))
+                        .foregroundColor(accessoryManager.isEnabled ? .green : .white.opacity(0.6))
+                    Text("Enable Tracking")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                }
+            }
+            .tint(.green)
+            
+            // Status
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(accessoryManager.isTrackingActive ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(accessoryManager.statusMessage)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+                Spacer()
+                
+                // Refresh button
+                Button {
+                    accessoryManager.refreshStyluses()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.1))
+            .cornerRadius(8)
+            
+            // Available styluses for selection
+            if !accessoryManager.availableStyluses.isEmpty {
+                Divider()
+                    .background(Color.white.opacity(0.2))
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Available Styluses")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white.opacity(0.7))
+                    
+                    ForEach(accessoryManager.availableStyluses) { stylus in
+                        Button {
+                            accessoryManager.toggleStylus(id: stylus.id)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: stylus.isSelected ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(stylus.isSelected ? .cyan : .white.opacity(0.4))
+                                Image(systemName: "pencil.tip")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white.opacity(0.7))
+                                Text(stylus.name)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.white)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(stylus.isSelected ? Color.cyan.opacity(0.15) : Color.white.opacity(0.05))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            
+            // Currently tracking
+            if accessoryManager.stylusAnchorEntity != nil {
+                Divider()
+                    .background(Color.white.opacity(0.2))
+                
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                    Text("Stylus anchor active")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text("Tracking")
+                        .font(.caption2)
+                        .foregroundColor(.green)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.05))
+                .cornerRadius(6)
+            }
+            
+            // Note
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.5))
+                Text("visionOS 26.0+ and Apple Pencil Pro required")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
+            }
+        }
+    }
+    
+    // MARK: - Custom Images Section
+    
+    @State private var showingPhotoPicker = false
+    @State private var showingFileImporter = false
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    @State private var editingCustomImageId: String? = nil
+    @State private var editingCustomImageName: String = ""
+    @State private var editingCustomImageWidth: Float = 0.1
+    
+    @ViewBuilder
+    private var customImagesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header with add buttons
+            HStack {
+                Text("Custom Images")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white.opacity(0.7))
+                
+                Spacer()
+                
+                // Add from Photos
+                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.system(size: 12))
+                        Text("Photos")
+                            .font(.caption)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.3))
+                    .cornerRadius(6)
+                    .foregroundColor(.blue)
+                }
+                .onChange(of: selectedPhotoItem) { oldItem, newItem in
+                    Task {
+                        if let item = newItem,
+                           let data = try? await item.loadTransferable(type: Data.self),
+                           let image = UIImage(data: data) {
+                            await MainActor.run {
+                                let name = "Image \(CustomImageStorage.shared.registrations.count + 1)"
+                                _ = CustomImageStorage.shared.registerImage(image, name: name)
+                            }
+                        }
+                        selectedPhotoItem = nil
+                    }
+                }
+                
+                // Add from Files
+                Button {
+                    showingFileImporter = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.system(size: 12))
+                        Text("Files")
+                            .font(.caption)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.purple.opacity(0.3))
+                    .cornerRadius(6)
+                    .foregroundColor(.purple)
+                }
+            }
+            
+            // Registered images list
+            let registrations = CustomImageStorage.shared.registrations
+            if registrations.isEmpty {
+                Text("No custom images registered. Add images to track any picture in your environment.")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.4))
+                    .padding(.vertical, 8)
+            } else {
+                ForEach(registrations) { registration in
+                    customImageRow(registration: registration)
+                }
+            }
+        }
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first,
+                   url.startAccessingSecurityScopedResource(),
+                   let data = try? Data(contentsOf: url),
+                   let image = UIImage(data: data) {
+                    let name = url.deletingPathExtension().lastPathComponent
+                    _ = CustomImageStorage.shared.registerImage(image, name: name)
+                    url.stopAccessingSecurityScopedResource()
+                }
+            case .failure(let error):
+                dlog("❌ [StatusView] File import failed: \(error)")
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func customImageRow(registration: CustomImageRegistration) -> some View {
+        let isTracked = markerDetectionManager.trackedCustomImages[registration.id] != nil ||
+                        markerDetectionManager.fixedCustomImages[registration.id] != nil
+        
+        HStack(spacing: 10) {
+            // Thumbnail
+            if let thumbnail = CustomImageStorage.shared.loadThumbnail(for: registration, size: CGSize(width: 40, height: 40)) {
+                Image(uiImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 36, height: 36)
+                    .cornerRadius(4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(isTracked ? Color.green : Color.white.opacity(0.2), lineWidth: 1)
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(width: 36, height: 36)
+                    .overlay(
+                        Image(systemName: "photo")
+                            .font(.system(size: 14))
+                            .foregroundColor(.gray)
+                    )
+            }
+            
+            // Name and size (editable)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(registration.name)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                
+                HStack(spacing: 4) {
+                    Text(String(format: "%.0f cm", registration.physicalWidthMeters * 100))
+                        .font(.caption2)
+                        .foregroundColor(.cyan)
+                    
+                    if isTracked {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 6, height: 6)
+                        Text("Tracking")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                    }
+                }
+            }
+            
+            Spacer()
+            
+            // Edit button
+            Button {
+                editingCustomImageId = registration.id
+                editingCustomImageName = registration.name
+                editingCustomImageWidth = registration.physicalWidthMeters
+            } label: {
+                Image(systemName: "pencil.circle")
+                    .font(.system(size: 18))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+            
+            // Delete button
+            Button {
+                CustomImageStorage.shared.unregisterImage(id: registration.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundColor(.red.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.05))
+        .cornerRadius(8)
+        .sheet(isPresented: Binding(
+            get: { editingCustomImageId == registration.id },
+            set: { if !$0 { editingCustomImageId = nil } }
+        )) {
+            customImageEditSheet(registration: registration)
+        }
+    }
+    
+    @ViewBuilder
+    private func customImageEditSheet(registration: CustomImageRegistration) -> some View {
+        NavigationView {
+            Form {
+                Section("Image Name") {
+                    TextField("Name", text: $editingCustomImageName)
+                }
+                
+                Section("Physical Width") {
+                    HStack {
+                        Slider(value: $editingCustomImageWidth, in: 0.02...0.50, step: 0.01)
+                        Text(String(format: "%.0f cm", editingCustomImageWidth * 100))
+                            .frame(width: 60)
+                            .monospacedDigit()
+                    }
+                    Text("Enter the real-world width of this image for accurate tracking.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Edit Image")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        editingCustomImageId = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        CustomImageStorage.shared.updateRegistration(
+                            id: registration.id,
+                            name: editingCustomImageName,
+                            physicalWidth: editingCustomImageWidth
+                        )
+                        editingCustomImageId = nil
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+    
+    // MARK: - Unified Camera Calibration Panel
+    
+
+    
+    @ViewBuilder
+    private var cameraCalibrationMenuItem: some View {
+        // Camera calibration is not yet supported
+        HStack(spacing: 12) {
+            Image(systemName: "camera.aperture")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(.white.opacity(0.3))
+                .frame(width: 28)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Camera Calibration")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white.opacity(0.4))
+                Text("Not supported yet")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.3))
+            }
+            
+            Spacer()
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+    }
+    
+    private var cameraCalibrationPanelContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let device = uvcCameraManager.selectedDevice {
+                let hasIntrinsic = calibrationManager.hasCalibration(for: device.id)
+                let hasExtrinsic = extrinsicCalibrationManager.hasCalibration(for: device.id)
+                
+                // Camera name and overall status
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(device.name)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                    
+                    // Status badges
+                    HStack(spacing: 8) {
+                        calibrationStatusBadge(
+                            title: "Intrinsic",
+                            isCalibrated: hasIntrinsic,
+                            color: .cyan
+                        )
+                        calibrationStatusBadge(
+                            title: "Extrinsic",
+                            isCalibrated: hasExtrinsic,
+                            color: .purple
+                        )
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.1), Color.white.opacity(0.05)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .cornerRadius(10)
+                
+                // Calibration Results (if calibrated)
+                if hasIntrinsic || hasExtrinsic {
+                    VStack(alignment: .leading, spacing: 10) {
+                        // Intrinsic results
+                        if hasIntrinsic, let intrinsic = calibrationManager.allCalibrations[device.id] {
+                            calibrationResultRow(
+                                icon: "camera.aperture",
+                                title: "Intrinsic",
+                                subtitle: "fx=\(Int(intrinsic.leftIntrinsics.fx)), fy=\(Int(intrinsic.leftIntrinsics.fy))",
+                                detail: String(format: "%.4f px", intrinsic.leftIntrinsics.reprojectionError),
+                                isGood: intrinsic.leftIntrinsics.reprojectionError < 0.5,
+                                color: .cyan
+                            )
+                        }
+                        
+                        // Extrinsic results
+                        if hasExtrinsic, let extrinsic = extrinsicCalibrationManager.allCalibrations[device.id] {
+                            let translation = SIMD3<Float>(
+                                extrinsic.leftHeadToCameraMatrix.columns.3.x,
+                                extrinsic.leftHeadToCameraMatrix.columns.3.y,
+                                extrinsic.leftHeadToCameraMatrix.columns.3.z
+                            )
+                            let distance = simd_length(translation) * 100 // cm
+                            
+                            calibrationResultRow(
+                                icon: "arrow.triangle.swap",
+                                title: "Extrinsic",
+                                subtitle: String(format: "%.1f cm from head", distance),
+                                detail: String(format: "%.4f m", extrinsic.leftReprojectionError),
+                                isGood: extrinsic.leftReprojectionError < 0.01,
+                                color: .purple
+                            )
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.white.opacity(0.05))
+                    .cornerRadius(10)
+                }
+                
+                // Info text when not calibrated
+                if !hasIntrinsic && !hasExtrinsic {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Why Calibrate?", systemImage: "info.circle.fill")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white.opacity(0.8))
+                        
+                        Text("Camera calibration enables accurate pose estimation and is required for teleoperation. The wizard will guide you through both intrinsic and extrinsic calibration.")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineSpacing(2)
+                    }
+                    .padding(12)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(10)
+                }
+                
+                // Big calibrate button
+                Button {
+                    showCalibrationWizard = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: hasIntrinsic && hasExtrinsic ? "arrow.clockwise" : "camera.aperture")
+                            .font(.system(size: 16, weight: .bold))
+                        Text(hasIntrinsic && hasExtrinsic ? "Recalibrate" : "Calibrate Camera")
+                            .font(.headline)
                     }
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color.cyan)
-                    .cornerRadius(8)
+                    .padding(.vertical, 14)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.cyan, Color.purple],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(12)
                 }
                 .buttonStyle(.plain)
                 
+                // Direct Verify button (if calibrated)
+                if hasExtrinsic {
+                    Button {
+                        startCalibrationVerification = true
+                        showCalibrationWizard = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle")
+                                .font(.system(size: 16, weight: .bold))
+                            Text("Verify Calibration")
+                                .font(.headline)
+                        }
+                        .foregroundColor(.green)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.green.opacity(0.15))
+                        .cornerRadius(12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.green.opacity(0.5), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                // Delete calibration button (if calibrated)
+                if hasIntrinsic || hasExtrinsic {
+                    Button {
+                        if hasIntrinsic {
+                            calibrationManager.deleteCalibration(for: device.id)
+                        }
+                        if hasExtrinsic {
+                            extrinsicCalibrationManager.deleteCalibration(for: device.id)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                            Text("Delete All Calibration Data")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.red.opacity(0.8))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                }
+                
             } else {
                 // No camera selected
-                VStack(spacing: 8) {
+                VStack(spacing: 12) {
                     Image(systemName: "video.slash")
-                        .font(.title2)
-                        .foregroundColor(.white.opacity(0.5))
+                        .font(.system(size: 32))
+                        .foregroundColor(.white.opacity(0.4))
                     Text("No camera selected")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundColor(.white.opacity(0.5))
+                    Text("Connect a USB camera to get started")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.3))
                 }
                 .frame(maxWidth: .infinity)
-                .padding()
+                .padding(.vertical, 20)
             }
         }
+    }
+    
+    private func calibrationStatusBadge(title: String, isCalibrated: Bool, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: isCalibrated ? "checkmark.circle.fill" : "circle.dashed")
+                .font(.system(size: 10))
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.medium)
+        }
+        .foregroundColor(isCalibrated ? color : .white.opacity(0.5))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(isCalibrated ? color.opacity(0.2) : Color.white.opacity(0.1))
+        .cornerRadius(6)
+    }
+    
+    private func calibrationResultRow(icon: String, title: String, subtitle: String, detail: String, isGood: Bool, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundColor(color)
+                .frame(width: 24)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            
+            Spacer()
+            
+            HStack(spacing: 4) {
+                Image(systemName: isGood ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                Text(detail)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+            }
+            .foregroundColor(isGood ? .green : .orange)
+        }
+    }
+    
+    // Keep the old views for backward compatibility (will be removed later)
+    private var calibrationPanelContent: some View {
+        cameraCalibrationPanelContent
     }
     
     private var extrinsicCalibrationPanelContent: some View {
@@ -2040,8 +4678,9 @@ struct ExtrinsicCalibration3DView: View {
                              label: "Head", axisLength: 0.05)
             
             // Draw left/mono camera
-            // leftHeadToCameraMatrix is T_head^camera (transforms points from head to camera)
-            // To get camera pose in head frame, we need the inverse: T_camera^head
+            // leftHeadToCameraMatrix is T^camera_head (transforms points from head frame to camera frame)
+            // To get camera pose in head frame, we need the inverse
+            // Camera axes are in OpenCV convention: X-right, Y-down, Z-forward (optical axis)
             let leftHeadToCamera = calibration.leftHeadToCameraMatrix
             let leftCameraInHead = simd_inverse(leftHeadToCamera)
             drawCoordinateAxes(context: context, center: center, scale: scale,
@@ -2094,25 +4733,43 @@ struct ExtrinsicCalibration3DView: View {
     }
     
     /// Project a 3D point to 2D screen coordinates
+    /// 
+    /// Input coordinate system (ARKit head frame):
+    /// - X: right (wearer's right)
+    /// - Y: up  
+    /// - Z: backward (toward back of head)
+    /// 
+    /// Display coordinate system (standard graphics):
+    /// - X: right on screen
+    /// - Y: up on screen (but screen Y increases downward, handled in final projection)
+    /// - Z: into screen (away from viewer)
+    ///
+    /// To convert: we negate Z so that "backward" (ARKit +Z) becomes "into screen" (display +Z)
     private func project3DTo2D(point: SIMD3<Float>, center: CGPoint, scale: CGFloat,
                                viewAngleX: Float, viewAngleY: Float) -> CGPoint {
-        // Apply view rotation
+        // Convert from ARKit convention to display convention
+        // ARKit: X-right, Y-up, Z-backward (right-handed)
+        // Display: X-right, Y-up, Z-into-screen (right-handed)
+        // The conversion is just negating Z
+        let displayPoint = SIMD3<Float>(point.x, point.y, -point.z)
+        
+        // Apply view rotation (right-handed convention)
         let cosX = cos(viewAngleX)
         let sinX = sin(viewAngleX)
         let cosY = cos(viewAngleY)
         let sinY = sin(viewAngleY)
         
-        // Rotate around Y axis first
-        let x1 = point.x * cosY - point.z * sinY
-        let z1 = point.x * sinY + point.z * cosY
-        let y1 = point.y
+        // Rotate around Y axis (right-handed)
+        let x1 = displayPoint.x * cosY - displayPoint.z * sinY
+        let z1 = displayPoint.x * sinY + displayPoint.z * cosY
+        let y1 = displayPoint.y
         
-        // Then rotate around X axis
+        // Then rotate around X axis (right-handed)
         let y2 = y1 * cosX - z1 * sinX
         let z2 = y1 * sinX + z1 * cosX
         let x2 = x1
         
-        // Simple orthographic projection (ignore z for depth)
+        // Simple orthographic projection (ignore z2 for depth)
         let screenX = center.x + CGFloat(x2) * scale
         let screenY = center.y - CGFloat(y2) * scale  // Y is up in 3D, down in screen
         
@@ -2167,6 +4824,7 @@ struct ExtrinsicCalibration3DView: View {
     }
     
     /// Draw a simple camera frustum
+    /// The camera is in OpenCV convention where +Z is forward (optical axis)
     private func drawCameraFrustum(context: GraphicsContext, center: CGPoint, scale: CGFloat,
                                    transform: simd_float4x4, viewAngleX: Float, viewAngleY: Float,
                                    color: Color) {
@@ -2179,7 +4837,8 @@ struct ExtrinsicCalibration3DView: View {
         let frustumWidth: Float = 0.02
         let frustumHeight: Float = 0.015
         
-        // Frustum corners (in camera space, Z points forward)
+        // In OpenCV camera convention, +Z is forward (optical axis)
+        // So frustum points in +Z direction
         let zOffset = zAxis * frustumDepth
         let xOffset = xAxis * frustumWidth
         let yOffset = yAxis * frustumHeight
@@ -2245,9 +4904,180 @@ struct ExtrinsicCalibration3DView: View {
     }
 }
 
+// MARK: - Debug Info Row Helper
+
+struct DebugInfoRow: View {
+    let label: String
+    let value: String
+    
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.6))
+            Spacer()
+            Text(value)
+                .font(.caption2)
+                .foregroundColor(.white)
+                .fontWeight(.medium)
+        }
+    }
+}
+
 /// Creates a floating status entity that follows the head
 func createStatusEntity() -> Entity {
     let statusEntity = Entity()
     statusEntity.name = "statusDisplay"
     return statusEntity
+}
+
+// MARK: - Python Calibration Status Overlay
+
+/// Overlay displayed during Python-based extrinsic calibration
+/// Shows calibration progress, marker detection, and step information
+struct PythonCalibrationStatusOverlay: View {
+    let step: Int
+    let targetMarker: Int
+    let samplesCollected: Int
+    let samplesNeeded: Int
+    let markerDetected: Bool
+    let progress: Float
+    let stepStatus: Int  // 0=collecting, 1=calibrating, 2=complete
+    
+    private var statusColor: Color {
+        if stepStatus == 2 { return .green }
+        if markerDetected { return .green }
+        return .orange
+    }
+    
+    private var stepStatusText: String {
+        switch stepStatus {
+        case 1: return "Calibrating..."
+        case 2: return "Step Complete!"
+        default: return markerDetected ? "Collecting..." : "Looking for marker..."
+        }
+    }
+    
+    private var markerIds: [Int] { [0, 2, 3] }
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            // Header
+            HStack {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.cyan)
+                Text("Extrinsic Calibration")
+                    .font(.headline)
+                    .foregroundColor(.white)
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.3))
+            
+            // Step indicator
+            HStack(spacing: 12) {
+                ForEach(0..<3, id: \.self) { i in
+                    let isCurrentStep = i == step
+                    let isCompleted = i < step
+                    
+                    HStack(spacing: 4) {
+                        if isCompleted {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                        } else if isCurrentStep {
+                            Image(systemName: "circle.dotted")
+                                .foregroundColor(.cyan)
+                        } else {
+                            Image(systemName: "circle")
+                                .foregroundColor(.white.opacity(0.3))
+                        }
+                        Text("Marker \(markerIds[i])")
+                            .font(.caption)
+                            .foregroundColor(isCurrentStep ? .white : .white.opacity(0.5))
+                    }
+                }
+            }
+            
+            // Current step details
+            VStack(spacing: 10) {
+                // Target marker
+                HStack {
+                    Text("Target:")
+                        .foregroundColor(.white.opacity(0.6))
+                    Spacer()
+                    Text("Marker ID \(targetMarker)")
+                        .font(.system(.body, design: .monospaced))
+                        .fontWeight(.bold)
+                        .foregroundColor(.cyan)
+                }
+                
+                // Detection status
+                HStack {
+                    Text("Status:")
+                        .foregroundColor(.white.opacity(0.6))
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 8, height: 8)
+                        Text(stepStatusText)
+                            .foregroundColor(statusColor)
+                    }
+                }
+                
+                // Sample count
+                HStack {
+                    Text("Samples:")
+                        .foregroundColor(.white.opacity(0.6))
+                    Spacer()
+                    Text("\(samplesCollected) / \(samplesNeeded)")
+                        .font(.system(.body, design: .monospaced))
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                }
+                
+                // Progress bar
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.2))
+                        .frame(height: 12)
+                    
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(statusColor)
+                        .frame(width: max(0, CGFloat(progress) * 200), height: 12)
+                        .animation(.easeInOut(duration: 0.3), value: progress)
+                }
+                .frame(width: 200)
+            }
+            
+            // Instructions
+            VStack(spacing: 4) {
+                if stepStatus == 2 {
+                    Text("✓ Step complete! Move to next marker.")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                } else if !markerDetected {
+                    Text("Hold marker \(targetMarker) in camera view")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                } else {
+                    Text("Keep marker steady while collecting samples")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 280)
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color.black.opacity(0.85))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(statusColor.opacity(0.5), lineWidth: 2)
+                )
+        )
+        .shadow(color: statusColor.opacity(0.3), radius: 20)
+    }
 }

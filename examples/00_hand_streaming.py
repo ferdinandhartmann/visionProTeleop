@@ -13,12 +13,9 @@ if __name__ == "__main__":
     streamer = VisionProStreamer(ip=args.ip)
     
     
-    print("Streaming synthetic video at 60fps...")
-    print("Press Ctrl+C to stop")
-    cnt = 0 
     try:
         while True:
-            print(streamer.latest)
+            print(streamer.get_latest())
             time.sleep(1/60.)
     except KeyboardInterrupt:
         print("\nStopping...")

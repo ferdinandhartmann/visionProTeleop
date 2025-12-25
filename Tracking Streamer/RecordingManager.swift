@@ -26,7 +26,15 @@ struct RecordedFrame: Codable {
     let videoHeight: Int
 }
 
-/// Hand joint positions for all 25 joints tracked by ARKit HandSkeleton
+/// A single frame of simulation data
+struct SimulationFrame: Codable {
+    let timestamp: Double  // Seconds since recording started
+    let poses: [String: [Float]]
+    let qpos: [Float]?
+    let ctrl: [Float]?
+}
+
+/// Hand joint positions for all 27 joints tracked by ARKit HandSkeleton
 /// Joint order matches 🥽AppModel.swift jointTypes array:
 ///   0: wrist
 ///   1-4: thumb (knuckle, intermediateBase, intermediateTip, tip)
@@ -34,8 +42,12 @@ struct RecordedFrame: Codable {
 ///   10-14: middle (metacarpal, knuckle, intermediateBase, intermediateTip, tip)
 ///   15-19: ring (metacarpal, knuckle, intermediateBase, intermediateTip, tip)
 ///   20-24: little (metacarpal, knuckle, intermediateBase, intermediateTip, tip)
+///   25: forearmWrist
+///   26: forearmArm
+/// Note: Indices 0-24 are identical between 25-joint and 27-joint formats
 struct HandJointData: Codable {
-    let wrist: [Float]  // 4x4 matrix flattened (index 0)
+    // Wrist (index 0)
+    let wrist: [Float]  // 4x4 matrix flattened
     
     // Thumb (4 joints, indices 1-4) - no metacarpal for thumb
     let thumbKnuckle: [Float]          // thumbCMC equivalent
@@ -70,6 +82,18 @@ struct HandJointData: Codable {
     let littleIntermediateBase: [Float]
     let littleIntermediateTip: [Float]
     let littleTip: [Float]
+    
+    // Forearm joints (indices 25-26) - optional, may not be tracked
+    let forearmWrist: [Float]?  // 4x4 matrix flattened (index 25)
+    let forearmArm: [Float]?    // 4x4 matrix flattened (index 26)
+}
+
+/// Recording type for categorizing recordings
+enum RecordingType: String, Codable {
+    case egorecord = "egorecord"
+    case teleopVideo = "teleoperation-video"
+    case teleopMujoco = "teleoperation-mujoco"
+    case teleopIsaac = "teleoperation-isaac"
 }
 
 /// Metadata for the entire recording session
@@ -81,7 +105,9 @@ struct RecordingMetadata: Codable {
     let hasVideo: Bool
     let hasLeftHand: Bool
     let hasRightHand: Bool
-    let hasHead: Bool
+    let hasSimulationData: Bool
+    let recordingType: RecordingType
+    let hasUSDZ: Bool
     let videoSource: String  // "network" or "uvc"
     let averageFPS: Double
     let deviceInfo: DeviceInfo
@@ -91,8 +117,8 @@ struct RecordingMetadata: Codable {
     
     enum CodingKeys: String, CodingKey {
         case version, createdAt, duration, frameCount, hasVideo
-        case hasLeftHand, hasRightHand, hasHead, videoSource, averageFPS, deviceInfo
-        case intrinsicCalibration, extrinsicCalibration
+        case hasLeftHand, hasRightHand, hasSimulationData, hasUSDZ, videoSource, averageFPS, deviceInfo
+        case intrinsicCalibration, extrinsicCalibration, recordingType
     }
     
     func encode(to encoder: Encoder) throws {
@@ -104,7 +130,9 @@ struct RecordingMetadata: Codable {
         try container.encode(hasVideo, forKey: .hasVideo)
         try container.encode(hasLeftHand, forKey: .hasLeftHand)
         try container.encode(hasRightHand, forKey: .hasRightHand)
-        try container.encode(hasHead, forKey: .hasHead)
+        try container.encode(hasSimulationData, forKey: .hasSimulationData)
+        try container.encode(recordingType, forKey: .recordingType)
+        try container.encode(hasUSDZ, forKey: .hasUSDZ)
         try container.encode(videoSource, forKey: .videoSource)
         try container.encode(averageFPS, forKey: .averageFPS)
         try container.encode(deviceInfo, forKey: .deviceInfo)
@@ -131,7 +159,9 @@ struct RecordingMetadata: Codable {
         hasVideo = try container.decode(Bool.self, forKey: .hasVideo)
         hasLeftHand = try container.decode(Bool.self, forKey: .hasLeftHand)
         hasRightHand = try container.decode(Bool.self, forKey: .hasRightHand)
-        hasHead = try container.decode(Bool.self, forKey: .hasHead)
+        hasSimulationData = try container.decodeIfPresent(Bool.self, forKey: .hasSimulationData) ?? false
+        recordingType = try container.decodeIfPresent(RecordingType.self, forKey: .recordingType) ?? .teleopVideo
+        hasUSDZ = try container.decodeIfPresent(Bool.self, forKey: .hasUSDZ) ?? false
         videoSource = try container.decode(String.self, forKey: .videoSource)
         averageFPS = try container.decode(Double.self, forKey: .averageFPS)
         deviceInfo = try container.decode(DeviceInfo.self, forKey: .deviceInfo)
@@ -154,18 +184,20 @@ struct RecordingMetadata: Codable {
     }
     
     init(createdAt: Date, duration: Double, frameCount: Int, hasVideo: Bool, hasLeftHand: Bool,
-         hasRightHand: Bool, hasHead: Bool, videoSource: String, averageFPS: Double,
-         deviceInfo: DeviceInfo, intrinsicCalibration: [String: Any]? = nil, extrinsicCalibration: [String: Any]? = nil) {
+         hasRightHand: Bool, hasSimulationData: Bool, hasUSDZ: Bool, videoSource: String, averageFPS: Double,
+         deviceInfo: DeviceInfo, recordingType: RecordingType, intrinsicCalibration: [String: Any]? = nil, extrinsicCalibration: [String: Any]? = nil) {
         self.createdAt = createdAt
         self.duration = duration
         self.frameCount = frameCount
         self.hasVideo = hasVideo
         self.hasLeftHand = hasLeftHand
         self.hasRightHand = hasRightHand
-        self.hasHead = hasHead
+        self.hasSimulationData = hasSimulationData
+        self.hasUSDZ = hasUSDZ
         self.videoSource = videoSource
         self.averageFPS = averageFPS
         self.deviceInfo = deviceInfo
+        self.recordingType = recordingType
         self.intrinsicCalibration = intrinsicCalibration
         self.extrinsicCalibration = extrinsicCalibration
     }
@@ -177,17 +209,22 @@ struct DeviceInfo: Codable {
     let appVersion: String
 }
 
-/// Storage location options
+/// Storage location options - simplified to Local vs Cloud
 enum RecordingStorageLocation: String, CaseIterable {
-    case local = "Local Storage"
-    case iCloudDrive = "iCloud Drive"
-    case documentsFolder = "Documents"
+    case local = "Local"
+    case cloud = "Cloud"
     
     var icon: String {
         switch self {
         case .local: return "internaldrive"
-        case .iCloudDrive: return "icloud"
-        case .documentsFolder: return "folder"
+        case .cloud: return "icloud"
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .local: return "Documents folder (Files app)"
+        case .cloud: return "Synced via cloud provider"
         }
     }
 }
@@ -222,6 +259,14 @@ class RecordingManager: ObservableObject {
     @Published var recordingError: String? = nil
     @Published var isSaving: Bool = false
     
+    // Cloud storage (synced from iOS companion app)
+    @Published var cloudProvider: CloudStorageProvider = .iCloudDrive
+    @Published var isUploadingToCloud: Bool = false
+    @Published var cloudUploadProgress: String = ""
+    @Published var cloudUploadCurrentFile: Int = 0
+    @Published var cloudUploadTotalFiles: Int = 0
+    @Published var cloudUploadCurrentFileName: String = ""  // Current file being uploaded
+    
     // Auto-recording state
     @Published var autoRecordingEnabled: Bool {
         didSet {
@@ -229,6 +274,11 @@ class RecordingManager: ObservableObject {
         }
     }
     @Published var isAutoRecording: Bool = false  // True if current recording was auto-started
+    private var userManuallyStopped: Bool = false // Prevent auto-restart after manual stop
+    
+    // Hand-tracking-only recording timer
+    private var handTrackingRecordingTimer: Timer?
+    private let handTrackingRecordingHz: Double = 60.0  // Record at 60Hz when no video/sim
     
     // MARK: - Private Properties
     private var recordingStartTime: Date?
@@ -241,6 +291,9 @@ class RecordingManager: ObservableObject {
     nonisolated(unsafe) private var recordedFrames: [RecordedFrame] = []
     nonisolated(unsafe) private var videoFrames: [VideoFrameData] = []
     nonisolated(unsafe) private var pendingFrameCount: Int = 0
+    nonisolated(unsafe) private var simulationFrames: [SimulationFrame] = []
+    nonisolated(unsafe) private var simulationFrameCount: Int = 0
+    private var usdzURL: URL?
     
     // Recording settings
     var videoQuality: CGFloat = 0.7  // JPEG compression quality (0.0-1.0)
@@ -254,6 +307,10 @@ class RecordingManager: ObservableObject {
     nonisolated(unsafe) private var isWriterSessionStarted: Bool = false
     nonisolated(unsafe) private var pixelBufferPool: CVPixelBufferPool?
     nonisolated(unsafe) private var recordingFolderURL: URL?
+    nonisolated(unsafe) private var lastPresentationTime: CMTime?
+    
+    // Notification observers
+    private var cancellables = Set<AnyCancellable>()
     
     // MARK: - Initialization
     
@@ -263,11 +320,36 @@ class RecordingManager: ObservableObject {
            let location = RecordingStorageLocation(rawValue: savedLocation) {
             self.storageLocation = location
         } else {
-            self.storageLocation = .documentsFolder
+            self.storageLocation = .local  // Default to local storage
         }
         
         // Load auto-recording preference (default to true for auto-record by default)
         self.autoRecordingEnabled = UserDefaults.standard.object(forKey: "autoRecordingEnabled") as? Bool ?? true
+        
+        // Load cloud provider from keychain (synced from iOS)
+        loadCloudSettings()
+        
+        // Observe cloud settings changes
+        setupCloudSettingsObserver()
+    }
+    
+    /// Setup observer for cloud settings changes (from iCloud Keychain sync)
+    private func setupCloudSettingsObserver() {
+        NotificationCenter.default.publisher(for: .cloudStorageSettingsDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.loadCloudSettings()
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    /// Load cloud storage settings from iCloud Keychain (set by iOS companion app)
+    func loadCloudSettings() {
+        CloudStorageSettings.shared.loadSettings()
+        cloudProvider = CloudStorageSettings.shared.getActiveProvider()
+        // dlog("☁️ [RecordingManager] Cloud provider: \(cloudProvider.displayName)")
     }
     
     // MARK: - Auto-Recording Control
@@ -275,9 +357,9 @@ class RecordingManager: ObservableObject {
     /// Called when first video frame is received. Starts recording if auto-recording is enabled.
     /// Video source can be UVC camera or network stream.
     func onFirstVideoFrame() {
-        guard autoRecordingEnabled && !isRecording else { return }
+        guard autoRecordingEnabled && !isRecording && !userManuallyStopped else { return }
         
-        print("🔴 [RecordingManager] Auto-starting recording on first video frame")
+        dlog("🔴 [RecordingManager] Auto-starting recording on first video frame")
         isAutoRecording = true
         startRecording()
     }
@@ -285,9 +367,12 @@ class RecordingManager: ObservableObject {
     /// Called when video source is disconnected (UVC camera unplugged, Python client disconnected, or WebRTC disconnected).
     /// Stops recording if it was auto-started.
     func onVideoSourceDisconnected(reason: String) {
+        // Reset manual stop flag so auto-recording can work on next connection
+        userManuallyStopped = false
+        
         guard isRecording else { return }
         
-        print("🔴 [RecordingManager] Stopping recording due to: \(reason)")
+        dlog("🔴 [RecordingManager] Stopping recording due to: \(reason)")
         stopRecording()
         isAutoRecording = false
     }
@@ -296,7 +381,8 @@ class RecordingManager: ObservableObject {
     func stopRecordingManually() {
         guard isRecording else { return }
         
-        print("🔴 [RecordingManager] User manually stopped recording")
+        dlog("🔴 [RecordingManager] User manually stopped recording")
+        userManuallyStopped = true // Prevent immediate auto-restart
         stopRecording()
         isAutoRecording = false
     }
@@ -306,15 +392,18 @@ class RecordingManager: ObservableObject {
     func startRecording() {
         guard !isRecording else { return }
         
-        print("🔴 [RecordingManager] Starting recording (video-driven mode)...")
+        dlog("🔴 [RecordingManager] Starting recording (video-driven mode)...")
         
         // Reset state on background queue to avoid blocking
         recordingQueue.async { [weak self] in
             self?.recordedFrames.removeAll()
             self?.videoFrames.removeAll()
+            self?.simulationFrames.removeAll()
             self?.pendingFrameCount = 0
+            self?.simulationFrameCount = 0
             self?.isWriterSessionStarted = false
             self?.videoSize = .zero
+            self?.lastPresentationTime = nil
         }
         
         recordingStartTime = Date()
@@ -322,23 +411,30 @@ class RecordingManager: ObservableObject {
         recordingDuration = 0
         recordingError = nil
         
-        // Generate session ID
+        // Generate session ID with UUID to ensure uniqueness even within same second
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
-        sessionID = "recording_\(formatter.string(from: Date()))"
+        let uuidShort = UUID().uuidString.prefix(4)
+        sessionID = "recording_\(formatter.string(from: Date()))_\(uuidShort)"
         
         isRecording = true
         
         // Start duration timer - also updates frame count periodically
+        // Also checks if we should fall back to hand-tracking-only mode
         durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self, let startTime = self.recordingStartTime else { return }
                 self.recordingDuration = Date().timeIntervalSince(startTime)
-                self.frameCount = self.pendingFrameCount
+                self.frameCount = max(self.pendingFrameCount, self.simulationFrameCount)
+                
+                // After 0.5 seconds, if no video/sim data has arrived, start hand-tracking-only mode
+                if self.recordingDuration > 0.5 {
+                    self.checkAndStartHandTrackingOnlyMode()
+                }
             }
         }
         
-        print("🔴 [RecordingManager] Recording started with session ID: \(sessionID)")
+        dlog("🔴 [RecordingManager] Recording started with session ID: \(sessionID)")
     }
     
     /// Set up the video writer for MP4 output
@@ -387,7 +483,7 @@ class RecordingManager: ObservableObject {
         
         guard writer.startWriting() else {
             if let error = writer.error {
-                print("❌ [RecordingManager] Writer failed to start: \(error)")
+                dlog("❌ [RecordingManager] Writer failed to start: \(error)")
             }
             throw RecordingError.videoWriterSetupFailed
         }
@@ -399,7 +495,7 @@ class RecordingManager: ObservableObject {
         
         // Get the pixel buffer pool from the adaptor (will be available after starting session)
         
-        print("🎬 [RecordingManager] Video writer set up for \(Int(size.width))x\(Int(size.height))")
+        dlog("🎬 [RecordingManager] Video writer set up for \(Int(size.width))x\(Int(size.height))")
     }
     
     /// Create a pixel buffer from a UIImage using pool if available
@@ -466,11 +562,15 @@ class RecordingManager: ObservableObject {
     func stopRecording() {
         guard isRecording else { return }
         
-        print("🔴 [RecordingManager] Stopping recording...")
+        dlog("🔴 [RecordingManager] Stopping recording...")
         
         isRecording = false
         durationTimer?.invalidate()
         durationTimer = nil
+        
+        // Stop hand-tracking-only timer if running
+        handTrackingRecordingTimer?.invalidate()
+        handTrackingRecordingTimer = nil
         
         // Sync final count
         frameCount = pendingFrameCount
@@ -480,9 +580,9 @@ class RecordingManager: ObservableObject {
             recordingDuration = Date().timeIntervalSince(startTime)
         }
         
-        print("🔴 [RecordingManager] Recording stopped.")
-        print("   Duration: \(String(format: "%.1f", recordingDuration))s")
-        print("   Frames: \(frameCount) (~\(String(format: "%.0f", Double(frameCount) / max(recordingDuration, 0.1))) fps)")
+        dlog("🔴 [RecordingManager] Recording stopped.")
+        dlog("   Duration: \(String(format: "%.1f", recordingDuration))s")
+        dlog("   Frames: \(frameCount) (~\(String(format: "%.0f", Double(frameCount) / max(recordingDuration, 0.1))) fps)")
         
         // Save the recording
         Task {
@@ -509,7 +609,7 @@ class RecordingManager: ObservableObject {
     private func processVideoFrame(_ videoFrame: UIImage, captureTime: Date) async {
         guard isRecording, let startTime = recordingStartTime else { return }
         
-        let timestamp = captureTime.timeIntervalSince(startTime)
+        let timestamp = max(0, captureTime.timeIntervalSince(startTime))
         let systemTime = captureTime.timeIntervalSince1970
         
         // Capture the LATEST tracking data at this moment
@@ -537,15 +637,25 @@ class RecordingManager: ObservableObject {
                     try self.setupVideoWriter(at: videoURL, size: videoFrame.size)
                     self.assetWriter?.startSession(atSourceTime: .zero)
                     self.isWriterSessionStarted = true
-                    print("🎬 [RecordingManager] Video writer session started")
+                    dlog("🎬 [RecordingManager] Video writer session started")
                 } catch {
-                    print("❌ [RecordingManager] Failed to set up video writer: \(error)")
+                    dlog("❌ [RecordingManager] Failed to set up video writer: \(error)")
                     return
                 }
             }
             
             // Create presentation time based on actual timestamp for accurate timing
-            let presentationTime = CMTime(seconds: timestamp, preferredTimescale: 600)
+            var presentationTime = CMTime(seconds: timestamp, preferredTimescale: 600)
+            
+            // Ensure strictly increasing timestamps (AVAssetWriter requirement)
+            if let lastTime = self.lastPresentationTime {
+                if presentationTime <= lastTime {
+                    // If timestamp is not increasing, bump it slightly
+                    presentationTime = CMTimeAdd(lastTime, CMTime(value: 1, timescale: 600))
+                    // dlog("⚠️ [RecordingManager] Adjusted timestamp for frame \(frameIndex) to maintain order")
+                }
+            }
+            self.lastPresentationTime = presentationTime
             
             // Write video frame - skip if writer isn't ready (don't block!)
             if let writer = self.assetWriter,
@@ -555,14 +665,19 @@ class RecordingManager: ObservableObject {
                writerInput.isReadyForMoreMediaData {
                 
                 if let pixelBuffer = self.createPixelBuffer(from: videoFrame) {
-                    if !adaptor.append(pixelBuffer, withPresentationTime: presentationTime) {
-                        print("⚠️ [RecordingManager] Failed to append frame \(frameIndex)")
+                    if adaptor.append(pixelBuffer, withPresentationTime: presentationTime) {
+                        // Success
+                        if frameIndex % 60 == 0 {
+                            dlog("DEBUG: Appended frame \(frameIndex) at \(presentationTime.seconds)s")
+                        }
+                    } else {
+                        dlog("⚠️ [RecordingManager] Failed to append frame \(frameIndex). Writer status: \(writer.status.rawValue), Error: \(String(describing: writer.error))")
                     }
                 }
             } else if self.assetWriter?.status == .writing {
                 // Writer not ready, skip this frame but log occasionally
                 if frameIndex % 30 == 0 {
-                    print("⚠️ [RecordingManager] Writer busy, skipping frame \(frameIndex)")
+                    dlog("⚠️ [RecordingManager] Writer busy, skipping frame \(frameIndex)")
                 }
             }
             
@@ -589,6 +704,171 @@ class RecordingManager: ObservableObject {
         }
     }
     
+    // MARK: - Hand Tracking Only Recording
+    
+    /// Start recording hand tracking data only (no video/simulation required).
+    /// This starts a timer that samples hand tracking at the configured Hz.
+    /// Call this when you want to record hand tracking without video or simulation.
+    func startHandTrackingOnlyRecording() {
+        guard isRecording else {
+            dlog("⚠️ [RecordingManager] Cannot start hand tracking recording - recording not active")
+            return
+        }
+        
+        // Don't start if already have a timer
+        guard handTrackingRecordingTimer == nil else { return }
+        
+        dlog("🔴 [RecordingManager] Starting hand tracking only recording at \(handTrackingRecordingHz) Hz")
+        
+        let interval = 1.0 / handTrackingRecordingHz
+        handTrackingRecordingTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.recordHandTrackingFrame()
+            }
+        }
+    }
+    
+    /// Record a single hand tracking frame (used by timer-based recording)
+    private func recordHandTrackingFrame() {
+        guard isRecording, let startTime = recordingStartTime else { return }
+        
+        let captureTime = Date()
+        let timestamp = max(0, captureTime.timeIntervalSince(startTime))
+        let systemTime = captureTime.timeIntervalSince1970
+        
+        // Capture the latest tracking data
+        let trackingData = DataManager.shared.latestHandTrackingData
+        
+        recordingQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            let frameIndex = self.pendingFrameCount
+            
+            // Create recording folder if needed (first frame)
+            if self.recordingFolderURL == nil {
+                do {
+                    let baseURL = try self.getStorageURLSync()
+                    let recordingFolder = baseURL.appendingPathComponent(self.sessionID)
+                    try FileManager.default.createDirectory(at: recordingFolder, withIntermediateDirectories: true)
+                    self.recordingFolderURL = recordingFolder
+                    dlog("📁 [RecordingManager] Created recording folder for hand tracking only: \(recordingFolder.lastPathComponent)")
+                } catch {
+                    dlog("❌ [RecordingManager] Failed to create recording folder: \(error)")
+                    return
+                }
+            }
+            
+            // Convert tracking data
+            let headMatrixArray: [Float] = self.matrixToArray(trackingData.Head)
+            let leftHand = self.extractHandJointData(wrist: trackingData.leftWrist, skeleton: trackingData.leftSkeleton)
+            let rightHand = self.extractHandJointData(wrist: trackingData.rightWrist, skeleton: trackingData.rightSkeleton)
+            
+            // Create recorded frame (no video data)
+            let recordedFrame = RecordedFrame(
+                timestamp: timestamp,
+                systemTime: systemTime,
+                headMatrix: headMatrixArray,
+                leftHand: leftHand,
+                rightHand: rightHand,
+                videoFrameIndex: -1,  // No video frame
+                videoWidth: 0,
+                videoHeight: 0
+            )
+            
+            self.recordedFrames.append(recordedFrame)
+            self.pendingFrameCount += 1
+        }
+    }
+    
+    /// Check if we should use hand-tracking-only mode (no video/sim data source)
+    /// Called periodically to detect when to start hand-tracking-only recording
+    func checkAndStartHandTrackingOnlyMode() {
+        guard isRecording else { return }
+        guard handTrackingRecordingTimer == nil else { return }  // Already running
+        guard !isWriterSessionStarted else { return }  // Video is active
+        guard simulationFrameCount == 0 else { return }  // Simulation is active
+        
+        // No video or simulation - start hand tracking only mode
+        startHandTrackingOnlyRecording()
+    }
+    
+    // MARK: - Simulation Data Recording
+    
+    /// Record simulation data (poses, qpos, ctrl) along with tracking data (hands, head)
+    /// This ensures hand tracking is recorded even when video is not streaming
+    nonisolated func recordSimulationData(timestamp: Double, poses: [String: [Float]], qpos: [Float]?, ctrl: [Float]?, trackingData: HandTrackingData?) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            
+            // Trigger auto-recording if needed (just like video)
+            if !self.isRecording && self.autoRecordingEnabled && !self.userManuallyStopped {
+                self.onFirstSimulationFrame()
+            }
+            
+            self.processSimulationData(timestamp: timestamp, poses: poses, qpos: qpos, ctrl: ctrl, trackingData: trackingData)
+        }
+    }
+    
+    /// Called when first simulation frame is received. Starts recording if auto-recording is enabled.
+    func onFirstSimulationFrame() {
+        guard autoRecordingEnabled && !isRecording && !userManuallyStopped else { return }
+        
+        dlog("🔴 [RecordingManager] Auto-starting recording on first simulation frame")
+        isAutoRecording = true
+        startRecording()
+    }
+    
+    /// Process simulation data on the main thread (to access recordingStartTime) then dispatch to recording queue
+    private func processSimulationData(timestamp: Double, poses: [String: [Float]], qpos: [Float]?, ctrl: [Float]?, trackingData: HandTrackingData?) {
+        guard isRecording, let startTime = recordingStartTime else { return }
+        
+        let relativeTimestamp = timestamp - startTime.timeIntervalSince1970
+        
+        // Prepare tracking data if available
+        var headMatrixArray: [Float]? = nil
+        var leftHand: HandJointData? = nil
+        var rightHand: HandJointData? = nil
+        
+        if let trackingData = trackingData {
+            headMatrixArray = matrixToArray(trackingData.Head)
+            leftHand = extractHandJointData(wrist: trackingData.leftWrist, skeleton: trackingData.leftSkeleton)
+            rightHand = extractHandJointData(wrist: trackingData.rightWrist, skeleton: trackingData.rightSkeleton)
+        }
+        
+        recordingQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Append simulation frame
+            self.simulationFrames.append(SimulationFrame(
+                timestamp: relativeTimestamp,
+                poses: poses,
+                qpos: qpos,
+                ctrl: ctrl
+            ))
+            self.simulationFrameCount += 1
+            
+            // Also append tracking frame if we have tracking data
+            if let head = headMatrixArray {
+                let recordedFrame = RecordedFrame(
+                    timestamp: relativeTimestamp,
+                    systemTime: Date().timeIntervalSince1970,
+                    headMatrix: head,
+                    leftHand: leftHand,
+                    rightHand: rightHand,
+                    videoFrameIndex: -1,  // No video frame for simulation-only recordings
+                    videoWidth: 0,
+                    videoHeight: 0
+                )
+                self.recordedFrames.append(recordedFrame)
+            }
+        }
+    }
+    
+    /// Set the URL of the USDZ file to be saved with the recording
+    func setUsdzUrl(_ url: URL) {
+        self.usdzURL = url
+    }
+    
     // MARK: - Hand Data Extraction
     
     nonisolated private func matrixToArray(_ m: simd_float4x4) -> [Float] {
@@ -602,15 +882,27 @@ class RecordingManager: ObservableObject {
     
     nonisolated private func extractHandJointData(wrist: simd_float4x4, skeleton: Skeleton) -> HandJointData? {
         let joints = skeleton.joints
-        guard joints.count >= 25 else { return nil }
+        guard joints.count >= 27 else { return nil }
         
-        // Joint order from 🥽AppModel.swift:
+        // Joint order from 🥽AppModel.swift (indices 0-24 shared with 25-joint format):
         //   0: wrist
         //   1-4: thumb (knuckle, intermediateBase, intermediateTip, tip)
         //   5-9: index (metacarpal, knuckle, intermediateBase, intermediateTip, tip)
         //   10-14: middle (metacarpal, knuckle, intermediateBase, intermediateTip, tip)
         //   15-19: ring (metacarpal, knuckle, intermediateBase, intermediateTip, tip)
         //   20-24: little (metacarpal, knuckle, intermediateBase, intermediateTip, tip)
+        //   25: forearmWrist
+        //   26: forearmArm
+        
+        // Check if forearm joints are valid (not identity matrix = tracked)
+        // Forearm joints may not always be tracked, so we make them optional
+        let forearmWristMatrix = joints[25]
+        let forearmArmMatrix = joints[26]
+        
+        // Check if forearm is at origin (identity matrix indicates not tracked)
+        let isForearmWristTracked = forearmWristMatrix.columns.3.x != 0 || forearmWristMatrix.columns.3.y != 0 || forearmWristMatrix.columns.3.z != 0
+        let isForearmArmTracked = forearmArmMatrix.columns.3.x != 0 || forearmArmMatrix.columns.3.y != 0 || forearmArmMatrix.columns.3.z != 0
+        
         return HandJointData(
             wrist: matrixToArray(wrist),
             
@@ -646,13 +938,27 @@ class RecordingManager: ObservableObject {
             littleKnuckle: matrixToArray(joints[21]),
             littleIntermediateBase: matrixToArray(joints[22]),
             littleIntermediateTip: matrixToArray(joints[23]),
-            littleTip: matrixToArray(joints[24])
+            littleTip: matrixToArray(joints[24]),
+            
+            // Forearm joints (indices 25-26, optional - may not be tracked)
+            forearmWrist: isForearmWristTracked ? matrixToArray(forearmWristMatrix) : nil,
+            forearmArm: isForearmArmTracked ? matrixToArray(forearmArmMatrix) : nil
         )
     }
     
     // MARK: - Saving
     
+    private var isSaveInProgress = false  // Guard against concurrent saves
+    
     private func saveRecording() async {
+        // Guard against concurrent save calls
+        guard !isSaveInProgress else {
+            dlog("⚠️ [RecordingManager] Save already in progress, ignoring duplicate call")
+            return
+        }
+        isSaveInProgress = true
+        defer { isSaveInProgress = false }
+        
         // Wait for recording queue to finish processing
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             recordingQueue.async {
@@ -660,7 +966,7 @@ class RecordingManager: ObservableObject {
             }
         }
         
-        guard !recordedFrames.isEmpty else {
+        guard !recordedFrames.isEmpty || !simulationFrames.isEmpty else {
             recordingError = "No frames recorded"
             return
         }
@@ -668,8 +974,8 @@ class RecordingManager: ObservableObject {
         isSaving = true
         defer { isSaving = false }
         
-        print("💾 [RecordingManager] Saving recording to \(storageLocation.rawValue)...")
-        print("   Frames to save: \(recordedFrames.count)")
+        dlog("💾 [RecordingManager] Saving recording to \(storageLocation.rawValue)...")
+        dlog("   Frames to save: \(recordedFrames.count) (Video), \(simulationFrames.count) (Sim)")
         
         do {
             // Use the folder we already created during recording
@@ -684,6 +990,8 @@ class RecordingManager: ObservableObject {
             
             // Finalize video file
             if let writer = assetWriter, writer.status == .writing {
+                // Clear reference immediately to prevent other code from using it
+                assetWriter = nil
                 videoWriterInput?.markAsFinished()
                 
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -697,14 +1005,20 @@ class RecordingManager: ObservableObject {
                     if let attributes = try? FileManager.default.attributesOfItem(atPath: videoURL.path),
                        let fileSize = attributes[.size] as? Int64 {
                         let sizeMB = Double(fileSize) / (1024 * 1024)
-                        print("🎬 [RecordingManager] Video saved: \(String(format: "%.1f", sizeMB)) MB")
+                        dlog("🎬 [RecordingManager] Video saved: \(String(format: "%.1f", sizeMB)) MB")
                     }
                 } else if let error = writer.error {
-                    print("❌ [RecordingManager] Video writer error: \(error)")
+                    dlog("❌ [RecordingManager] Video writer error: \(error)")
+                }
+            } else {
+                if let writer = assetWriter {
+                    dlog("⚠️ [RecordingManager] Video writer not writing (Status: \(writer.status.rawValue)). Error: \(String(describing: writer.error))")
+                } else {
+                    dlog("⚠️ [RecordingManager] No asset writer active")
                 }
             }
             
-            // Clean up writer references
+            // Clean up writer references (assetWriter may already be nil if we finalized above)
             assetWriter = nil
             videoWriterInput = nil
             pixelBufferAdaptor = nil
@@ -728,22 +1042,49 @@ class RecordingManager: ObservableObject {
                 intrinsicCalibrationDict = nil
             }
             
+            // Determine actual frame count (use max of video and simulation frames)
+            let actualFrameCount = max(recordedFrames.count, simulationFrames.count)
+            
+            // Check if video file was actually written
+            let videoURL = recordingFolder.appendingPathComponent("video.mp4")
+            let hasActualVideo = FileManager.default.fileExists(atPath: videoURL.path) &&
+                ((try? FileManager.default.attributesOfItem(atPath: videoURL.path)[.size] as? Int64) ?? 0) > 0
+            
+            // Determine recording type based on app mode and data present
+            let recordingType: RecordingType
+            let appMode = UserDefaults.standard.string(forKey: "appMode") ?? "teleop"
+            
+            if appMode == "egorecord" {
+                recordingType = .egorecord
+            } else if let url = usdzURL {
+                // Check if USDZ filename contains "isaac" to distinguish simulation types
+                if url.lastPathComponent.lowercased().contains("isaac") {
+                    recordingType = .teleopIsaac
+                } else {
+                    recordingType = .teleopMujoco
+                }
+            } else {
+                recordingType = .teleopVideo
+            }
+            
             // Save metadata
             let metadata = RecordingMetadata(
                 createdAt: recordingStartTime ?? Date(),
                 duration: recordingDuration,
-                frameCount: frameCount,
-                hasVideo: true,
+                frameCount: actualFrameCount,
+                hasVideo: hasActualVideo,
                 hasLeftHand: recordedFrames.contains { $0.leftHand != nil },
                 hasRightHand: recordedFrames.contains { $0.rightHand != nil },
-                hasHead: recordedFrames.contains { $0.headMatrix != nil },
+                hasSimulationData: !simulationFrames.isEmpty,
+                hasUSDZ: usdzURL != nil,
                 videoSource: DataManager.shared.videoSource.rawValue,
-                averageFPS: recordingDuration > 0 ? Double(frameCount) / recordingDuration : 0,
+                averageFPS: recordingDuration > 0 ? Double(actualFrameCount) / recordingDuration : 0,
                 deviceInfo: DeviceInfo(
                     model: "Apple Vision Pro",
                     systemVersion: UIDevice.current.systemVersion,
                     appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
                 ),
+                recordingType: recordingType,
                 intrinsicCalibration: intrinsicCalibrationDict,
                 extrinsicCalibration: extrinsicCalibrationDict
             )
@@ -758,18 +1099,78 @@ class RecordingManager: ObservableObject {
             let trackingURL = recordingFolder.appendingPathComponent("tracking.jsonl")
             var trackingContent = ""
             let lineEncoder = JSONEncoder()
+            lineEncoder.outputFormatting = .sortedKeys
+            
             for frame in recordedFrames {
-                let frameData = try lineEncoder.encode(frame)
-                if let jsonString = String(data: frameData, encoding: .utf8) {
-                    trackingContent += jsonString + "\n"
+                if let data = try? lineEncoder.encode(frame),
+                   let string = String(data: data, encoding: .utf8) {
+                    trackingContent += string + "\n"
                 }
             }
-            try trackingContent.write(to: trackingURL, atomically: true, encoding: .utf8)
             
+            try trackingContent.write(to: trackingURL, atomically: true, encoding: .utf8)
+            dlog("💾 [RecordingManager] Tracking data saved")
+            
+            // Save simulation data if available
+            if !simulationFrames.isEmpty {
+                let simURL = recordingFolder.appendingPathComponent("mjdata.jsonl")
+                var simContent = ""
+                
+                for frame in simulationFrames {
+                    if let data = try? lineEncoder.encode(frame),
+                       let string = String(data: data, encoding: .utf8) {
+                        simContent += string + "\n"
+                    }
+                }
+                
+                try simContent.write(to: simURL, atomically: true, encoding: .utf8)
+                dlog("💾 [RecordingManager] Simulation data saved: \(simulationFrames.count) frames")
+            }
+            
+            // Copy USDZ file if available
+            if let usdzURL = usdzURL {
+                let destURL = recordingFolder.appendingPathComponent("scene.usdz")
+                do {
+                    if FileManager.default.fileExists(atPath: destURL.path) {
+                        try FileManager.default.removeItem(at: destURL)
+                    }
+                    try FileManager.default.copyItem(at: usdzURL, to: destURL)
+                    dlog("💾 [RecordingManager] USDZ file copied")
+                } catch {
+                    dlog("⚠️ [RecordingManager] Failed to copy USDZ file: \(error)")
+                    // Don't fail the whole save for this
+                }
+            }
+            
+            // Update metadata with actual file existence
+            let finalMetadata = RecordingMetadata(
+                createdAt: metadata.createdAt,
+                duration: metadata.duration,
+                frameCount: metadata.frameCount,
+                hasVideo: metadata.hasVideo,
+                hasLeftHand: metadata.hasLeftHand,
+                hasRightHand: metadata.hasRightHand,
+                hasSimulationData: !simulationFrames.isEmpty,
+                hasUSDZ: usdzURL != nil,
+                videoSource: metadata.videoSource,
+                averageFPS: metadata.averageFPS,
+                deviceInfo: metadata.deviceInfo,
+                recordingType: metadata.recordingType,
+                intrinsicCalibration: metadata.intrinsicCalibration,
+                extrinsicCalibration: metadata.extrinsicCalibration
+            )
+            
+            // Re-save metadata with updated flags
+            let finalMetadataData = try encoder.encode(finalMetadata)
+            try finalMetadataData.write(to: metadataURL)
             lastRecordingURL = recordingFolder
             recordingError = nil
             
-            print("✅ [RecordingManager] Recording saved successfully to: \(recordingFolder.path)")
+            dlog("✅ [RecordingManager] Recording saved successfully to: \(recordingFolder.path)")
+            
+            dlog("☁️ [RecordingManager] Calling uploadToCloudIfNeeded...")
+            // Upload to cloud storage if configured
+            await uploadToCloudIfNeeded(recordingFolder: recordingFolder)
             
             // Clear memory
             recordedFrames.removeAll()
@@ -777,7 +1178,7 @@ class RecordingManager: ObservableObject {
             
         } catch {
             recordingError = "Failed to save: \(error.localizedDescription)"
-            print("❌ [RecordingManager] Failed to save recording: \(error)")
+            dlog("❌ [RecordingManager] Failed to save recording: \(error)")
             
             // Clean up writer on error
             assetWriter = nil
@@ -794,24 +1195,21 @@ class RecordingManager: ObservableObject {
         let fileManager = FileManager.default
         
         // Read storage location from UserDefaults directly since we're nonisolated
-        let savedLocation = UserDefaults.standard.string(forKey: "recordingStorageLocation") ?? RecordingStorageLocation.documentsFolder.rawValue
-        let location = RecordingStorageLocation(rawValue: savedLocation) ?? .documentsFolder
+        let savedLocation = UserDefaults.standard.string(forKey: "recordingStorageLocation") ?? RecordingStorageLocation.local.rawValue
+        let location = RecordingStorageLocation(rawValue: savedLocation) ?? .local
         
         switch location {
         case .local:
-            guard let url = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
-                throw RecordingError.storageNotAvailable
-            }
-            return url.appendingPathComponent("Recordings")
-            
-        case .documentsFolder:
+            // Save to Documents folder - accessible via Files app
             guard let url = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
                 throw RecordingError.storageNotAvailable
             }
             return url.appendingPathComponent("Recordings")
             
-        case .iCloudDrive:
+        case .cloud:
+            // Use iCloud Drive container for cloud sync
             guard let containerURL = fileManager.url(forUbiquityContainerIdentifier: nil) else {
+                dlog("⚠️ [RecordingManager] iCloud not available, falling back to Documents...")
                 guard let url = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
                     throw RecordingError.storageNotAvailable
                 }
@@ -826,23 +1224,16 @@ class RecordingManager: ObservableObject {
         
         switch storageLocation {
         case .local:
-            guard let url = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
-                throw RecordingError.storageNotAvailable
-            }
-            return url.appendingPathComponent("Recordings")
-            
-        case .documentsFolder:
+            // Save to Documents folder - accessible via Files app
             guard let url = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
                 throw RecordingError.storageNotAvailable
             }
             return url.appendingPathComponent("Recordings")
             
-        case .iCloudDrive:
-            // Use the app's iCloud container - syncs to Mac but in ~/Library/Mobile Documents/
-            // On Mac, access via: ~/Library/Mobile Documents/iCloud~com~younghyopark~VisionProTeleop/
-            // Or create a symlink to make it visible in iCloud Drive
+        case .cloud:
+            // Use the app's iCloud container - syncs to cloud
             guard let containerURL = fileManager.url(forUbiquityContainerIdentifier: nil) else {
-                print("⚠️ [RecordingManager] iCloud not available, falling back to Documents...")
+                dlog("⚠️ [RecordingManager] iCloud not available, falling back to Documents...")
                 guard let url = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
                     throw RecordingError.storageNotAvailable
                 }
@@ -881,7 +1272,7 @@ class RecordingManager: ObservableObject {
         } else if let storageURL = try? getStorageURL() {
             urlToOpen = storageURL
         } else {
-            print("❌ [RecordingManager] Cannot determine storage location")
+            dlog("❌ [RecordingManager] Cannot determine storage location")
             return
         }
         
@@ -891,11 +1282,11 @@ class RecordingManager: ObservableObject {
             Task { @MainActor in
                 if await UIApplication.shared.canOpenURL(filesURL) {
                     await UIApplication.shared.open(filesURL)
-                    print("📂 [RecordingManager] Opened Files app at: \(path)")
+                    dlog("📂 [RecordingManager] Opened Files app at: \(path)")
                 } else {
-                    print("⚠️ [RecordingManager] Cannot open shareddocuments URL, path: \(path)")
+                    dlog("⚠️ [RecordingManager] Cannot open shareddocuments URL, path: \(path)")
                     UIPasteboard.general.string = path
-                    print("📋 [RecordingManager] Path copied to clipboard: \(path)")
+                    dlog("📋 [RecordingManager] Path copied to clipboard: \(path)")
                 }
             }
         }
@@ -905,11 +1296,127 @@ class RecordingManager: ObservableObject {
     func getStorageDescription() -> String {
         switch storageLocation {
         case .local:
-            return "App Cache (internal)"
-        case .documentsFolder:
             return "On My Vision Pro → Tracking Streamer → Recordings"
+        case .cloud:
+            return "\(cloudProvider.displayName) → VisionProTeleop"
+        }
+    }
+    
+    /// Get a description of the cloud provider setting
+    func getCloudProviderDescription() -> String {
+        // Refresh cloud settings
+        loadCloudSettings()
+        
+        switch cloudProvider {
         case .iCloudDrive:
-            return "iCloud Drive → VisionProTeleop"
+            return "iCloud Drive (default)"
+        case .dropbox:
+            if DropboxUploader.shared.isAvailable() {
+                return "Dropbox (configured via iOS)"
+            } else {
+                return "Dropbox (sign in on iOS app)"
+            }
+        case .googleDrive:
+            if GoogleDriveUploader.shared.isAvailable() {
+                return "Google Drive (configured via iOS)"
+            } else {
+                return "Google Drive (sign in on iOS app)"
+            }
+        }
+    }
+    
+    // MARK: - Cloud Upload
+    
+    /// Upload recording to cloud storage if configured (Dropbox or Google Drive)
+    /// iCloud Drive uploads happen automatically via the file system
+    private func uploadToCloudIfNeeded(recordingFolder: URL) async {
+        // Refresh cloud settings in case they changed
+        loadCloudSettings()
+        
+        dlog("☁️ [RecordingManager] Upload requested. Provider: \(cloudProvider.displayName)")
+        
+        // iCloud Drive doesn't need manual upload - files are in the iCloud container
+        guard cloudProvider == .dropbox || cloudProvider == .googleDrive else {
+            dlog("☁️ [RecordingManager] Using iCloud Drive (or none) - no manual upload needed")
+            return
+        }
+        
+        let recordingName = recordingFolder.lastPathComponent
+        
+        // Progress callback to update UI (now includes current filename)
+        let progressCallback: (Int, Int, String) -> Void = { [weak self] current, total, currentFileName in
+            Task { @MainActor in
+                self?.cloudUploadCurrentFile = current
+                self?.cloudUploadTotalFiles = total
+                self?.cloudUploadCurrentFileName = currentFileName
+                if let provider = self?.cloudProvider {
+                    self?.cloudUploadProgress = "Uploading to \(provider.displayName)... (\(current)/\(total))"
+                }
+            }
+        }
+        
+        if cloudProvider == .dropbox {
+            // Check if Dropbox is available
+            guard DropboxUploader.shared.isAvailable() else {
+                dlog("⚠️ [RecordingManager] Dropbox selected but not configured - sign in via iOS app")
+                return
+            }
+            
+            isUploadingToCloud = true
+            cloudUploadCurrentFile = 0
+            cloudUploadTotalFiles = 0
+            cloudUploadCurrentFileName = ""
+            cloudUploadProgress = "Preparing upload to Dropbox..."
+            
+            dlog("☁️ [RecordingManager] Uploading to Dropbox...")
+            
+            let success = await DropboxUploader.shared.uploadRecording(
+                folderURL: recordingFolder,
+                recordingName: recordingName,
+                progressCallback: progressCallback
+            )
+            
+            isUploadingToCloud = false
+            cloudUploadCurrentFileName = ""
+            
+            if success {
+                cloudUploadProgress = "Uploaded to Dropbox ✓"
+                dlog("✅ [RecordingManager] Successfully uploaded to Dropbox")
+            } else {
+                cloudUploadProgress = "Dropbox upload failed"
+                dlog("❌ [RecordingManager] Failed to upload to Dropbox")
+            }
+        } else if cloudProvider == .googleDrive {
+            // Check if Google Drive is available
+            guard GoogleDriveUploader.shared.isAvailable() else {
+                dlog("⚠️ [RecordingManager] Google Drive selected but not configured - sign in via iOS app")
+                return
+            }
+            
+            isUploadingToCloud = true
+            cloudUploadCurrentFile = 0
+            cloudUploadTotalFiles = 0
+            cloudUploadCurrentFileName = ""
+            cloudUploadProgress = "Preparing upload to Google Drive..."
+            
+            dlog("☁️ [RecordingManager] Uploading to Google Drive...")
+            
+            let success = await GoogleDriveUploader.shared.uploadRecording(
+                folderURL: recordingFolder,
+                recordingName: recordingName,
+                progressCallback: progressCallback
+            )
+            
+            isUploadingToCloud = false
+            cloudUploadCurrentFileName = ""
+            
+            if success {
+                cloudUploadProgress = "Uploaded to Google Drive ✓"
+                dlog("✅ [RecordingManager] Successfully uploaded to Google Drive")
+            } else {
+                cloudUploadProgress = "Google Drive upload failed"
+                dlog("❌ [RecordingManager] Failed to upload to Google Drive")
+            }
         }
     }
 }

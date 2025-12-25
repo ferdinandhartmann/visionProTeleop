@@ -1,11 +1,27 @@
 import SwiftUI
 import CoreLocation
 import UIKit
+import AVKit
 import SystemConfiguration.CaptiveNetwork
 
-// Version key for tracking "What's New" display
-private let currentAppVersion = "2.0"
-private let lastSeenVersionKey = "lastSeenAppVersion"
+private let dontShowSignInAgainKey = "dontShowSignInAgain"  // User opted out of sign-in prompt
+private let dontShowIOSPromoAgainKey = "dontShowIOSPromoAgain"  // User opted out of iOS promo views
+private let hasSignedInOnVisionOSKey = "hasSignedInOnVisionOS"  // Track if sign-in happened on visionOS
+
+func dlog(_ msg: @autoclosure () -> String) {
+    #if DEBUG
+    print(msg())
+    #endif
+}
+
+/// Onboarding flow state for first-time users
+enum OnboardingState: Equatable {
+    case mainView                           // Initial START screen
+    case cloudSignInPrompt                  // Cloud storage sign-in prompt
+    case iosAppDetectedSignIn               // User signed in via iOS app (Case 1A)
+    case iosAppShowcaseAfterSignIn          // iOS app features after signing in on visionOS
+    case iosAppShowcaseAfterSkip            // iOS app features after skipping (mentions sign-in via iOS)
+}
 
 struct ContentView: View {
     @Environment(\.openImmersiveSpace) var openImmersiveSpace
@@ -14,38 +30,201 @@ struct ContentView: View {
     @AppStorage("pythonServerIP") private var pythonServerIP = "10.29.239.70"
     @State private var showSettings = false
     @State private var serverReady = false
-    @State private var showWhatsNew = false
+    @State private var onboardingState: OnboardingState = .mainView
+    @StateObject private var googleAuthManager = GoogleDriveAuthManager.shared
+    @StateObject private var dropboxAuthManager = DropboxAuthManager.shared
+    @ObservedObject private var cloudStorageSettings = CloudStorageSettings.shared
+
+    @ObservedObject private var signalingClient = SignalingClient.shared
+    @ObservedObject private var dataManager = DataManager.shared
     
-    private var isNewUser: Bool {
-        UserDefaults.standard.string(forKey: lastSeenVersionKey) != currentAppVersion
+    /// Check if user opted out of sign-in prompt
+    private var dontShowSignInAgain: Bool {
+        UserDefaults.standard.bool(forKey: dontShowSignInAgainKey)
+    }
+    
+    /// Check if user opted out of iOS promo views
+    private var dontShowIOSPromoAgain: Bool {
+        UserDefaults.standard.bool(forKey: dontShowIOSPromoAgainKey)
+    }
+    
+    /// Check if user has ever signed in on visionOS (not via iOS app)
+    private var hasSignedInOnVisionOS: Bool {
+        UserDefaults.standard.bool(forKey: hasSignedInOnVisionOSKey)
+    }
+    
+    /// Check if any cloud storage is configured (Google Drive or Dropbox)
+    private var isCloudStorageConfigured: Bool {
+        cloudStorageSettings.isGoogleDriveAvailable || cloudStorageSettings.isDropboxAvailable
+    }
+    
+    /// Check if cloud was configured via iOS app (configured but never signed in on visionOS)
+    private var wasConfiguredViaIOSApp: Bool {
+        isCloudStorageConfigured && !hasSignedInOnVisionOS
     }
     
     var body: some View {
+        Group {
+            switch onboardingState {
+            case .mainView:
+                mainContentView
+                    .transition(.opacity)
+                
+            case .cloudSignInPrompt:
+                CloudStorageSignInPromptView(
+                    googleAuthManager: googleAuthManager,
+                    dropboxAuthManager: dropboxAuthManager,
+                    onBack: {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            onboardingState = .mainView
+                        }
+                    },
+                    onSkip: {
+                        // User skipped sign-in - show iOS promo unless opted out
+                        if !dontShowIOSPromoAgain {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                onboardingState = .iosAppShowcaseAfterSkip
+                            }
+                        } else {
+                            proceedToImmersiveSpace()
+                        }
+                    },
+                    onSkipForever: {
+                        // User chose to never see sign-in prompt again
+                        UserDefaults.standard.set(true, forKey: dontShowSignInAgainKey)
+                        proceedToImmersiveSpace()
+                    },
+                    onSignInComplete: {
+                        // Mark that sign-in happened on visionOS
+                        UserDefaults.standard.set(true, forKey: hasSignedInOnVisionOSKey)
+                        
+                        // Show iOS promo unless opted out
+                        if !dontShowIOSPromoAgain {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                onboardingState = .iosAppShowcaseAfterSignIn
+                            }
+                        } else {
+                            proceedToImmersiveSpace()
+                        }
+                    }
+                )
+                .transition(.opacity)
+                
+            case .iosAppDetectedSignIn:
+                // Case 1A: User signed in via iOS app first
+                IOSAppSignInDetectedView(
+                    onGetStarted: {
+                        // Get Started = don't show iOS promo again
+                        UserDefaults.standard.set(true, forKey: dontShowIOSPromoAgainKey)
+                        proceedToImmersiveSpace()
+                    },
+                    onRemindNextTime: {
+                        // Just proceed without setting the flag
+                        proceedToImmersiveSpace()
+                    }
+                )
+                .transition(.opacity)
+                
+            case .iosAppShowcaseAfterSignIn:
+                // User signed in on visionOS, show iOS app features
+                IOSAppShowcaseView(
+                    showcaseMode: .afterVisionOSSignIn,
+                    onGetStarted: {
+                        // Get Started = don't show iOS promo again
+                        UserDefaults.standard.set(true, forKey: dontShowIOSPromoAgainKey)
+                        proceedToImmersiveSpace()
+                    },
+                    onRemindNextTime: {
+                        // Just proceed without setting the flag
+                        proceedToImmersiveSpace()
+                    }
+                )
+                .transition(.opacity)
+                
+            case .iosAppShowcaseAfterSkip:
+                // User skipped sign-in, show iOS app with sign-in reminder
+                IOSAppShowcaseView(
+                    showcaseMode: .afterSkip,
+                    onGetStarted: {
+                        // Get Started = don't show iOS promo again
+                        UserDefaults.standard.set(true, forKey: dontShowIOSPromoAgainKey)
+                        proceedToImmersiveSpace()
+                    },
+                    onRemindNextTime: {
+                        // Just proceed without setting the flag
+                        proceedToImmersiveSpace()
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: onboardingState)
+    }
+    
+    private func proceedToImmersiveSpace() {
+        Task {
+            // Always connect to signaling server for room code availability
+            // Python client can choose to use either IP (local) or room code (remote)
+            signalingClient.connect()
+            DataManager.shared.crossNetworkRoomCode = signalingClient.roomCode
+            
+            await self.openImmersiveSpace(id: "combinedStreamSpace")
+            self.dismissWindow()
+        }
+    }
+    
+    /// Handle START button press - determines which onboarding flow to show
+    private func handleStartButton() {
+        // No cloud storage configured - show sign-in prompt unless user opted out
+        if !isCloudStorageConfigured {
+            if !dontShowSignInAgain {
+                // Show sign-in prompt
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    onboardingState = .cloudSignInPrompt
+                }
+            } else {
+                // User opted out of sign-in, but still try to show iOS promo
+                if !dontShowIOSPromoAgain {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        onboardingState = .iosAppShowcaseAfterSkip
+                    }
+                } else {
+                    proceedToImmersiveSpace()
+                }
+            }
+            return
+        }
+        
+        // Cloud storage IS configured - check if user opted out of iOS promo views
+        if dontShowIOSPromoAgain {
+            proceedToImmersiveSpace()
+            return
+        }
+        
+        // Case 1A: Cloud storage is configured via iOS app - show detected sign-in view
+        if wasConfiguredViaIOSApp {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                onboardingState = .iosAppDetectedSignIn
+            }
+            return
+        }
+        
+        // Cloud storage is configured on visionOS - show showcase
+        withAnimation(.easeInOut(duration: 0.25)) {
+            onboardingState = .iosAppShowcaseAfterSignIn
+        }
+    }
+    
+    // MARK: - Main Content View
+    private var mainContentView: some View {
         VStack(spacing: 32) {
             VStack(spacing: 4) {
                 Text("VisionProTeleop")
                     .font(.system(size: 72, weight: .bold))
-                HStack(spacing: 0) {
-                    Text("Tracking Streamer")
-                        .font(.largeTitle)
-                        .foregroundColor(.secondary)
-                    
-                    // Clickable version badge
-                    Button {
-                        showWhatsNew = true
-                    } label: {
-                        Text("v2.0")
-                            .font(.subheadline.bold())
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.gray.opacity(0.6))
-                            .cornerRadius(8)
-                    }
-                    .buttonStyle(.borderless)
-                    .hoverEffect(.highlight)
-                    .padding(.leading, 8)
-                }
+                    .foregroundColor(.white)
+                Text("Tracking Streamer")
+                    .font(.largeTitle)
+                    .foregroundColor(.white.opacity(0.7))
             }
             .padding(.top, 32)
                 
@@ -55,25 +234,22 @@ struct ContentView: View {
                 VStack(spacing: 4) {
                     Image(systemName: "video.fill")
                         .font(.title)
-                        .foregroundColor(.green)
+                        .foregroundColor(Color(hex: "#9F1239"))
                     Text("Video · Audio")
                         .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("Sim (MuJoCo)")
+                        .foregroundColor(.white.opacity(0.7))
+                    Text("MuJoCo · IsaacLab")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.white.opacity(0.7))
                 }
                 .frame(width: 120)
                 
                 // Arrows flowing right (from video/audio/sim toward button)
-                AnimatedArrows(color: .green)
+                AnimatedArrows(color: Color(hex: "#9F1239"))
                     
-                    // Simple START button
+                // Simple START button
                 Button {
-                    Task {
-                        await self.openImmersiveSpace(id: "combinedStreamSpace")
-                        self.dismissWindow()
-                    }
+                    handleStartButton()
                 } label: {
                     Text("START")
                         .font(.system(size: 36, weight: .bold))
@@ -82,7 +258,7 @@ struct ContentView: View {
                         .padding(.horizontal, 60)
                         .background(
                             LinearGradient(
-                                colors: [Color.green, Color.orange],
+                                colors: [Color(hex: "#9F1239"), Color(hex: "#A855F7"), Color(hex: "#6366F1")],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             )
@@ -92,57 +268,129 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 
                 // Arrows flowing right (from button toward hand tracking)
-                AnimatedArrows(color: .orange)
+                AnimatedArrows(color: Color(hex: "#6366F1"))
                 
                 // Hand/Head tracking label (right side)
                 VStack(spacing: 4) {
                     Image(systemName: "hand.raised.fill")
                         .font(.title)
-                        .foregroundColor(.orange)
+                        .foregroundColor(Color(hex: "#6366F1"))
                     Text("Hand / Head")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.white.opacity(0.7))
                     Text("Tracking")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.white.opacity(0.7))
                 }
                 .frame(width: 100)
             }
             .padding(.top, 16)
             
-            VStack(spacing: 8) {
-                VStack(spacing: 4) {
-                    Text("Device IP Addresses:")
-                        .font(.title2)
-                        .foregroundColor(.secondary)
+            // Connection Info - Side by side: Local Network | Remote
+            HStack(alignment: .top, spacing: 32) {
+                // LEFT: Local Network Section
+                VStack(spacing: 12) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "wifi")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                        Text("Local Network")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                        
+                        InfoTooltipButton(
+                            title: "Local Network Mode",
+                            message: "Use this when your Vision Pro and Python client are on the same network (e.g., same WiFi). Provides the lowest latency connection via direct gRPC."
+                        )
+                    }
                     
-                    ForEach(getIPAddresses(), id: \.address) { ip in
-                        HStack {
-                            Text(ip.name + ":")
-                                .font(.title3.bold())
-                                .foregroundColor(.secondary)
-                            Text(ip.address)
-                                .font(.title3)
-                        }
+                    IPAddressCard(addresses: getIPAddresses())
+                    
+                    // Server status
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(serverReady ? Color.green : Color.orange)
+                            .frame(width: 10, height: 10)
+                            .shadow(color: serverReady ? Color.green.opacity(0.6) : Color.orange.opacity(0.6), radius: 4)
+                        Text(serverReady ? "gRPC Server Ready" : "Starting gRPC...")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(serverReady ? .green : .orange)
                     }
                 }
-                .padding(.bottom, 8)
+                .frame(minWidth: 200)
                 
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(serverReady ? Color.green : Color.orange)
-                        .frame(width: 16, height: 16)
-                    Text(serverReady ? "gRPC Server Ready" : "Starting gRPC Server...")
-                        .font(.title3)
-                        .foregroundColor(serverReady ? .green : .orange)
-                }
-                .onAppear {
-                    // Poll for server ready status
-                    Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
-                        serverReady = DataManager.shared.grpcServerReady
-                        if serverReady {
-                            timer.invalidate()
+                // Vertical Divider
+                Rectangle()
+                    .fill(Color.white.opacity(0.2))
+                    .frame(width: 1, height: 100)
+                
+                // RIGHT: Remote Section
+                VStack(spacing: 12) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "globe")
+                            .font(.caption)
+                            .foregroundColor(.cyan)
+                        Text("Remote (Any Network)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                        
+                        InfoTooltipButton(
+                            title: "Cross-Network Mode",
+                            message: "Use this when your Vision Pro and Python client are on different networks, or when firewalls block direct connections. Uses STUN/TURN server relaying to establish connectivity."
+                        )
+                    }
+                    
+                    Text(signalingClient.roomCode)
+                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .tracking(2)
+                    
+                    // Button row: New Code and Lock/Unlock
+                    HStack(spacing: 8) {
+                        Button {
+                            signalingClient.generateRoomCode()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption)
+                                Text("New Code")
+                                    .font(.caption.weight(.medium))
+                            }
+                            .foregroundColor(.white.opacity(0.5))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(8)
                         }
+                        .buttonStyle(.plain)
+                        
+                        Button {
+                            signalingClient.setRoomCodeLocked(!signalingClient.isRoomCodeLocked)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: signalingClient.isRoomCodeLocked ? "lock.fill" : "lock.open")
+                                    .font(.caption)
+                                Text(signalingClient.isRoomCodeLocked ? "Locked" : "Lock")
+                                    .font(.caption.weight(.medium))
+                            }
+                            .foregroundColor(signalingClient.isRoomCodeLocked ? .yellow : .white.opacity(0.5))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(signalingClient.isRoomCodeLocked ? Color.yellow.opacity(0.15) : Color.white.opacity(0.1))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .help(signalingClient.isRoomCodeLocked ? "Room code persists across sessions. Tap to unlock." : "Tap to keep this code across sessions.")
+                    }
+                }
+                .frame(minWidth: 200)
+            }
+            .onAppear {
+                // Poll for server ready status (keep polling even if hidden, so state is ready when switching back)
+                Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+                    serverReady = DataManager.shared.grpcServerReady
+                    if serverReady {
+                        timer.invalidate()
                     }
                 }
             }
@@ -167,129 +415,68 @@ struct ContentView: View {
         }
         .padding(32)
         .frame(minWidth: 700, minHeight: 600)
-        .onAppear {
-            // Show What's New automatically for returning users
-            if isNewUser {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    showWhatsNew = true
-                }
-            }
-        }
-        .sheet(isPresented: $showWhatsNew) {
-            WhatsNewView {
-                // Mark as seen when dismissed
-                UserDefaults.standard.set(currentAppVersion, forKey: lastSeenVersionKey)
-                showWhatsNew = false
-            }
-        }
     }
 }
 
-// MARK: - What's New View
-struct WhatsNewView: View {
-    let onDismiss: () -> Void
+// MARK: - IP Address Card Component
+struct IPAddressCard: View {
+    let addresses: [(name: String, address: String)]
     
     var body: some View {
-        VStack(spacing: 24) {
-            Text("What's New")
-                .font(.system(size: 48, weight: .bold))
-                .padding(.top, 32)
-            
-            Text("VisionProTeleop 2.0")
-                .font(.title2)
-                .foregroundColor(.secondary)
-            
-            VStack(alignment: .leading, spacing: 20) {
-                FeatureRow(
-                    icon: "video.fill",
-                    iconColor: .blue,
-                    title: "Video Streaming",
-                    description: "Stream video from any client machine to Vision Pro"
-                )
-                
-                FeatureRow(
-                    icon: "speaker.wave.3.fill",
-                    iconColor: .green,
-                    title: "Audio Streaming",
-                    description: "Bidirectional audio support for immersive experiences"
-                )
-                
-                FeatureRow(
-                    icon: "cube.transparent",
-                    iconColor: .purple,
-                    title: "MuJoCo AR Streaming",
-                    description: "Visualize MuJoCo simulations in augmented reality"
-                )
-                
-                FeatureRow(
-                    icon: "hand.raised.fill",
-                    iconColor: .orange,
-                    title: "Enhanced Hand Tracking",
-                    description: "Improved accuracy and lower latency for teleoperation"
-                )
-            }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 16)
-            
-            // Upgrade notice
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.yellow)
-                    Text("Don't forget to upgrade the Python package:")
-                        .font(.subheadline.bold())
+        VStack(spacing: 8) {
+            if addresses.isEmpty {
+                Text("No network connection")
+                    .font(.title3)
+                    .foregroundColor(.white.opacity(0.6))
+            } else {
+                // Single column layout with original styling
+                ForEach(addresses, id: \.address) { ip in
+                    HStack(spacing: 10) {
+                        Text(ip.name)
+                            .font(.system(size: 14, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(width: 55)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .background(Color.white.opacity(0.15))
+                            .cornerRadius(6)
+                        Text(ip.address)
+                            .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.white)
+                    }
                 }
-                
-                Text("pip install --upgrade avp_stream")
-                    .font(.system(.footnote, design: .monospaced))
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.black.opacity(0.3))
-                    .cornerRadius(8)
             }
-            .padding(.horizontal, 32)
-            
-            Spacer()
-            
-            Button {
-                onDismiss()
-            } label: {
-                Text("Get Started")
-                    .font(.title2.bold())
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.blue)
-                    .cornerRadius(12)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 32)
-            .padding(.bottom, 32)
         }
-        .frame(width: 500, height: 700)
     }
 }
 
-struct FeatureRow: View {
-    let icon: String
-    let iconColor: Color
+// MARK: - Info Tooltip Button Component
+struct InfoTooltipButton: View {
     let title: String
-    let description: String
+    let message: String
+    @State private var showingPopover = false
     
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            Image(systemName: icon)
-                .font(.title)
-                .foregroundColor(iconColor)
-                .frame(width: 40)
-            
-            VStack(alignment: .leading, spacing: 4) {
+        Button {
+            showingPopover.toggle()
+        } label: {
+            Image(systemName: "questionmark.circle")
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(0.5))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingPopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(title)
                     .font(.headline)
-                Text(description)
+                    .foregroundColor(.white)
+                Text(message)
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(nil)
             }
+            .padding(16)
+            .frame(width: 320)
         }
     }
 }
@@ -336,6 +523,700 @@ struct AnimatedArrows: View {
     }
 }
 
+// MARK: - Cloud Storage Sign-In Prompt View
+struct CloudStorageSignInPromptView: View {
+    @ObservedObject var googleAuthManager: GoogleDriveAuthManager
+    @ObservedObject var dropboxAuthManager: DropboxAuthManager
+    let onBack: () -> Void
+    let onSkip: () -> Void
+    let onSkipForever: () -> Void
+    let onSignInComplete: () -> Void
+    
+    private var isAuthenticating: Bool {
+        googleAuthManager.isAuthenticating || dropboxAuthManager.isAuthenticating
+    }
+    
+    private var authError: String? {
+        googleAuthManager.authError ?? dropboxAuthManager.authError
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Back button at top-left
+            HStack {
+                Button {
+                    onBack()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left")
+                            .font(.body.bold())
+                        Text("Back")
+                            .font(.body)
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+            }
+            .padding(.top, 16)
+            .padding(.horizontal, 24)
+            
+            // Header
+            VStack(spacing: 16) {
+                // Cloud Storage Icon
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.green, Color.orange],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 80, height: 80)
+                    
+                    Image(systemName: "icloud.fill")
+                        .font(.system(size: 36))
+                        .foregroundColor(.white)
+                }
+                .padding(.top, 16)
+                
+                Text("Connect Cloud Storage")
+                    .font(.system(size: 32, weight: .bold))
+            }
+            .padding(.bottom, 32)
+            
+            // Benefits Section
+            VStack(alignment: .leading, spacing: 20) {
+                BenefitRow(
+                    icon: "record.circle",
+                    iconColor: .red,
+                    title: "Automatic Session Recording",
+                    description: "Video and hand tracking data are automatically saved to your cloud storage"
+                )
+                
+                BenefitRow(
+                    icon: "iphone.and.arrow.forward",
+                    iconColor: .blue,
+                    title: "iOS Companion App",
+                    description: "Review and replay your sessions on the accompanying iOS app"
+                )
+                
+                BenefitRow(
+                    icon: "lock.shield.fill",
+                    iconColor: .green,
+                    title: "Your Data, Your Control",
+                    description: "All recordings stay in your personal cloud storage! We never access your data, unless you explicitly choose to share it."
+                )
+            }
+            .padding(.horizontal, 40)
+            
+            Spacer()
+            
+            // Error message if any
+            if let error = authError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.yellow)
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 40)
+                .padding(.bottom, 16)
+            }
+            
+            // Action Buttons - Side by side
+            VStack(spacing: 16) {
+                HStack(spacing: 16) {
+                    // Google Drive Button
+                    Button {
+                        Task {
+                            await googleAuthManager.startOAuthFlow()
+                            if googleAuthManager.isAuthenticated {
+                                onSignInComplete()
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            if googleAuthManager.isAuthenticating {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            } else {
+                                Image(systemName: "g.circle.fill")
+                                    .font(.title2)
+                            }
+                            
+                            Text(googleAuthManager.isAuthenticating ? "Signing in..." : "Google Drive")
+                                .font(.title3.bold())
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.35, green: 0.55, blue: 0.85),
+                                    Color(red: 0.30, green: 0.60, blue: 0.82)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(12)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAuthenticating)
+                    
+                    // Dropbox Button
+                    Button {
+                        Task {
+                            await dropboxAuthManager.startOAuthFlow()
+                            if dropboxAuthManager.isAuthenticated {
+                                onSignInComplete()
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            if dropboxAuthManager.isAuthenticating {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            } else {
+                                Image(systemName: "shippingbox.fill")
+                                    .font(.title2)
+                            }
+                            
+                            Text(dropboxAuthManager.isAuthenticating ? "Signing in..." : "Dropbox")
+                                .font(.title3.bold())
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.25, green: 0.45, blue: 0.75),
+                                    Color(red: 0.30, green: 0.50, blue: 0.78)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(12)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAuthenticating)
+                }
+                
+                // Skip buttons - side by side with light background
+                HStack(spacing: 16) {
+                    Button {
+                        onSkip()
+                    } label: {
+                        Text("Skip for now")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(10)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAuthenticating)
+                    
+                    Button {
+                        onSkipForever()
+                    } label: {
+                        Text("Don't ask again")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(10)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAuthenticating)
+                }
+                .padding(.top, 8)
+            }
+            .padding(.horizontal, 40)
+            .padding(.bottom, 40)
+        }
+        .frame(minWidth: 700, minHeight: 600)
+    }
+}
+
+// MARK: - iOS App Showcase Mode
+enum IOSAppShowcaseMode {
+    case afterVisionOSSignIn    // User signed in on visionOS
+    case afterSkip              // User skipped sign-in (remind about iOS sign-in)
+    
+    var videoAssetName: String {
+        switch self {
+        case .afterVisionOSSignIn: return "vpt4"
+        case .afterSkip: return "vpt5"
+        }
+    }
+}
+
+// MARK: - iOS App Sign-In Detected View (Case 1A)
+/// Shown when user signed in via iOS app first, then opens visionOS app
+struct IOSAppSignInDetectedView: View {
+    let onGetStarted: () -> Void
+    let onRemindNextTime: () -> Void
+    
+    // Video player for the iPhone mockup
+    @State private var player: AVPlayer?
+    @ObservedObject private var cloudStorageSettings = CloudStorageSettings.shared
+    
+    private var connectedServiceName: String {
+        if cloudStorageSettings.isGoogleDriveAvailable {
+            return "Google Drive"
+        } else if cloudStorageSettings.isDropboxAvailable {
+            return "Dropbox"
+        }
+        return "cloud storage"
+    }
+    
+    private var connectedServiceIcon: String {
+        if cloudStorageSettings.isGoogleDriveAvailable {
+            return "g.circle.fill"
+        } else if cloudStorageSettings.isDropboxAvailable {
+            return "shippingbox.fill"
+        }
+        return "icloud.fill"
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header with success message
+            VStack(spacing: 16) {
+                // Success checkmark icon
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.green, Color.green.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 80, height: 80)
+                    
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 44))
+                        .foregroundColor(.white)
+                }
+                .padding(.top, 40)
+                
+                Text("You're All Set!")
+                    .font(.system(size: 36, weight: .bold))
+                
+                // Detected sign-in message
+                HStack(spacing: 8) {
+                    Image(systemName: connectedServiceIcon)
+                        .font(.title3)
+                        .foregroundColor(.blue)
+                    Text("Connected via \(connectedServiceName) from our iOS app")
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.bottom, 40)
+            
+            // Info about what this means
+            VStack(alignment: .leading, spacing: 20) {
+                BenefitRow(
+                    icon: "icloud.and.arrow.up.fill",
+                    iconColor: .green,
+                    title: "Recordings Auto-Sync",
+                    description: "Your sessions will automatically upload to \(connectedServiceName)"
+                )
+                
+                BenefitRow(
+                    icon: "iphone",
+                    iconColor: .blue,
+                    title: "Review on iOS",
+                    description: "Browse and replay your recordings using the Tracking Manager iOS app"
+                )
+                
+                BenefitRow(
+                    icon: "arrow.triangle.2.circlepath",
+                    iconColor: .purple,
+                    title: "Always in Sync",
+                    description: "Changes made on either device are reflected everywhere"
+                )
+            }
+            .padding(.horizontal, 40)
+            
+            Spacer()
+            
+            // Get Started button and Remind me option - side by side
+            HStack(spacing: 16) {
+                Button {
+                    player?.pause()
+                    onRemindNextTime()
+                } label: {
+                    Text("Remind me later")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 14)
+                        .background(Color.white.opacity(0.1))
+                        .cornerRadius(10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                
+                Button {
+                    player?.pause()
+                    onGetStarted()
+                } label: {
+                    Text("Get Started")
+                        .font(.body.bold())
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 14)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.green, Color.orange],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 48)
+        }
+        .frame(minWidth: 700, minHeight: 600)
+    }
+}
+
+/// Compact feature chip for horizontal layout
+struct FeatureChip: View {
+    let icon: String
+    let label: String
+    let color: Color
+    
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundColor(color)
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(width: 90)
+    }
+}
+
+// MARK: - iOS App Showcase View
+struct IOSAppShowcaseView: View {
+    let showcaseMode: IOSAppShowcaseMode
+    let onGetStarted: () -> Void
+    let onRemindNextTime: () -> Void
+    
+    // Video player for the iPhone mockup
+    @State private var player: AVPlayer?
+    
+    /// Whether this view is shown after user skipped cloud sign-in
+    private var isSkippedMode: Bool {
+        showcaseMode == .afterSkip
+    }
+    
+    private var videoAssetName: String {
+        showcaseMode.videoAssetName
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            VStack(spacing: 8) {
+                Text("Companion iOS App: Tracking Manager")
+                    .font(.system(size: 36, weight: .bold))
+                
+                Text(isSkippedMode 
+                    ? "You can sign in anytime via the iOS app"
+                    : "Review and manage your recordings on the go")
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.top, 40)
+            .padding(.bottom, 32)
+            
+            // Main content: Features on left, iPhone mockup on right
+            HStack(alignment: .center, spacing: 60) {
+                // Left side: Feature list
+                VStack(alignment: .leading, spacing: 24) {
+                    // Show sign-in reminder first when user skipped
+                    if isSkippedMode {
+                        ShowcaseFeatureRow(
+                            icon: "icloud.and.arrow.up",
+                            iconColor: .cyan,
+                            title: "Sign In Anytime",
+                            description: "Connect Google Drive or Dropbox through the iOS app whenever you're ready"
+                        )
+                    }
+                    
+                    ShowcaseFeatureRow(
+                        icon: "play.rectangle.fill",
+                        iconColor: .blue,
+                        title: "Browse All Recordings",
+                        description: "Access simulation, real-world, and egocentric recordings in one place"
+                    )
+                    
+                    ShowcaseFeatureRow(
+                        icon: "globe",
+                        iconColor: .green,
+                        title: "Share with Community",
+                        description: "Make recordings public with a single tap for others to learn from"
+                    )
+                    
+                    ShowcaseFeatureRow(
+                        icon: "person.2.fill",
+                        iconColor: .purple,
+                        title: "Explore Public Library",
+                        description: "Discover and learn from recordings shared by the community"
+                    )
+                    
+                    ShowcaseFeatureRow(
+                        icon: "camera.viewfinder",
+                        iconColor: .orange,
+                        title: "Camera Calibration",
+                        description: "One-stop setup for external cameras in egocentric mode"
+                    )
+                }
+                .frame(maxWidth: 340)
+                
+                // Right side: iPhone mockup with video
+                iPhoneMockup {
+                    // Video player placeholder - will show video when available
+                    if let player = player {
+                        VideoPlayer(player: player)
+                            .onAppear {
+                                player.play()
+                            }
+                            .onDisappear {
+                                player.pause()
+                            }
+                    } else {
+                        // Placeholder when no video is available
+                        ZStack {
+                            Color.black
+                            
+                            VStack(spacing: 16) {
+                                Image(systemName: "iphone.gen3")
+                                    .font(.system(size: 48))
+                                    .foregroundColor(.gray.opacity(0.5))
+                                
+                                Text("Demo Video")
+                                    .font(.headline)
+                                    .foregroundColor(.gray.opacity(0.7))
+                                
+                                Text("Coming Soon")
+                                    .font(.caption)
+                                    .foregroundColor(.gray.opacity(0.5))
+                            }
+                        }
+                    }
+                }
+                .frame(width: 220, height: 440)
+            }
+            .padding(.horizontal, 40)
+            
+            Spacer(minLength: 32)
+            
+            // Get Started button and Remind me option - side by side
+            HStack(spacing: 16) {
+                Button {
+                    player?.pause()
+                    onRemindNextTime()
+                } label: {
+                    Text("Remind me later")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 14)
+                        .background(Color.white.opacity(0.1))
+                        .cornerRadius(10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                
+                Button {
+                    player?.pause()
+                    onGetStarted()
+                } label: {
+                    Text("Get Started")
+                        .font(.body.bold())
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 14)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.green, Color.orange],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 48)
+        }
+        .frame(minWidth: 800, minHeight: 700)
+        .onAppear {
+            loadVideo()
+        }
+    }
+    
+    private func loadVideo() {
+        // Try to load the demo video from Assets catalog
+        if let dataAsset = NSDataAsset(name: videoAssetName) {
+            // Write to temporary file since AVPlayer needs a URL
+            let tempDir = FileManager.default.temporaryDirectory
+            let tempURL = tempDir.appendingPathComponent("\(videoAssetName)_demo.mp4")
+            
+            do {
+                // Remove existing file if present
+                try? FileManager.default.removeItem(at: tempURL)
+                try dataAsset.data.write(to: tempURL)
+                
+                player = AVPlayer(url: tempURL)
+                player?.isMuted = true
+                player?.actionAtItemEnd = .none
+                
+                // Loop the video
+                NotificationCenter.default.addObserver(
+                    forName: .AVPlayerItemDidPlayToEndTime,
+                    object: player?.currentItem,
+                    queue: .main
+                ) { _ in
+                    player?.seek(to: .zero)
+                    player?.play()
+                }
+            } catch {
+                dlog("⚠️ Failed to load demo video: \(error)")
+            }
+        }
+    }
+}
+
+// MARK: - iPhone Mockup Component
+struct iPhoneMockup<Content: View>: View {
+    let content: Content
+    
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+    
+    var body: some View {
+        ZStack {
+            // iPhone frame
+            RoundedRectangle(cornerRadius: 40)
+                .fill(Color.black)
+            
+            // Inner bezel
+            RoundedRectangle(cornerRadius: 36)
+                .fill(Color(white: 0.1))
+                .padding(4)
+            
+            // Screen content
+            RoundedRectangle(cornerRadius: 32)
+                .fill(Color.black)
+                .padding(8)
+                .overlay(
+                    content
+                        .clipShape(RoundedRectangle(cornerRadius: 32))
+                        .padding(8)
+                )
+            
+            // Dynamic Island
+            VStack {
+                Capsule()
+                    .fill(Color.black)
+                    .frame(width: 90, height: 28)
+                    .padding(.top, 16)
+                Spacer()
+            }
+            
+            // Home indicator
+            VStack {
+                Spacer()
+                Capsule()
+                    .fill(Color.white.opacity(0.3))
+                    .frame(width: 100, height: 5)
+                    .padding(.bottom, 12)
+            }
+        }
+    }
+}
+
+// MARK: - Showcase Feature Row
+struct ShowcaseFeatureRow: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let description: String
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundColor(iconColor)
+                .frame(width: 28)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+// MARK: - Benefit Row Component
+struct BenefitRow: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let description: String
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundColor(iconColor)
+                .frame(width: 28)
+            
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 func getIPAddresses() -> [(name: String, address: String)] {
     var addresses: [(name: String, address: String)] = []
     var ifaddr: UnsafeMutablePointer<ifaddrs>? = nil
@@ -366,4 +1247,31 @@ func getWiFiName() -> String? {
   // CNCopyCurrentNetworkInfo is unavailable in visionOS
   // WiFi SSID access is restricted on this platform
   return nil
+}
+
+// MARK: - Color Extension for Hex Support
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let a, r, g, b: UInt64
+        switch hex.count {
+        case 3: // RGB (12-bit)
+            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
+        case 6: // RGB (24-bit)
+            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
+        case 8: // ARGB (32-bit)
+            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
+        default:
+            (a, r, g, b) = (1, 1, 1, 0)
+        }
+        self.init(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
+    }
 }
