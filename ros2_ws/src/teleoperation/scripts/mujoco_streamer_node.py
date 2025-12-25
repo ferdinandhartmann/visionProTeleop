@@ -62,7 +62,7 @@ class MujocoStreamerNode(Node):
             from avp_stream import VisionProStreamer
 
             self.streamer = VisionProStreamer(ip=params["visionpro_ip"], record=False)
-            self.streamer.configure_sim(
+            self.streamer.configure_mujoco(
                 xml_path=params["xml_path"],
                 model=self.model,
                 data=self.data,
