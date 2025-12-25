@@ -2,7 +2,7 @@
 <mujoco model="mycobot scene">
   <compiler meshdir="meshes_mujoco/" coordinate="local" />
   <include file="mycobot_280_m5_mujoco.xml" />
-  <option integrator="RK4" timestep="0.004" gravity="0 0 -9.81" />
+  <option integrator="implicitfast" timestep="0.004" gravity="0 0 -9.81" />
   <statistic center="0.3 0 0.35" extent="0.8" meansize="0.05" />
   <visual>
     <headlight diffuse="0.5 0.5 0.5" ambient="0.15 0.15 0.15" specular="0.2 0.2 0.2" />
@@ -18,6 +18,22 @@
     <material name="laptop_mat" texture="laptop_tex" texrepeat="2 2" reflectance="0" shininess="0" specular="0" />
     <mesh name="laptop_visual" file="sam_models/laptop_visual.obj" />
     <mesh name="laptop_collision" file="sam_models/laptop_collision.obj" />
+    <texture name="eraser_tex" type="2d" file="meshes_mujoco/sam_models/eraser_material.png" />
+    <material name="eraser_mat" texture="eraser_tex" texrepeat="2 2" reflectance="0" shininess="0" specular="0" />
+    <mesh name="eraser_visual" file="sam_models/eraser_visual.obj" />
+    <mesh name="eraser_collision" file="sam_models/eraser_collision.obj" />
+    <texture name="waterbottle_tex" type="2d" file="meshes_mujoco/sam_models/waterbottle_material.png" />
+    <material name="waterbottle_mat" texture="waterbottle_tex" texrepeat="2 2" reflectance="0" shininess="0" specular="0" />
+    <mesh name="waterbottle_visual" file="sam_models/waterbottle_visual.obj" />
+    <mesh name="waterbottle_collision" file="sam_models/waterbottle_collision.obj" />
+    <texture name="telephone_tex" type="2d" file="meshes_mujoco/sam_models/telephone_material.png" />
+    <material name="telephone_mat" texture="telephone_tex" texrepeat="2 2" reflectance="0" shininess="0" specular="0" />
+    <mesh name="telephone_visual" file="sam_models/telephone_visual.obj" />
+    <mesh name="telephone_collision" file="sam_models/telephone_collision.obj" />
+    <texture name="remote_tex" type="2d" file="meshes_mujoco/sam_models/remote_material.png" />
+    <material name="remote_mat" texture="remote_tex" texrepeat="2 2" reflectance="0" shininess="0" specular="0" />
+    <mesh name="remote_visual" file="sam_models/remote_visual.obj" />
+    <mesh name="remote_collision" file="sam_models/remote_collision.obj" />
   </asset>
   <worldbody>
     <light name="sun_key" pos="0 0 2.0" dir="-0.3 0.2 -1" directional="true" diffuse="1.0 1.0 1.0" specular="0.3 0.3 0.3" castshadow="true" />
@@ -41,6 +57,26 @@
       <joint type="free" />
       <geom type="mesh" mesh="laptop_visual" material="laptop_mat" contype="0" conaffinity="0" />
       <geom type="mesh" mesh="laptop_collision" mass="0.1" contype="1" conaffinity="1" />
+    </body>
+    <body name="eraser" pos="-0.07 0.20 0.64" euler="0.0 0.3 0">
+      <joint type="free" />
+      <geom type="mesh" mesh="eraser_visual" material="eraser_mat" contype="0" conaffinity="0" />
+      <geom type="mesh" mesh="eraser_collision" mass="0.1" contype="1" conaffinity="1" />
+    </body>
+    <body name="waterbottle" pos="-0.39 -0.18 0.38" euler="0.0 0.3 0">
+      <joint type="free" />
+      <geom type="mesh" mesh="waterbottle_visual" material="waterbottle_mat" contype="0" conaffinity="0" />
+      <geom type="mesh" mesh="waterbottle_collision" mass="0.1" contype="1" conaffinity="1" />
+    </body>
+    <body name="telephone" pos="0.39 -0.18 0.48" euler="0.0 0.3 0">
+      <joint type="free" />
+      <geom type="mesh" mesh="telephone_visual" material="telephone_mat" contype="0" conaffinity="0" />
+      <geom type="mesh" mesh="telephone_collision" mass="0.1" contype="1" conaffinity="1" />
+    </body>
+    <body name="remote" pos="-0.05 0.00 0.42" euler="0.0 0.3 0">
+      <joint type="free" />
+      <geom type="mesh" mesh="remote_visual" material="remote_mat" contype="0" conaffinity="0" />
+      <geom type="mesh" mesh="remote_collision" mass="0.1" contype="1" conaffinity="1" />
     </body>
   </worldbody>
 </mujoco>

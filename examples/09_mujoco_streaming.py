@@ -16,8 +16,8 @@ def main(args):
     # Original demo path (kept for reference):
     # xml_path = str(ASSETS_DIR / "scenes" / "franka_emika_panda" / "scene_blockpush.xml")
     # Use custom mycobot scene instead:
-    # xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/xml/scene_mycobot.xml"
-    xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/ufactory_xarm7/scene.xml"
+    xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/mycobot_mujoco/scene_mycobot.xml"
+    # xml_path = "/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description/ufactory_xarm7/scene.xml"
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
@@ -169,8 +169,8 @@ if __name__ == "__main__":
         "--ip",
         # default="192.168.50.153",
         # default="192.168.10.137",
-        # default="192.168.10.113",
-        default="192.168.10.191",
+        default="192.168.10.113",
+        # default="192.168.10.191",
         help="Vision Pro IP address (only used with --viewer ar)",
     )
     parser.add_argument(

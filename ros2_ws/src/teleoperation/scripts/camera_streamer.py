@@ -7,7 +7,6 @@ import cv2
 from avp_stream import VisionProStreamer
 
 # Optional: Vision Pro streaming
-VISIONPRO_IP = "192.168.50.153"
 USE_VISIONPRO = True
 
 if USE_VISIONPRO:
@@ -16,21 +15,34 @@ if USE_VISIONPRO:
 class CameraStreamer(Node):
     def __init__(self):
         super().__init__("camera_streamer")
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('visionpro_ip', '192.168.11.99'),
+                ('resolution', '1280x720'),
+                ('camera_input', '/dev/video0')
+            ]
+        )
+
+        self.visionpro_ip = self.get_parameter('visionpro_ip').get_parameter_value().string_value
+        self.resolution = self.get_parameter('resolution').get_parameter_value().string_value
+        self.camera_input = self.get_parameter('camera_input').get_parameter_value().string_value
+
         self.publisher = self.create_publisher(Image, "/webcam/image_raw", 10)
         self.bridge = CvBridge()
 
         # Open webcam
-        # self.cap = cv2.VideoCapture(0) # webcam
-        self.cap = cv2.VideoCapture(4) # robot usb camera        
+        self.cap = cv2.VideoCapture(self.camera_input)
         if not self.cap.isOpened():
-            raise RuntimeError("Could not open /dev/video0")
+            raise RuntimeError(f"Could not open {self.camera_input}")
 
         # Start Vision Pro streaming
         if USE_VISIONPRO:
-            self.streamer = VisionProStreamer(ip=VISIONPRO_IP)
-            self.streamer.start_streaming(
-                device=None, format=None, size="1280x720", fps=25 # 640x480, 320x240
+            self.streamer = VisionProStreamer(ip=self.visionpro_ip)
+            self.streamer.configure_video(
+                device=self.camera_input, format="mjpeg", size=self.resolution, fps=25
             )
+            self.streamer.start_webrtc(port=9999)
             self.get_logger().info("Vision Pro streaming enabled")
 
         # Timer for ~30 FPS
@@ -49,7 +61,7 @@ class CameraStreamer(Node):
         if USE_VISIONPRO:
             self.streamer.update_frame(frame)
 
-        # Optional local OpenCV preview
+        # # Optional local OpenCV preview
         cv2.imshow("Webcam", frame)
         cv2.waitKey(1)
 

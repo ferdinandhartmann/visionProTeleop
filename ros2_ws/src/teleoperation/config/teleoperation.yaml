@@ -1,21 +1,29 @@
+# visionpro_ip: "192.168.50.153" #jemaro room
+# visionpro_ip: "192.168.10.113" # ferdinand home
+# visionpro_ip: "192.168.10.137" # ferdinand home
+# visionpro_ip: "192.0.0.3"        # ferdinand
+
 vp_transform_publisher:
   ros__parameters:
-    # visionpro_ip: "192.168.50.153" #jemaro room
-    visionpro_ip: "192.168.10.113" # ferdinand home
-    # visionpro_ip: "192.168.10.137" # ferdinand home
+    visionpro_ip: "192.168.11.99"
     pinch_threshold: 0.02   # just for markers for rviz
 
 mujoco_streamer:
   ros__parameters:
     viewer: "mujoco"                          # "ar" or "mujoco", will be overridden by launch file 
-    # visionpro_ip: "192.168.50.153" #jemaro room
-    visionpro_ip: "192.168.10.113"        # ferdinand
-    # visionpro_ip: "192.168.10.137"        # angel
+    visionpro_ip: "192.168.11.99"
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
     attach_to: [0.0, 0.6, 0.65, -45.0]    # y-axis goes from viewer straight to the distance
     update_rate_hz: 120.0
     force_reload: true
+
+camera_streamer:
+  ros__parameters:
+    visionpro_ip: "192.168.11.99"
+    resolution:  "320x240"  # "1280x720"
+    # camera_input: "/dev/video4" # Robot camera
+    camera_input: "/dev/video0" # Laptop camera
 
 teleop_control_cpp:
   ros__parameters:
@@ -39,7 +47,6 @@ joint_state_to_mycobot:
   ros__parameters:
     port: "/dev/ttyACM0"
     baud: 115200
-    
     joint_state_topic: "/joint_states_mycobot"
     gripper_speed: 100
     speed: 70               # default movement speed if adaptive speed is false
@@ -67,17 +74,11 @@ inverse_kinematics_node:
     gripper_percent: 100            # default gripper position in percent
 
     joint_states_ros2_update_rate: 50.0
-    mycobot_target_pose_update_rate: 0.08
+    mycobot_target_pose_update_rate: 0.08 ######### Change the frequeny to send topic to my_cobot
 
     joint_lower_limits_deg: [-160.0, -160.0, -160.0, -160.0, -160.0, -170.0]
     joint_upper_limits_deg: [ 160.0,  160.0,  160.0,  160.0,  160.0,  170.0]
 
-    # Optional: initial joint configuration in degrees (joint1..joint6)
-    # If provided, the IK node will publish this as the first joint state
-    # and use it as the initial seed for solving.
-    # Example: [0.0, 0.0, 0.0, 0.0, 0.0, 45.0]
-    # Note: values must be doubles (with .0) to match the
-    # PARAMETER_DOUBLE_ARRAY type expected by the node.
     initial_joint_positions_deg: [0.0, 30.0, -90.0, 0.0, 0.0, 45.0]
 
 sam_client:
@@ -88,5 +89,4 @@ sam_client:
 
     add_to_mujoco: true
     mujoco_scene_name: "scene_mycobot"
-    
 

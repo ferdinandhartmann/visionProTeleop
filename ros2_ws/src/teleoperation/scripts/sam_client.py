@@ -278,7 +278,7 @@ class SamClient(Node):
             worldbody,
             "body",
             name=self.prompt_name,
-            pos=f"{random.uniform(-0.4, 0.4):.2f} {random.uniform(-0.4, 0.4):.2f} {random.uniform(0.3, 0.8):.2f}",
+            pos=f"{random.uniform(-0.4, 0.1):.2f} {random.uniform(-0.2, 0.2):.2f} {random.uniform(0.3, 0.8):.2f}",
             euler="0.0 0.3 0"
         )
 

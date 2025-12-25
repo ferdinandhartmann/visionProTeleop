@@ -48,12 +48,6 @@ def generate_launch_description():
         parameters=[{'robot_description': robot_description}]
     )
     
-    joint_state_publisher_node = Node(
-        package='joint_state_publisher',
-        executable='joint_state_publisher',
-        name='joint_state_publisher',
-    )
-    
     # Hardware access is now handled directly inside teleop_control,
     # which also publishes /joint_states. We therefore do not launch
     # the mycobot_280 listen_real node here to avoid double-opening
@@ -144,9 +138,10 @@ def generate_launch_description():
     
     camera_streamer_node = Node(
         package="teleoperation",
-        executable="camera_streamer",
+        executable="camera_streamer.py",
         name="camera_streamer",
         output="screen",
+        parameters=[teleop_config],
     )
 
     mujoco_streamer_node = Node(
@@ -167,7 +162,6 @@ def generate_launch_description():
         baud_rate_arg,
         
         robot_state_publisher_node,
-        # joint_state_publisher_node,
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
 
         static_transform_map_mycobot_base,
@@ -177,13 +171,14 @@ def generate_launch_description():
         teleop_control_cpp_node,
         inverse_kinematics_node,
         
-        # joint_state_to_mycobot_node,
-
         rviz2_node,
         
         mujoco_streamer_node,
         
         # camera_streamer_node
+        
+        # joint_state_to_mycobot_node,
+
     ]
 
     return LaunchDescription(nodes)
