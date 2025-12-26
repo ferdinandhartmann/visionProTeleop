@@ -26,6 +26,9 @@ import time
 
 from avp_stream import VisionProStreamer
 
+from tf2_ros import Buffer, TransformListener
+from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
+
 
 class VPStreamer(Node):
     """Bridge ROS joint states into the MuJoCo scene and stream it to Vision Pro."""
@@ -100,7 +103,7 @@ class VPStreamer(Node):
             self.camera_timer = self.create_timer(camera_period, self._camera_cb)
             self.publisher = self.create_publisher(Image, "/camera_raw", 10)
             
-            print("Camera initialized")
+            self.get_logger().info("Camera initialized")
 
 
         self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
@@ -161,6 +164,17 @@ class VPStreamer(Node):
 
         self._latest_joint_state: Dict[str, float] = {}
         self._joint_state_lock = threading.Lock()
+        
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        
+        self.ee_fk_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame"
+        )
+
+        self.ee_target_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
+        )
 
 
 
@@ -261,6 +275,8 @@ class VPStreamer(Node):
     def _update_scene(self) -> None:
         self._apply_joint_state()
         
+        self._update_target_frames()
+        
         mujoco.mj_step(self.model, self.data)
 
         if self.streamer is not None:
@@ -273,6 +289,58 @@ class VPStreamer(Node):
             self.get_logger().info("Viewer closed; stopping VPStreamer timer")
             
         self._contact_active = self._detect_impact_contact()
+
+
+    def _set_mocap_from_tf(self, body_id, tf):
+        mocap_id = self.model.body_mocapid[body_id]
+        if mocap_id < 0:
+            return
+
+        # --- position (rotate 180deg about world Z) ---
+        x = tf.transform.translation.x
+        y = tf.transform.translation.y
+        z = tf.transform.translation.z
+        self.data.mocap_pos[mocap_id, 0] = -x
+        self.data.mocap_pos[mocap_id, 1] = -y
+        self.data.mocap_pos[mocap_id, 2] =  z
+
+        # --- orientation (premultiply by 180deg about world Z) ---
+        r = tf.transform.rotation
+        q_tf = np.array([r.w, r.x, r.y, r.z], dtype=np.float64)
+
+        q_corr = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)  # yaw=pi about Z
+
+        q_out = np.zeros(4, dtype=np.float64)
+        mujoco.mju_mulQuat(q_out, q_corr, q_tf)  # world-frame correction
+
+        self.data.mocap_quat[mocap_id, :] = q_out
+
+
+    def _update_target_frames(self):
+        try:
+            latest_time = rclpy.time.Time(seconds=0)
+
+            # FK pose (from IK node) — latest available
+            tf_fk = self.tf_buffer.lookup_transform(
+                "mycobot_base",
+                "gripper_ee",
+                latest_time
+            )
+            self._set_mocap_from_tf(self.ee_fk_body_id, tf_fk)
+
+            # Teleop target pose — latest available
+            tf_target = self.tf_buffer.lookup_transform(
+                "mycobot_base",
+                "ee_target_offset_mycobot_base_vis",
+                latest_time
+            )
+            self._set_mocap_from_tf(self.ee_target_body_id, tf_target)
+
+            mujoco.mj_forward(self.model, self.data)
+
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            pass
+
 
             
     def _camera_cb(self) -> None:

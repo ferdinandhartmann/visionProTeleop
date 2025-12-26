@@ -13,9 +13,9 @@ vp_streamer:
     visionpro_ip: "192.168.10.113"
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
-    attach_to: [0.0, 0.6, 0.65, -45.0]    # y-axis goes from viewer straight to the distance
+    attach_to: [0.0, 0.3, 0.65, -45.0]    # y-axis goes from viewer straight to the distance
     update_simulation_hz: 120.0
-    force_reload: false
+    force_reload: true
     ###### Camera parameters 
     camera_device: "/dev/video0"
     camera_resolution: "640x480"
@@ -33,15 +33,13 @@ camera_streamer:
 
 teleop_control_cpp:
   ros__parameters:
-    vp_base_frame: "vp_base"
-    gripper_base_frame: "gripper_ee"
-
-    update_period: 0.05    # seconds
+    update_period: 0.001    # seconds ############## How fast to publish target topic and tf which inv_kin. node subscribes to
+    update_period_vis: 0.001    # seconds
 
     smoothing_factor: 2.0  # Run sampling this many times faster than update_period
     smoothing_window: 5   # Number of recent samples to average
 
-    translation_scale: 0.9  # Scale translation of the commanded EE pose in mycobot_base
+    translation_scale: 0.95  # Scale translation of the commanded EE pose in mycobot_base
     rotation_scale: 1.0     # Scale rotation of the commanded EE pose
 
     # Gesture thresholds
@@ -68,8 +66,6 @@ inverse_kinematics_node:
     # Topics and frames
     target_topic: "/teleop/ee_target"
     joint_target_topic: "/joint_states_mycobot"
-    mycobot_base_frame: "mycobot_base"
-    ee_child_frame: "gripper_ee"
 
     # IK tuning parameters
     position_tolerance: 0.01       # meters
@@ -79,7 +75,7 @@ inverse_kinematics_node:
     step_tolerance: 2.0e-6          # rad magnitude of joint update
     gripper_percent: 100            # default gripper position in percent
 
-    joint_states_ros2_update_rate: 50.0
+    joint_states_ros2_update_rate: 100.0 #hz
     mycobot_target_pose_update_rate: 0.02 ######### Change the frequeny to send topic to my_cobot
 
     joint_lower_limits_deg: [-160.0, -160.0, -160.0, -160.0, -160.0, -170.0]

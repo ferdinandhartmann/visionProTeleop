@@ -151,8 +151,8 @@ def generate_launch_description():
         output="screen",
         parameters=[
             teleop_config,
-            {"viewer": "None"}, # Options: "None", "ar", "mujoco"
-            {"enable_camera": False},
+            {"viewer": "ar"}, # Options: "None", "ar", "mujoco"
+            {"enable_camera": True},
             {"enable_audio": True},
         ],
     )

@@ -2,7 +2,10 @@
 <mujoco model="mycobot scene">
   <compiler meshdir="meshes_mujoco/" coordinate="local" />
   <include file="mycobot_280_m5_mujoco.xml" />
-  <option integrator="implicitfast" timestep="0.004" gravity="0 0 -9.81" />
+  <option integrator="implicit" timestep="0.002" gravity="0 0 -9.81" />
+	<!-- <option cone="elliptic" impratio="5"/> -->
+	<!-- <option iterations="100" tolerance="1e-10"/> -->
+
   <statistic center="0.3 0 0.35" extent="0.8" meansize="0.05" />
   <visual>
     <headlight diffuse="0.5 0.5 0.5" ambient="0.15 0.15 0.15" specular="0.2 0.2 0.2" />
@@ -13,7 +16,8 @@
     <material name="grid" texture="grid" texrepeat="2 2" texuniform="true" />
     <texture name="table_tex" type="2d" builtin="flat" rgb1="0.43 0.33 0.25" width="256" height="256" />
     <material name="table_mat" texture="table_tex" rgba="1 1 1 1" />
-    <material name="accent" rgba="0.17 0.52 0.73 1" shininess="0.4" specular="0.2" />
+   
+	  <!-- <material name="accent" rgba="0.17 0.52 0.73 1" shininess="0.4" specular="0.2" />
     <texture name="laptop_tex" type="2d" file="meshes_mujoco/sam_models/laptop_material.png" />
     <material name="laptop_mat" texture="laptop_tex" texrepeat="2 2" reflectance="0" shininess="0" specular="0" />
     <mesh name="laptop_visual" file="sam_models/laptop_visual.obj" />
@@ -33,21 +37,65 @@
     <texture name="remote_tex" type="2d" file="meshes_mujoco/sam_models/remote_material.png" />
     <material name="remote_mat" texture="remote_tex" texrepeat="2 2" reflectance="0" shininess="0" specular="0" />
     <mesh name="remote_visual" file="sam_models/remote_visual.obj" />
-    <mesh name="remote_collision" file="sam_models/remote_collision.obj" />
+    <mesh name="remote_collision" file="sam_models/remote_collision.obj" /> -->
   </asset>
   <worldbody>
+
+
+		<body name="ee_target_frame" mocap="true">
+			<site name="ee_target_site" size="0.01" rgba="0 1 0 1"/>
+
+			<body name="ee_target_xb" pos="0.03 0 0" quat="0.7071068 0 -0.7071068 0">
+				<geom name="ee_target_x" type="capsule" size="0.003 0.03" rgba="1 0 0 1"/>
+			</body>
+
+			<body name="ee_target_yb" pos="0 0.03 0" quat="0.7071068 0.7071068 0 0">
+				<geom name="ee_target_y" type="capsule" size="0.003 0.03" rgba="0 1 0 1"/>
+			</body>
+
+			<body name="ee_target_zb" pos="0 0 0.03" quat="1 0 0 0">
+				<geom name="ee_target_z" type="capsule" size="0.003 0.03" rgba="0 0 1 1"/>
+			</body>
+		</body>
+
+		<body name="ee_fk_frame" mocap="true">
+			<site name="ee_fk_site" size="0.01" rgba="1 1 0 1"/>
+
+			<body name="ee_fk_xb" pos="0.03 0 0" quat="0.7071068 0 -0.7071068 0">
+				<geom name="ee_fk_x" type="capsule" size="0.003 0.03" rgba="1 0 0 1"/>
+			</body>
+
+			<body name="ee_fk_yb" pos="0 0.03 0" quat="0.7071068 0.7071068 0 0">
+				<geom name="ee_fk_y" type="capsule" size="0.003 0.03" rgba="0 1 0 1"/>
+			</body>
+
+			<body name="ee_fk_zb" pos="0 0 0.03" quat="1 0 0 0">
+				<geom name="ee_fk_z" type="capsule" size="0.003 0.03" rgba="0 0 1 1"/>
+			</body>
+		</body>
+
+
+
+    <body name="cube2" pos="-0.2 0 0.4" euler="0 30 0">
+      <joint type="free" />
+			<geom type="box" size="0.01 0.01 0.05" contype="0" conaffinity="0" rgba="1.0 0.55 0.0 1.0" />
+      <geom type="box" size="0.01 0.01 0.05" contype="1" conaffinity="1" mass="0.2" friction="1.5 0.005 0.0001" solimp="0.9 0.95 0.001" solref="0.002 1" />
+    </body>
+
     <light name="sun_key" pos="0 0 2.0" dir="-0.3 0.2 -1" directional="true" diffuse="1.0 1.0 1.0" specular="0.3 0.3 0.3" castshadow="true" />
     <light name="fill" pos="1.5 -1.0 1.2" dir="-1 1 -0.5" directional="true" diffuse="0.35 0.35 0.35" specular="0 0 0" castshadow="false" />
-    <geom name="floor  " size="2 2 0.02" type="plane" material="grid" contype="1" conaffinity="1" />
-    <body name="target" pos="0.1 0.1 0.1" quat="0 1 0 0" mocap="true">
+    
+		<geom name="floor" size="2 2 0.02" type="plane" material="grid" contype="1" conaffinity="1" />
+
+		<body name="table" pos="0 0 0">
+			<geom type="box" size="0.2 0.2 0.025" pos="-0.1 0 -0.025" material="table_mat" contype="1" conaffinity="1" friction="1.0 0.005 0.0001" rgba="0.7 0.7 0.7 1" />
+		</body>
+    
+		<!-- <body name="target" pos="0.1 0.1 0.1" quat="0 1 0 0" mocap="true">
       <geom type="box" size=".03 .03 .03" contype="0" conaffinity="0" material="accent" rgba="0.1 0.6 0.85 0.7" />
       <site type="sphere" size="0.012" rgba="0.1 0.4 1 1" group="1" />
     </body>
-    <body name="cube2" pos="-0.2 0.1 0.1" euler="0 30 0">
-      <joint type="free" />
-      <geom type="box" size="0.05 0.05 0.2" contype="0" conaffinity="0" material="accent" rgba="0.85 0.1 0.6 1.0" />
-      <geom type="box" size="0.05 0.05 0.2" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.1" />
-    </body>
+
     <body name="work_cube" pos="-0.2 -0.1 0.08">
       <joint type="free" />
       <geom type="box" size="0.05 0.05 0.3" rgba="0.9 0.5 0.3 1" contype="1" conaffinity="1" friction="0.8 0.1 0.01" />
@@ -77,6 +125,6 @@
       <joint type="free" />
       <geom type="mesh" mesh="remote_visual" material="remote_mat" contype="0" conaffinity="0" />
       <geom type="mesh" mesh="remote_collision" mass="0.1" contype="1" conaffinity="1" />
-    </body>
+    </body> -->
   </worldbody>
 </mujoco>

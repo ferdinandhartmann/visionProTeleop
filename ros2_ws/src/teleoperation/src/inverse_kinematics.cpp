@@ -56,7 +56,6 @@ InverseKinematicsNode()
   declare_parameter<std::string>("target_topic", "/teleop/ee_target");
   declare_parameter<std::string>("joint_target_topic", "/joint_states_mycobot");
   declare_parameter<std::string>("mycobot_base_frame", "mycobot_base");
-  declare_parameter<std::string>("ee_child_frame", "gripper_ee");
 
   // IK tuning parameters (exposed as ROS 2 parameters / YAML)
   declare_parameter<double>("position_tolerance", 0.001);
@@ -79,7 +78,6 @@ InverseKinematicsNode()
   const auto target_topic = get_parameter("target_topic").as_string();
   const auto joint_target_topic = get_parameter("joint_target_topic").as_string();
   mycobot_base_frame_ = get_parameter("mycobot_base_frame").as_string();
-  ee_child_frame_ = get_parameter("ee_child_frame").as_string();
 
   // Read IK tuning parameters into member variables
   position_tolerance_ = get_parameter("position_tolerance").as_double();
@@ -144,9 +142,7 @@ InverseKinematicsNode()
   // Continuous JointState publisher on for ros2
   joint_state_ros2_publisher_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
   int period_ms = static_cast<int>(1000.0 / joint_states_ros2_update_rate_);
-  if (period_ms <= 0) {
-    period_ms = 20;  // fallback 50 Hz
-  }
+
   joint_state_ros2_timer_ = create_wall_timer(
     std::chrono::milliseconds(period_ms),
     std::bind(&InverseKinematicsNode::jointStateRos2TimerCallback, this));
@@ -315,8 +311,8 @@ private:
 
     // Constant offset to place the pose in the grippers middle
     // constexpr double gripper_offset_front = 0.05;  // between the gripper end
-    constexpr double gripper_offset_front = -0.07;
-    constexpr double gripper_offset_down = -0.01; 
+    constexpr double gripper_offset_front = -0.09;
+    constexpr double gripper_offset_down = 0.015; 
     Eigen::Vector3d tool_offset = T.block<3, 3>(0, 0) * Eigen::Vector3d(0.0, gripper_offset_front, gripper_offset_down);
     T.block<3, 1>(0, 3) += tool_offset;
 
@@ -494,7 +490,7 @@ private:
     geometry_msgs::msg::TransformStamped tf_msg;
     tf_msg.header.stamp = header.stamp;
     tf_msg.header.frame_id = mycobot_base_frame_;
-    tf_msg.child_frame_id = ee_child_frame_;
+    tf_msg.child_frame_id = "gripper_ee";
 
     tf_msg.transform.translation.x = ee_pose.position.x();
     tf_msg.transform.translation.y = ee_pose.position.y();
@@ -524,7 +520,6 @@ private:
     std::vector<std::string> joint_names_;
     std::vector<double> joint_state_;
     std::string mycobot_base_frame_;
-    std::string ee_child_frame_;
 
     double position_tolerance_{};
     double orientation_tolerance_{};
