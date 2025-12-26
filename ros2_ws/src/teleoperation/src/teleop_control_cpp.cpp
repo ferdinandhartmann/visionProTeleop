@@ -15,6 +15,7 @@
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include <Eigen/Dense>
+#include "std_msgs/msg/bool.hpp"
 
 namespace
 {
@@ -95,6 +96,9 @@ public:
     this->declare_parameter<int>("smoothing_window", 3);
     this->declare_parameter<double>("translation_scale", 1.0);
     this->declare_parameter<double>("rotation_scale", 1.0);
+
+    // Publisher for teleop trigger (enabled/disabled)
+    teleop_trigger_pub_ = this->create_publisher<std_msgs::msg::Bool>("/teleop/teleop_enabled", 10);
 
     vp_base_frame_ = this->get_parameter("vp_base_frame").as_string();
     gripper_base_frame_ = this->get_parameter("gripper_base_frame").as_string();
@@ -205,7 +209,7 @@ private:
     tf_msg.transform.rotation = eigenToMsg(q);
 
     static_tf_broadcaster_->sendTransform(tf_msg);
-    RCLCPP_INFO(this->get_logger(), "Published vp_base calibration transform");
+    // RCLCPP_INFO(this->get_logger(), "Published vp_base calibration transform");
   }
 
   void publishEeTargetTf(
@@ -242,10 +246,12 @@ private:
     if (!teleop_enabled_ && left_pinch < pinch_threshold_) {
       teleop_enabled_ = true;
       just_enabled = true;
-      RCLCPP_INFO(this->get_logger(), "Teleop ENABLED (left pinch)");
+      publishTeleopTrigger(true);
+      RCLCPP_INFO(this->get_logger(), "Teleop ENABLED");
     } else if (teleop_enabled_ && left_pinch > pinch_threshold_) {
       teleop_enabled_ = false;
       just_disabled = true;
+      publishTeleopTrigger(false);
       //publishVpBaseCalibration(Eigen::Matrix4d::Identity());
       // back rot matrix -90 axis Z
       Eigen::Matrix4d calibration_T = createZRotationMatrix(-90.0);
@@ -253,7 +259,7 @@ private:
       calibration_T(1, 3) = 0.0;
       calibration_T(2, 3) = 0.0;
       publishVpBaseCalibration(calibration_T);
-      RCLCPP_INFO(this->get_logger(), "Teleop DISABLED (left pinch)");
+      RCLCPP_INFO(this->get_logger(), "Teleop DISABLED");
     }
 
     if (!teleop_enabled_) {
@@ -315,7 +321,7 @@ private:
         offset_rot_.normalize();
 
         offset_available_ = true;
-        RCLCPP_INFO(this->get_logger(), "Teleop offset captured (gripper frame: %s)", gripper_base_frame_.c_str());
+        // RCLCPP_INFO(this->get_logger(), "Teleop offset captured (gripper frame: %s)", gripper_base_frame_.c_str());
       } catch (const tf2::TransformException & ex) {
         offset_available_ = false;
         RCLCPP_WARN(this->get_logger(), "Offset capture failed for frame '%s': %s", gripper_base_frame_.c_str(), ex.what());
@@ -488,11 +494,19 @@ Eigen::Matrix4d createZRotationMatrix(double degrees)
     return R;
 }
 
+  // Publishes true/false to indicate teleop enabled/disabled
+  void publishTeleopTrigger(bool enabled) {
+    std_msgs::msg::Bool msg;
+    msg.data = enabled;
+    teleop_trigger_pub_->publish(msg);
+  }
+
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
   rclcpp::Publisher<teleoperation::msg::TeleopTarget>::SharedPtr ee_target_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr teleop_trigger_pub_;
   rclcpp::TimerBase::SharedPtr sampling_timer_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
 

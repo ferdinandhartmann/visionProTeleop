@@ -32,6 +32,7 @@ ament_target_dependencies(teleop_control_cpp
   tf2
   tf2_ros
   tf2_geometry_msgs
+  std_msgs
 )
 
 add_executable(inverse_kinematics_node src/inverse_kinematics.cpp)

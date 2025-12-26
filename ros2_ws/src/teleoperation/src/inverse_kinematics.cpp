@@ -131,6 +131,10 @@ InverseKinematicsNode()
       }
     }
 
+  prev_joint_state_ = joint_state_;
+  prev_joint_time_ = now();
+  have_prev_state_ = false;
+  prev_cmd_joint_state_ = joint_state_;
 
   pose_subscription_ = create_subscription<teleoperation::msg::TeleopTarget>(target_topic, rclcpp::SensorDataQoS(),
                             std::bind(&InverseKinematicsNode::poseCallback, this, std::placeholders::_1));
@@ -223,7 +227,27 @@ private:
 		msg.position.assign(joint_state_.begin(), joint_state_.end());
 		msg.position.push_back(gripper_percent_);
 
+		// -------- VELOCITIES (COMMAND VELOCITY) --------
+		msg.velocity.resize(msg.position.size(), 0.0);
+
+    if (have_prev_state_) {
+      rclcpp::Time current_stamp(msg.header.stamp);
+      const double dt = (current_stamp - prev_joint_time_).seconds();
+      if (dt > 1e-6) {
+        for (size_t i = 0; i < joint_state_.size(); ++i) {
+          msg.velocity[i] =
+            (joint_state_[i] - prev_cmd_joint_state_[i]) / dt;
+        }
+        msg.velocity.back() =
+          (gripper_percent_ - prev_cmd_joint_state_.back()) / dt;
+      }
+    } 
+
 		joint_state_publisher_->publish(msg);
+
+    prev_cmd_joint_state_ = msg.position;
+    prev_joint_time_ = rclcpp::Time(msg.header.stamp);
+    have_prev_state_ = true;
 	}
 
   Pose poseFromMsg(const geometry_msgs::msg::PoseStamped & msg) const
@@ -517,6 +541,12 @@ private:
 
     std::vector<double> joint_lower_limits_rad_;
     std::vector<double> joint_upper_limits_rad_;
+
+
+    std::vector<double> prev_joint_state_;
+    rclcpp::Time prev_joint_time_;
+    bool have_prev_state_{false};
+    std::vector<double> prev_cmd_joint_state_;
 
     static std::vector<DhParameter> buildDhParameters()
     {

@@ -1,6 +1,11 @@
 
 
 
+
+ffmpeg -i disabled_sound.mp3 -ac 1 -ar 48000 disabled.wav
+
+
+
 buntu:~/visionpro_teleop_project/visionProTeleop$ v4l2-ctl --list-formats-ext -d /dev/video0
 ioctl: VIDIOC_ENUM_FMT
         Type: Video Capture

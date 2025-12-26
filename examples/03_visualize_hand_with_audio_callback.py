@@ -207,7 +207,7 @@ def beep_audio_generator(streamer):
 if __name__ == "__main__":
     import argparse 
     parser = argparse.ArgumentParser(description="Hand Tracking Visualizer with Audio Feedback")
-    parser.add_argument("--ip", type=str, required=True, help="Vision Pro IP address")
+    parser.add_argument("--ip", type=str, default="192.168.10.113", help="Vision Pro IP address")
     args = parser.parse_args()
     
     # Create streamer
