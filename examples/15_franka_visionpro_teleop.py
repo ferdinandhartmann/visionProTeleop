@@ -31,7 +31,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Vision Pro teleoperation with Franka Panda.")
 parser.add_argument("--num-envs", type=int, default=1, help="Number of environments to spawn.")
-parser.add_argument("--ip", type=str, default=None, help="Vision Pro IP address. If not provided, uses keyboard control.")
+parser.add_argument("--ip", type=str, default="192.168.10.113", help="Vision Pro IP address. If not provided, uses keyboard control.")
 parser.add_argument(
     "--pos-sensitivity",
     type=float,
@@ -136,7 +136,12 @@ def hand2pose(hand, side="right"):
     tip_middle = (thumb_tip + index_tip) * 0.5
 
     z_axis = tip_middle - base_middle
-    z_axis /= np.linalg.norm(z_axis)
+    norm = np.linalg.norm(z_axis)
+    if norm < 1e-6 or not np.isfinite(norm):
+        # Hand orientation not valid yet
+        return  # or `continue` if inside a loop
+
+    z_axis /= norm
 
     # Use thumb→index direction as x
     x_axis = index_base - thumb_base
@@ -327,6 +332,22 @@ class KeyboardController:
         return 0.04 if self.gripper_open else 0.0
 
 
+def is_valid_rotation_matrix(Rm, eps=1e-6):
+    if not np.isfinite(Rm).all():
+        return False
+    should_be_identity = Rm.T @ Rm
+    I = np.eye(3)
+    return np.linalg.norm(I - should_be_identity) < eps and abs(np.linalg.det(Rm) - 1.0) < eps
+
+def valid_T(T: np.ndarray) -> bool:
+    return (
+        T is not None
+        and isinstance(T, np.ndarray)
+        and T.shape == (4, 4)
+        and np.isfinite(T).all()
+    )
+
+
 def run_simulator(
     sim: sim_utils.SimulationContext,
     scene: InteractiveScene,
@@ -349,6 +370,12 @@ def run_simulator(
     joint_pos[0, :7] = torch.tensor([0.0, -0.569, 0.0, -2.81, 0.0, 3.037, 0.741], device=robot.device)
     joint_vel = robot.data.default_joint_vel.clone()
     robot.write_joint_state_to_sim(joint_pos, joint_vel)
+    
+    
+    # ADDED: Increase stiffness and damping for better tracking
+    robot.cfg.actuators["panda_shoulder"].stiffness = 800.0
+    robot.cfg.actuators["panda_shoulder"].damping = 40.0
+
 
     # Run a few steps to settle
     for _ in range(10):
@@ -368,7 +395,7 @@ def run_simulator(
         command_type="pose",
         use_relative_mode=False,
         ik_method="dls",
-        ik_params={"lambda_val": 0.05},
+        ik_params={"lambda_val": 0.008},
     )
 
     arm_joint_names = [
@@ -478,12 +505,25 @@ def run_simulator(
             if hand is not None and hand.get("right_wrist") is not None:
                 # Extract right hand pose (position + rotation)
                 hand_pose = hand2pose(hand)
+                if valid_T(hand_pose):
+                    last_hand_pose = hand_pose
+                elif last_hand_pose is None:
+                    continue
+                else:
+                    hand_pose = last_hand_pose
+
                 hand_pos = hand_pose[:3, 3]
                 hand_rot_matrix = hand_pose[:3, :3]
                 
                 # Convert rotation matrix to quaternion (w, x, y, z) format
                 # scipy uses (x, y, z, w) so we need to reorder
+                # Validate rotation matrix before use
+                if not is_valid_rotation_matrix(hand_rot_matrix):
+                    # Hand orientation invalid this frame
+                    return
+
                 rot = R.from_matrix(hand_rot_matrix)
+
                 quat_xyzw = rot.as_quat()  # Returns (x, y, z, w)
                 hand_quat = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])  # Convert to (w, x, y, z)
 
@@ -543,9 +583,11 @@ def run_simulator(
 
 
 def main():
+    
     """Main function to set up and run the teleoperation demo."""
     sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, dt=1 / 200)
     sim = sim_utils.SimulationContext(sim_cfg)
+    
 
     # Set camera view
     sim.set_camera_view([1.6, 1.0, 1.70], [0.4, 0.0, 1.0])

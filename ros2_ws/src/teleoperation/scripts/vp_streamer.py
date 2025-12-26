@@ -14,12 +14,15 @@ from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState
 
+import cv2
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
 
-class MujocoStreamerNode(Node):
+class VPStreamer(Node):
     """Bridge ROS joint states into the MuJoCo scene and stream it to Vision Pro."""
 
     def __init__(self) -> None:
-        super().__init__("mujoco_streamer")
+        super().__init__("vp_streamer")
 
         # Import MuJoCo lazily so the node still declares parameters when MuJoCo is missing.
         import mujoco
@@ -29,7 +32,7 @@ class MujocoStreamerNode(Node):
             "ar",
             descriptor=ParameterDescriptor(description="Viewer type: 'ar' to stream to Vision Pro, 'mujoco' for local preview.",),
         )
-        self.declare_parameter("visionpro_ip", "192.168.50.153")
+        self.declare_parameter("visionpro_ip", "192.168.11.99")
         self.declare_parameter("port", 50051)
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter(
@@ -38,6 +41,11 @@ class MujocoStreamerNode(Node):
             descriptor=ParameterDescriptor(description="AR attachment pose [x, y, z, yaw_degrees] used by VisionProStreamer.",),
         )
         self.declare_parameter("force_reload", True)
+        self.declare_parameter("camera_device", "/dev/video0")
+        self.declare_parameter("camera_resolution", "1280x720")
+        self.declare_parameter("camera_fps", 25)
+        self.declare_parameter("format", "v4l2")
+        self.declare_parameter("enable_camera", True)
 
         # Resolve the default MuJoCo scene from the robot_description package.
         robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
@@ -50,6 +58,26 @@ class MujocoStreamerNode(Node):
         self.declare_parameter("update_rate_hz", 60.0)
 
         params = self._load_params()
+        
+        self.enable_camera = params["enable_camera"]
+        self.bridge = CvBridge()
+        if self.enable_camera:
+            self.cap = cv2.VideoCapture(params["camera_device"])
+            if not self.cap.isOpened():
+                raise RuntimeError(f"Could not open camera {params['camera_device']}")
+            
+            camera_period = 1.0 / params["camera_fps"]
+            
+            width, height = map(int, params["camera_resolution"].split('x'))
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            self.cap.set(cv2.CAP_PROP_FPS, params["camera_fps"])
+            
+            self.camera_timer = self.create_timer(camera_period, self._camera_cb)
+            self.publisher = self.create_publisher(Image, "/camera_raw", 10)
+            
+            print("Camera initialized")
+
 
         self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
         self.data = mujoco.MjData(self.model)
@@ -70,6 +98,16 @@ class MujocoStreamerNode(Node):
                 grpc_port=params["port"],
                 force_reload=params["force_reload"],
             )
+            # NEW: camera config (same streamer)
+            if params["enable_camera"]:
+                self.streamer.configure_video(
+                    device=None, # Set frames manually to also be able to publish to ROS2
+                    format=params["format"],
+                    size=params["camera_resolution"],
+                    fps=params["camera_fps"],
+                )
+                self.get_logger().info("Vision Pro camera streaming enabled")
+                
             self.streamer.start_webrtc()
             self.get_logger().info("Streaming MuJoCo scene to Vision Pro")
         else:
@@ -101,6 +139,11 @@ class MujocoStreamerNode(Node):
         xml_path = self.get_parameter("xml_path").get_parameter_value().string_value
         rate = self.get_parameter("update_rate_hz").get_parameter_value().double_value
         force_reload = self.get_parameter("force_reload").get_parameter_value().bool_value
+        camera_device = self.get_parameter("camera_device").value
+        camera_resolution = self.get_parameter("camera_resolution").value
+        camera_fps = self.get_parameter("camera_fps").value
+        enable_camera = self.get_parameter("enable_camera").value
+        format = self.get_parameter("format").value
         return {
             "viewer": viewer,
             "visionpro_ip": visionpro_ip,
@@ -110,6 +153,11 @@ class MujocoStreamerNode(Node):
             "xml_path": xml_path,
             "update_rate_hz": rate,
             "force_reload": force_reload,
+            "camera_device": camera_device,
+            "camera_resolution": camera_resolution,
+            "camera_fps": camera_fps,
+            "enable_camera": enable_camera,
+            "format": format,
         }
 
     def _build_joint_mapping(self, mujoco) -> Dict[str, int]:
@@ -182,20 +230,38 @@ class MujocoStreamerNode(Node):
         else:
             # If the viewer was closed, stop the timer to avoid spamming logs
             self.timer.cancel()
-            self.get_logger().info("Viewer closed; stopping MujocoStreamerNode timer")
+            self.get_logger().info("Viewer closed; stopping VPStreamer timer")
+            
+    def _camera_cb(self) -> None:
+        if self.streamer is None:
+            return
+
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+        
+        img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+        self.publisher.publish(img_msg)
+
+        # Send frame to Vision Pro
+        self.streamer.update_frame(frame)
+        
+        # # Optional local OpenCV preview
+        # cv2.imshow("Webcam", frame)
+        # cv2.waitKey(1)
+
 
 
 def main(args: Optional[List[str]] = None) -> None:
     rclpy.init(args=args)
-    node = MujocoStreamerNode()
+    node = VPStreamer()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

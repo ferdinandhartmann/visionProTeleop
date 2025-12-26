@@ -97,6 +97,15 @@ HAND_CONNECTIONS = [
     (24, 25),
 ]
 
+def is_valid_transform(T, eps=1e-6):
+    if T.shape != (4, 4):
+        return False
+    R = T[:3, :3]
+    if not np.isfinite(R).all():
+        return False
+    return abs(np.linalg.det(R)) > eps
+
+
 def quat_from_matrix(mat):
     m = mat
     t = m[0, 0] + m[1, 1] + m[2, 2]
@@ -204,9 +213,13 @@ class VPTransformPublisher(Node):
                 # Get transforms relative to wrist
                 T_parent = joints[parent_idx]
                 T_child = joints[i]
+                
+                if not is_valid_transform(T_parent):
+                    # Skip this joint for this frame
+                    continue
+
                 T_rel = np.linalg.inv(T_parent) @ T_child  # relative transform
 
-                # Publish transform from parent to child
                 self.publish_tf(parent_name, child_name, T_rel)
 
             # --- Visual Markers: wrist + thumb tip + index tip ---

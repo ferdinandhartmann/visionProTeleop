@@ -5,18 +5,22 @@
 
 vp_transform_publisher:
   ros__parameters:
-    visionpro_ip: "192.168.11.99"
+    visionpro_ip: "192.168.10.113"
     pinch_threshold: 0.02   # just for markers for rviz
 
-mujoco_streamer:
+vp_streamer:
   ros__parameters:
-    viewer: "mujoco"                          # "ar" or "mujoco", will be overridden by launch file 
-    visionpro_ip: "192.168.11.99"
+    visionpro_ip: "192.168.10.113"
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
     attach_to: [0.0, 0.6, 0.65, -45.0]    # y-axis goes from viewer straight to the distance
     update_rate_hz: 120.0
-    force_reload: true
+    force_reload: false
+    ###### Camera parameters 
+    camera_device: "/dev/video0"
+    camera_resolution: "640x480"
+    format: "v4l2"
+    camera_fps: 25
 
 camera_streamer:
   ros__parameters:

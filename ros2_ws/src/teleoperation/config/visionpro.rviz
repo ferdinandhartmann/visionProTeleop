@@ -37,6 +37,10 @@ Visualization Manager:
         All Enabled: false
         camera:
           Value: true
+        ee_target:
+          Value: true
+        ee_target_offset_mycobot_base:
+          Value: true
         gripper_base:
           Value: true
         gripper_ee:
@@ -189,6 +193,8 @@ Visualization Manager:
       Tree:
         map:
           mycobot_base:
+            ee_target_offset_mycobot_base:
+              {}
             gripper_ee:
               {}
             link1:
@@ -212,6 +218,8 @@ Visualization Manager:
                                   {}
           vp_base_origin:
             vp_base:
+              ee_target:
+                {}
               visionpro/head:
                 {}
               visionpro/left/wrist:
@@ -472,7 +480,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /webcam/image_raw
+        Value: /camera_raw
       Value: true
   Enabled: true
   Global Options:

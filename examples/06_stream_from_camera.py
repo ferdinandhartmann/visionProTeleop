@@ -36,7 +36,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Stream video from Python to VisionOS with hand tracking."
     )
-    parser.add_argument("--ip", default="192.168.10.113", type=str)
+    parser.add_argument("--ip", default="192.168.11.99", type=str)
     args = parser.parse_args()
 
     main(args)

@@ -20,7 +20,7 @@ class CameraStreamer(Node):
             parameters=[
                 ('visionpro_ip', '192.168.11.99'),
                 ('resolution', '1280x720'),
-                ('camera_input', '/dev/video0')
+                ('camera_input', '/dev/video0'),
                 ('format', 'v4l2'),
                 ('fps', 25),
             ]
@@ -36,19 +36,22 @@ class CameraStreamer(Node):
         self.publisher = self.create_publisher(Image, "/webcam/image_raw", 10)
         self.bridge = CvBridge()
 
-        # Open webcam
-        self.cap = cv2.VideoCapture(self.camera_input)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open {self.camera_input}")
-
         # Start Vision Pro streaming
         if USE_VISIONPRO:
-            self.streamer = VisionProStreamer(ip=self.visionpro_ip)
-            self.streamer.configure_video(
-                device=self.camera_input, format=self.format, size=self.resolution, fps=self.fps
-            )
+            self.streamer = VisionProStreamer(ip=self.visionpro_ip, record=False)
+            self.streamer.configure_video(device=None, format=self.format, size=self.resolution, fps=self.fps)
             self.streamer.start_webrtc(port=9999)
             self.get_logger().info("Vision Pro streaming enabled")
+
+            
+                # Open webcam
+        self.cap = cv2.VideoCapture(self.camera_input)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open camera! {self.camera_input}")
+        
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, self.fps)
 
         # Timer for ~30 FPS
         self.timer = self.create_timer(0.033, self.timer_callback)
@@ -81,7 +84,7 @@ def main():
     finally:
         node.destroy_node()
         cv2.destroyAllWindows()
-        rclpy.shutdown()
+
 
 
 if __name__ == "__main__":

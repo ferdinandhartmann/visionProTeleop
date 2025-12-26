@@ -85,7 +85,7 @@ def generate_hand_visualization(streamer, width=1280, height=720):
 if __name__ == "__main__":
     import argparse 
     parser = argparse.ArgumentParser(description="Direct Hand Visualization for VisionPro")
-    parser.add_argument("--ip", type=str, required=True)
+    parser.add_argument("--ip", type=str, default="192.168.10.113", required=False)
     args = parser.parse_args()
     
     # Create streamer

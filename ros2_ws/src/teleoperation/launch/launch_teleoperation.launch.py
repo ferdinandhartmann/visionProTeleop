@@ -144,19 +144,22 @@ def generate_launch_description():
         parameters=[teleop_config],
     )
 
-    mujoco_streamer_node = Node(
+    vp_streamer_node = Node(
         package="teleoperation",
-        executable="mujoco_streamer_node.py",
-        name="mujoco_streamer",
+        executable="vp_streamer.py",
+        name="vp_streamer",
         output="screen",
         parameters=[
             teleop_config,
-            {"viewer": "ar"}, 
+            {"viewer": "ar"},
+            {"enable_camera": True},
         ],
     )
 
 
     nodes = [
+        vp_streamer_node,
+
         model_launch_arg,
         serial_port_arg,
         baud_rate_arg,
@@ -172,11 +175,7 @@ def generate_launch_description():
         inverse_kinematics_node,
         
         rviz2_node,
-        
-        mujoco_streamer_node,
-        
-        # camera_streamer_node
-        
+                        
         # joint_state_to_mycobot_node,
 
     ]

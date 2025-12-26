@@ -64,7 +64,7 @@ install(PROGRAMS
   scripts/joint_state_to_mycobot.py
   scripts/keyboard_ee_teleop.py
   scripts/vp_transform_publisher.py
-  scripts/mujoco_streamer_node.py
+  scripts/vp_streamer.py
   scripts/sam_client.py
   DESTINATION lib/${PROJECT_NAME}
 )

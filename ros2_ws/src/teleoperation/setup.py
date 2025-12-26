@@ -27,7 +27,7 @@ setup(
             "vp_transform_publisher = teleoperation.vp_transform_publisher:main",
             "keyboard_ee_teleop = teleoperation.keyboard_ee_teleop:main",
             "joint_state_to_mycobot = teleoperation.joint_state_to_mycobot:main",
-            "mujoco_streamer_node = teleoperation.mujoco_streamer_node:main",
+            "vp_streamer = teleoperation.vp_streamer:main",
             "sam_client_node = teleoperation.sam_client:main"
         ],
     },
