@@ -1502,13 +1502,18 @@ class VisionProStreamer:
 
             # Reset attachments and pose state
             self._current_poses = {}
-            self._pose_stream_running = False
+            self._stop_pose_streaming()
             self._sim_benchmark_seq = 0
+            self._usdz_sent = False
 
             # Reload and send USDZ/scene the same way as initial load
             attach_to = self._sim_config.get("attach_to")
             grpc_port = self._sim_config.get("grpc_port", 50051)
+            # Force reload to bypass caching on the visionOS side
+            previous_force_reload = self._sim_config.get("force_reload", False)
+            self._sim_config["force_reload"] = True
             self._load_and_send_mujoco_scene(attach_to, grpc_port)
+            self._sim_config["force_reload"] = previous_force_reload
 
             # Restart pose streaming if it was active
             if self._webrtc_sim_channel is not None:
