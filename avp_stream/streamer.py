@@ -946,6 +946,7 @@ class VisionProStreamer:
         self._webrtc_connection_condition = Condition()  # For blocking wait
         self._webrtc_loop = None  # Event loop for WebRTC thread
         self._webrtc_thread = None # Thread object for WebRTC event loop
+        self._control_channel = None  # Control channel for commands from VisionOS
         self._benchmark_epoch = time.perf_counter()
         self._benchmark_condition = Condition()
         self._benchmark_events = {}
@@ -978,6 +979,7 @@ class VisionProStreamer:
         # Sim benchmark state
         self._sim_benchmark_enabled = False
         self._sim_benchmark_seq = 0
+        self._reset_callback = None
         
         # Marker detection state
         self._detected_markers: Dict[int, Dict[str, Any]] = {}  # marker_id -> {"dict": int, "pose": np.ndarray}
@@ -1380,6 +1382,24 @@ class VisionProStreamer:
         def _on_message(message):
             # Handle benchmark echoes from VisionPro
             self._handle_sim_benchmark_message(message)
+    
+    def _register_webrtc_control_channel(self, channel):
+        """Register the WebRTC data channel for control commands."""
+        self._control_channel = channel
+        self._log(f"[WEBRTC] Registering control channel (state={channel.readyState})", force=True)
+
+        @channel.on("open")
+        def _on_open():
+            self._log("[WEBRTC] Control data channel opened", force=True)
+
+        @channel.on("close")
+        def _on_close():
+            self._log("[WEBRTC] Control data channel closed", force=True)
+            self._control_channel = None
+
+        @channel.on("message")
+        def _on_message(message):
+            self._handle_control_message(message)
 
     def _handle_sim_benchmark_message(self, message):
         """Handle benchmark echo messages from the sim-poses channel."""
@@ -1418,6 +1438,68 @@ class VisionProStreamer:
                         self._log(f"[BENCHMARK] Sim seq={sequence_id} round-trip={event['round_trip_ms']} ms")
         except (json.JSONDecodeError, ValueError, TypeError):
             pass  # Not a benchmark message, ignore
+
+    def _handle_control_message(self, message):
+        """Handle control messages from VisionOS (JSON)."""
+        try:
+            if isinstance(message, bytes):
+                payload = json.loads(message.decode("utf-8"))
+            elif isinstance(message, str):
+                payload = json.loads(message)
+            else:
+                self._log(f"[CONTROL] Unsupported control message type: {type(message)}", force=True)
+                return
+        except json.JSONDecodeError:
+            self._log("[CONTROL] Failed to decode control message JSON", force=True)
+            return
+
+        command = payload.get("type")
+        if command == "reset":
+            self._log("[CONTROL] Reset command received from VisionOS", force=True)
+            Thread(target=self._handle_reset_request, daemon=True).start()
+        else:
+            self._log(f"[CONTROL] Unknown control command: {command}", force=True)
+
+    def _handle_reset_request(self):
+        """Reset robot (if callback registered) and MuJoCo simulation."""
+        if self._reset_callback is not None:
+            try:
+                self._reset_callback()
+                self._log("[CONTROL] Robot reset callback executed", force=True)
+            except Exception as exc:
+                self._log(f"[CONTROL] Robot reset callback failed: {exc}", force=True)
+
+        self._reset_mujoco_simulation()
+        self._send_control_response({"type": "reset", "status": "ok"})
+
+    def _reset_mujoco_simulation(self):
+        """Reset MuJoCo simulation to its initial state."""
+        if self._mujoco_model is None or self._mujoco_data is None:
+            self._log("[CONTROL] Reset requested but no MuJoCo simulation configured", force=True)
+            return
+
+        try:
+            import mujoco
+
+            mujoco.mj_resetData(self._mujoco_model, self._mujoco_data)
+            mujoco.mj_forward(self._mujoco_model, self._mujoco_data)
+            self._sim_benchmark_seq = 0
+            self.update_sim()
+            self._log("[CONTROL] MuJoCo simulation reset to initial state", force=True)
+        except Exception as exc:
+            self._log(f"[CONTROL] Failed to reset MuJoCo simulation: {exc}", force=True)
+
+    def _send_control_response(self, payload: Dict[str, Any]):
+        """Send a control response back to VisionOS over the control channel."""
+        channel = self._control_channel
+        if channel is None or channel.readyState != "open":
+            self._log("[CONTROL] Control channel not open; cannot send response", force=True)
+            return
+
+        try:
+            channel.send(json.dumps(payload))
+        except Exception as exc:
+            self._log(f"[CONTROL] Failed to send control response: {exc}", force=True)
 
     def _start_hand_tracking(self): 
         """Start the hand tracking gRPC stream in a background thread."""
@@ -1760,6 +1842,8 @@ class VisionProStreamer:
                 self._register_webrtc_data_channel(channel)
             elif channel.label == "sim-poses":
                 self._register_webrtc_sim_channel(channel)
+            elif channel.label == "control":
+                self._register_webrtc_control_channel(channel)
         
         # Send local ICE candidates via signaling
         @pc.on("icecandidate")
@@ -1778,6 +1862,11 @@ class VisionProStreamer:
         hand_channel = pc.createDataChannel("hand-tracking", ordered=True)
         self._register_webrtc_data_channel(hand_channel)
         self._log("[WEBRTC] Created hand-tracking data channel")
+
+        # Control data channel for commands from VisionOS
+        control_channel = pc.createDataChannel("control", ordered=True)
+        self._register_webrtc_control_channel(control_channel)
+        self._log("[WEBRTC] Created control data channel", force=True)
         
         # Create sim-poses data channel if simulation is configured
         if self._sim_config is not None:
@@ -2482,6 +2571,17 @@ class VisionProStreamer:
         """
         self.audio_callback = callback
         self._log(f"[CONFIG] Audio callback registered: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous function'}")
+
+    def register_reset_callback(self, callback: Callable[[], None]):
+        """
+        Register a callback to move the physical robot to its starting position when a
+        reset command is received from VisionOS.
+
+        The callback should perform any necessary homing or safe motion before the MuJoCo
+        simulation is reset.
+        """
+        self._reset_callback = callback
+        self._log("[CONFIG] Reset callback registered for robot homing", force=True)
     
     def update_frame(self, user_frame):
         """

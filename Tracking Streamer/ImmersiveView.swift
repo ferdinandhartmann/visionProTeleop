@@ -366,7 +366,10 @@ struct ImmersiveView: View {
                         set: { newValue in dataManager.videoPlaneFixedToWorld = newValue }
                     ),
                     previewStatusPosition: $previewStatusPosition,
-                    previewStatusActive: $previewStatusActive
+                    previewStatusActive: $previewStatusActive,
+                    onReset: {
+                        videoStreamManager.sendControlCommand(.reset)
+                    }
                 )
             }
             
@@ -761,6 +764,19 @@ class VideoStreamManager: ObservableObject {
             dlog("❌ [DEBUG] URL request failed: \(error.localizedDescription)")
             dlog("💡 [DEBUG] Error domain: \(error.domain), code: \(error.code)")
             throw error
+        }
+    }
+    
+    func sendControlCommand(_ command: ControlCommand) {
+        guard let client = webrtcClient else {
+            dlog("⚠️ [DEBUG] Cannot send control command; WebRTC client is nil")
+            return
+        }
+        let sent = client.sendControlCommand(command)
+        if sent {
+            dlog("✅ [DEBUG] Sent control command: \(command.rawValue)")
+        } else {
+            dlog("⚠️ [DEBUG] Failed to send control command: \(command.rawValue)")
         }
     }
     

@@ -3,6 +3,10 @@ import LiveKitWebRTC
 import SwiftProtobuf
 import UIKit
 
+enum ControlCommand: String {
+    case reset = "reset"
+}
+
 /// Metadata for USDZ file transfer via WebRTC
 struct UsdzTransferMetadata {
     let filename: String
@@ -24,6 +28,7 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
     private var audioTrack: LKRTCAudioTrack?
     private var handDataChannel: LKRTCDataChannel?
     private var simPosesDataChannel: LKRTCDataChannel?  // WebRTC data channel for sim pose streaming
+    private var controlDataChannel: LKRTCDataChannel?
     private var simPosesMessageCount: Int = 0  // Counter for debugging message flow
     private var lastProcessedPoseTimestamp: Double = 0  // For dropping stale frames
     private var handStreamTask: Task<Void, Never>?
@@ -576,6 +581,27 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
             self.pendingAudioRenderer = renderer
         }
     }
+
+    @discardableResult
+    func sendControlCommand(_ command: ControlCommand) -> Bool {
+        let payload: [String: Any] = ["type": command.rawValue]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            dlog("❌ [WebRTC] Failed to encode control command: \(command.rawValue)")
+            return false
+        }
+
+        guard let channel = controlDataChannel, channel.readyState == .open else {
+            dlog("⚠️ [WebRTC] Control channel not ready; cannot send \(command.rawValue)")
+            return false
+        }
+
+        let buffer = LKRTCDataBuffer(data: data, isBinary: false)
+        let sent = channel.sendData(buffer)
+        if !sent {
+            dlog("⚠️ [WebRTC] Failed to send control command over data channel")
+        }
+        return sent
+    }
     
     func disconnect() {
         peerConnection?.close()
@@ -585,6 +611,7 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
         videoTrack = nil
         audioTrack = nil
         stopHandTrackingStream()
+        controlDataChannel = nil
     }
     
     // MARK: - Stats Monitoring
@@ -848,6 +875,10 @@ extension WebRTCClient {
                 DataManager.shared.connectionStatus = "Sim-poses data channel open"
                 DataManager.shared.simEnabled = true
             }
+        } else if dataChannel.label == "control" {
+            controlDataChannel = dataChannel
+            dataChannel.delegate = self
+            dlog("🔔 [WebRTC] Control data channel connected!")
         } else if dataChannel.label == "usdz-transfer" {
             usdzDataChannel = dataChannel
             dataChannel.delegate = self
@@ -887,6 +918,9 @@ extension WebRTCClient: LKRTCDataChannelDelegate {
                  Task { @MainActor in
                      DataManager.shared.connectionStatus = "Sim-poses data channel open"
                  }
+            } else if dataChannel.label == "control" {
+                dlog("🟢 [WebRTC] Control channel OPEN")
+                controlDataChannel = dataChannel
             }
         } else if dataChannel.readyState == .closed || dataChannel.readyState == .closing {
             if dataChannel == handDataChannel {
@@ -900,6 +934,9 @@ extension WebRTCClient: LKRTCDataChannelDelegate {
                 Task { @MainActor in
                     DataManager.shared.connectionStatus = "Sim-poses data channel closed"
                 }
+            } else if dataChannel == controlDataChannel {
+                dlog("⚠️ [WebRTC] Control channel is closing/closed")
+                controlDataChannel = nil
             }
         }
     }
@@ -1042,10 +1079,25 @@ extension WebRTCClient: LKRTCDataChannelDelegate {
             } else {
                 dlog("⚠️ [WebRTC sim-poses] Callback not set, dropping \(floatPoses.count) poses")
             }
+        } else if dataChannel.label == "control" {
+            handleControlMessage(buffer)
         } else if dataChannel.label == "usdz-transfer" {
             handleUsdzMessage(buffer)
         }
         // Other data channels silently ignored
+    }
+
+    private func handleControlMessage(_ buffer: LKRTCDataBuffer) {
+        if buffer.isBinary {
+            dlog("📨 [WebRTC] Control message received (binary, \(buffer.data.count) bytes)")
+            return
+        }
+
+        if let message = String(data: buffer.data, encoding: .utf8) {
+            dlog("📨 [WebRTC] Control message: \(message)")
+        } else {
+            dlog("⚠️ [WebRTC] Control message received but failed to decode text")
+        }
     }
     
     /// Handle incoming USDZ transfer messages

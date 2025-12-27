@@ -89,6 +89,7 @@ struct StatusOverlay: View {
     @Binding var videoFixed: Bool
     @Binding var previewStatusPosition: (x: Float, y: Float)?
     @Binding var previewStatusActive: Bool
+    var onReset: (() -> Void)? = nil
     var mujocoManager: (any MuJoCoManager)?  // Optional MuJoCo manager for combined streaming
     @ObservedObject var dataManager = DataManager.shared
     @ObservedObject private var uvcCameraManager = UVCCameraManager.shared
@@ -119,7 +120,7 @@ struct StatusOverlay: View {
     // Flashing animation for warnings
     @State private var flashingOpacity: Double = 1.0
     
-    init(hasFrames: Binding<Bool> = .constant(false), showVideoStatus: Bool = true, isMinimized: Binding<Bool> = .constant(false), showViewControls: Binding<Bool> = .constant(false), previewZDistance: Binding<Float?> = .constant(nil), previewActive: Binding<Bool> = .constant(false), userInteracted: Binding<Bool> = .constant(false), videoMinimized: Binding<Bool> = .constant(false), videoFixed: Binding<Bool> = .constant(false), previewStatusPosition: Binding<(x: Float, y: Float)?> = .constant(nil), previewStatusActive: Binding<Bool> = .constant(false), mujocoManager: (any MuJoCoManager)? = nil) {
+    init(hasFrames: Binding<Bool> = .constant(false), showVideoStatus: Bool = true, isMinimized: Binding<Bool> = .constant(false), showViewControls: Binding<Bool> = .constant(false), previewZDistance: Binding<Float?> = .constant(nil), previewActive: Binding<Bool> = .constant(false), userInteracted: Binding<Bool> = .constant(false), videoMinimized: Binding<Bool> = .constant(false), videoFixed: Binding<Bool> = .constant(false), previewStatusPosition: Binding<(x: Float, y: Float)?> = .constant(nil), previewStatusActive: Binding<Bool> = .constant(false), onReset: (() -> Void)? = nil, mujocoManager: (any MuJoCoManager)? = nil) {
         self._hasFrames = hasFrames
         self.showVideoStatus = showVideoStatus
         self._isMinimized = isMinimized
@@ -131,6 +132,7 @@ struct StatusOverlay: View {
         self._videoFixed = videoFixed
         self._previewStatusPosition = previewStatusPosition
         self._previewStatusActive = previewStatusActive
+        self.onReset = onReset
         self.mujocoManager = mujocoManager
 //        dlog("🟢 [StatusView] StatusOverlay init called, hasFrames: \(hasFrames.wrappedValue), showVideoStatus: \(showVideoStatus), mujocoEnabled: \(mujocoManager != nil)")
     }
@@ -567,6 +569,25 @@ struct StatusOverlay: View {
                                     .fill(videoFixed ? Color.orange.opacity(0.8) : Color.white.opacity(0.3))
                                     .frame(width: 60, height: 60)
                                 Image(systemName: videoFixed ? "lock.fill" : "lock.open.fill")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    if onReset != nil {
+                        // Reset simulation/robot button
+                        Button {
+                            dlog("🔄 [StatusView] Reset button tapped")
+                            onReset?()
+                            userInteracted = true
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.green.opacity(0.8))
+                                    .frame(width: 60, height: 60)
+                                Image(systemName: "arrow.counterclockwise.circle.fill")
                                     .font(.system(size: 24, weight: .bold))
                                     .foregroundColor(.white)
                             }
