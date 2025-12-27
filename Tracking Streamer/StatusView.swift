@@ -552,7 +552,7 @@ struct StatusOverlay: View {
                         } label: {
                             ZStack {
                                 Circle()
-                                    .fill(hasFrames ? Color.blue.opacity(0.8) : Color.gray.opacity(0.6))
+                                    .fill(dataManager.videoEnabled ? Color.blue.opacity(0.8) : Color.gray.opacity(0.6))
                                     .frame(width: 60, height: 60)
                                 Image(systemName: "video.fill")
                                     .font(.system(size: 24, weight: .bold))
@@ -585,7 +585,7 @@ struct StatusOverlay: View {
                             userInteracted = true
                             resetHighlight = true
                             Task {
-                                try? await Task.sleep(nanoseconds: 800_000_000)
+                                try? await Task.sleep(nanoseconds: 1_600_000_000)
                                 await MainActor.run { resetHighlight = false }
                             }
                         } label: {

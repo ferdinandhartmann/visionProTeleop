@@ -1476,19 +1476,33 @@ class VisionProStreamer:
 
     def _reset_mujoco_simulation(self):
         """Reset MuJoCo simulation to its initial state."""
-        if self._mujoco_model is None or self._mujoco_data is None:
+        if self._sim_config is None or "xml_path" not in self._sim_config:
             self._log("[CONTROL] Reset requested but no MuJoCo simulation configured", force=True)
             return False, "no MuJoCo simulation configured"
 
+        # Try to reload the model and data from the original XML to guarantee a clean state
+        xml_path = self._sim_config.get("xml_path")
         try:
             import mujoco
 
-            mujoco.mj_resetData(self._mujoco_model, self._mujoco_data)
-            mujoco.mj_forward(self._mujoco_model, self._mujoco_data)
+            model = mujoco.MjModel.from_xml_path(xml_path)
+            data = mujoco.MjData(model)
+
+            # Rebuild body maps
+            self._mujoco_model = model
+            self._mujoco_data = data
+            self._mujoco_bodies = {}
+            self._mujoco_clean_names = {}
+            for i in range(model.nbody):
+                body_name = model.body(i).name
+                if body_name:
+                    self._mujoco_bodies[body_name] = i
+                    self._mujoco_clean_names[body_name] = body_name.replace("/", "").replace("-", "") if body_name else body_name
+
             self._sim_benchmark_seq = 0
             self._current_poses = {}
             self.update_sim()
-            self._log("[CONTROL] MuJoCo simulation reset to initial state", force=True)
+            self._log(f"[CONTROL] MuJoCo simulation reloaded from {xml_path}", force=True)
             return True, None
         except Exception as exc:
             self._log(f"[CONTROL] Failed to reset MuJoCo simulation: {exc}", force=True)
