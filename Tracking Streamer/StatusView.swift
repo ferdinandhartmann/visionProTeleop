@@ -552,9 +552,9 @@ struct StatusOverlay: View {
                         } label: {
                             ZStack {
                                 Circle()
-                                    .fill(Color.blue.opacity(0.8))
+                                    .fill(hasFrames ? Color.blue.opacity(0.8) : Color.gray.opacity(0.6))
                                     .frame(width: 60, height: 60)
-                                Image(systemName: videoMinimized ? "video.fill" : "video.slash.fill")
+                                Image(systemName: "video.fill")
                                     .font(.system(size: 24, weight: .bold))
                                     .foregroundColor(.white)
                             }
@@ -599,7 +599,6 @@ struct StatusOverlay: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .disabled(!dataManager.controlChannelReady)
                         .opacity(dataManager.controlChannelReady ? 1.0 : 0.5)
                     }
                     

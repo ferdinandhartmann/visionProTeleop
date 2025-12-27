@@ -595,6 +595,7 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
             config.isOrdered = true
             controlDataChannel = pc.dataChannel(forLabel: "control", configuration: config)
             controlDataChannel?.delegate = self
+            dlog("ℹ️ [WebRTC] Created local control data channel for command \(command.rawValue)")
         }
 
         guard let channel = controlDataChannel, channel.readyState == .open else {
@@ -609,6 +610,10 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
         let sent = channel.sendData(buffer)
         if !sent {
             dlog("⚠️ [WebRTC] Failed to send control command over data channel")
+        } else {
+            Task { @MainActor in
+                DataManager.shared.controlChannelReady = true
+            }
         }
         return sent
     }

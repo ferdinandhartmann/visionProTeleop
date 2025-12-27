@@ -979,7 +979,6 @@ class VisionProStreamer:
         # Sim benchmark state
         self._sim_benchmark_enabled = False
         self._sim_benchmark_seq = 0
-        self._reset_callback = None
         
         # Marker detection state
         self._detected_markers: Dict[int, Dict[str, Any]] = {}  # marker_id -> {"dict": int, "pose": np.ndarray}
@@ -1464,15 +1463,6 @@ class VisionProStreamer:
         """Reset robot (if callback registered) and MuJoCo simulation."""
         status = {"type": "reset", "status": "ok"}
         message = None
-
-        if self._reset_callback is not None:
-            try:
-                self._reset_callback()
-                self._log("[CONTROL] Robot reset callback executed", force=True)
-            except Exception as exc:
-                self._log(f"[CONTROL] Robot reset callback failed: {exc}", force=True)
-                status["status"] = "error"
-                message = f"robot reset failed: {exc}"
 
         sim_ok, sim_msg = self._reset_mujoco_simulation()
         if not sim_ok:
@@ -2587,17 +2577,6 @@ class VisionProStreamer:
         self.audio_callback = callback
         self._log(f"[CONFIG] Audio callback registered: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous function'}")
 
-    def register_reset_callback(self, callback: Callable[[], None]):
-        """
-        Register a callback to move the physical robot to its starting position when a
-        reset command is received from VisionOS.
-
-        The callback should perform any necessary homing or safe motion before the MuJoCo
-        simulation is reset.
-        """
-        self._reset_callback = callback
-        self._log("[CONFIG] Reset callback registered for robot homing", force=True)
-    
     def update_frame(self, user_frame):
         """
         Override the camera frame with a custom frame. The frame will still go through
