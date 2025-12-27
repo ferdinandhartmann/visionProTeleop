@@ -179,9 +179,9 @@ struct CalibrationMarkerLabelView: View {
 /// - UVC camera streaming (USB cameras via Developer Strap)
 struct CombinedStreamingView: View {
     @EnvironmentObject var imageData: ImageData
-    @StateObject private var videoStreamManager = VideoStreamManager()
+    @StateObject private var videoStreamManager: VideoStreamManager
     @StateObject private var appModel = 🥽AppModel()
-    @StateObject private var mujocoManager = CombinedMuJoCoManager()
+    @StateObject private var mujocoManager: CombinedMuJoCoManager
     @StateObject private var uvcCameraManager = UVCCameraManager.shared
     @StateObject private var recordingManager = RecordingManager.shared
     @StateObject private var updateCache = CombinedStreamingUpdateCache()
@@ -254,6 +254,17 @@ struct CombinedStreamingView: View {
     // Palm connections: connect metacarpals across the palm
     private static let palmConnections: [(Int, Int)] = [(5, 10), (10, 15), (15, 20)]
     private static let allBoneConnections: [(Int, Int)] = fingerConnections + forearmConnections + palmConnections
+
+    init() {
+        let videoManager = VideoStreamManager()
+        _videoStreamManager = StateObject(wrappedValue: videoManager)
+
+        let muManager = CombinedMuJoCoManager()
+        muManager.setResetHandler { [weak videoManager] in
+            videoManager?.sendControlCommand(.reset) ?? false
+        }
+        _mujocoManager = StateObject(wrappedValue: muManager)
+    }
     
     var body: some View {
         realityViewContent
@@ -1117,7 +1128,7 @@ struct CombinedStreamingView: View {
                 previewStatusPosition: $previewStatusPosition,
                 previewStatusActive: $previewStatusActive,
                 onReset: {
-                    videoStreamManager.sendControlCommand(.reset)
+                    mujocoManager.resetSimulation()
                 },
                 mujocoManager: mujocoManager
             )
@@ -2144,6 +2155,7 @@ final class CombinedMuJoCoManager: ObservableObject, MuJoCoManager {
     private var lastUpdateTime: Date?
     private var updateTimes: [TimeInterval] = []
     private let maxUpdateSamples = 30  // Average over last 30 updates
+    private var resetHandler: (() -> Bool)? = nil
     
     var onUsdzReceived: ((String, SIMD3<Float>?, simd_quatf?) -> Void)?
     var onPosesReceived: (([String: MujocoAr_BodyPose]) -> Void)?
@@ -2195,6 +2207,19 @@ final class CombinedMuJoCoManager: ObservableObject, MuJoCoManager {
     func updateConnectionStatus(_ status: String) {
         DispatchQueue.main.async {
             self.connectionStatus = status
+        }
+    }
+
+    func setResetHandler(_ handler: @escaping () -> Bool) {
+        resetHandler = handler
+    }
+
+    func resetSimulation() {
+        let sent = resetHandler?() ?? false
+        if !sent {
+            dlog("⚠️ [MuJoCoManager] Control channel not ready; could not send reset command")
+        } else {
+            dlog("✅ [MuJoCoManager] Sent reset command to simulator")
         }
     }
     

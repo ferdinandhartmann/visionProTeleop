@@ -368,7 +368,7 @@ struct ImmersiveView: View {
                     previewStatusPosition: $previewStatusPosition,
                     previewStatusActive: $previewStatusActive,
                     onReset: {
-                        videoStreamManager.sendControlCommand(.reset)
+                        sendResetToSimulator()
                     }
                 )
             }
@@ -719,6 +719,15 @@ class VideoStreamManager: ObservableObject {
                     dlog("❌ [DEBUG] Check connection failed: \(error)")
                 }
             }
+        }
+    }
+
+    private func sendResetToSimulator() {
+        let sent = videoStreamManager.sendControlCommand(.reset)
+        if sent {
+            dlog("✅ [ImmersiveView] Sent reset control command to simulator")
+        } else {
+            dlog("⚠️ [ImmersiveView] Control channel not ready; reset command not sent")
         }
     }
     
