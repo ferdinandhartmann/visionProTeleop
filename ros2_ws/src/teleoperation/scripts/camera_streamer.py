@@ -18,7 +18,7 @@ class CameraStreamer(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('visionpro_ip', '192.168.11.99'),
+                ('visionpro_ip', '192.168.10.113'),
                 ('resolution', '1280x720'),
                 ('camera_input', '/dev/video0'),
                 ('format', 'v4l2'),

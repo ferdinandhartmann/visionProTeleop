@@ -13,14 +13,14 @@ vp_streamer:
     visionpro_ip: "192.168.10.113"
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
-    attach_to: [0.0, 0.3, 0.65, -45.0]    # y-axis goes from viewer straight to the distance
+    attach_to: [0.0, 0.3, 0.65, -55.0]    # y-axis goes from viewer straight to the distance
     update_simulation_hz: 120.0
     force_reload: true
     ###### Camera parameters 
     camera_device: "/dev/video0"
-    camera_resolution: "640x480"
+    camera_resolution: "320x240" #"160x120" #"640x480"
     format: "v4l2"
-    camera_fps: 25
+    camera_fps: 30
 
 camera_streamer:
   ros__parameters:
@@ -46,6 +46,8 @@ teleop_control_cpp:
     pinch_threshold: 0.02
     right_pinch_min: 0.015
     right_pinch_max: 0.150
+
+    scene_z_rotation_attachedto: -140.0   # degrees, should be -90 - same as in "attach_to" in vp_streamer
 
 joint_state_to_mycobot:
   ros__parameters:

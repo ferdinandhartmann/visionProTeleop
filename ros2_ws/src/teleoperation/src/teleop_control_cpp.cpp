@@ -95,6 +95,7 @@ public:
     this->declare_parameter<int>("smoothing_window", 3);
     this->declare_parameter<double>("translation_scale", 1.0);
     this->declare_parameter<double>("rotation_scale", 1.0);
+    this->declare_parameter<double>("scene_z_rotation_attachedto", -50.0);
 
     // Publisher for teleop trigger (enabled/disabled)
     teleop_trigger_pub_ = this->create_publisher<std_msgs::msg::Bool>("/teleop/teleop_enabled", 10);
@@ -104,6 +105,7 @@ public:
     pinch_threshold_ = this->get_parameter("pinch_threshold").as_double();
     right_pinch_min_ = this->get_parameter("right_pinch_min").as_double();
     right_pinch_max_ = this->get_parameter("right_pinch_max").as_double();
+    scene_z_rotation_attachedto_ = this->get_parameter("scene_z_rotation_attachedto").as_double();
 
     smoothing_factor_ = this->get_parameter("smoothing_factor").as_double();
     if (smoothing_factor_ <= 0.0) {
@@ -130,8 +132,8 @@ public:
     }
 
     //publishVpBaseCalibration(Eigen::Matrix4d::Identity());
-    // rot matrix -90 axis Z
-    Eigen::Matrix4d calibration_T = createZRotationMatrix(-90.0); 
+    // rot matrix axis Z
+    Eigen::Matrix4d calibration_T = createZRotationMatrix(scene_z_rotation_attachedto_); 
     calibration_T(0, 3) = 0.0; // Traslación en X
     calibration_T(1, 3) = 0.0; // Traslación en Y
     calibration_T(2, 3) = 0.0; // Traslación en Z
@@ -251,8 +253,8 @@ private:
       just_disabled = true;
       publishTeleopTrigger(false);
       //publishVpBaseCalibration(Eigen::Matrix4d::Identity());
-      // back rot matrix -90 axis Z
-      Eigen::Matrix4d calibration_T = createZRotationMatrix(-90.0);
+      // back rot matrix axis Z
+      Eigen::Matrix4d calibration_T = createZRotationMatrix(scene_z_rotation_attachedto_);
       calibration_T(0, 3) = 0.0;
       calibration_T(1, 3) = 0.0;
       calibration_T(2, 3) = 0.0;
@@ -530,6 +532,7 @@ Eigen::Matrix4d createZRotationMatrix(double degrees)
   double right_pinch_max_{};
   double translation_scale_{1.0};
   double rotation_scale_{1.0};
+  double scene_z_rotation_attachedto_{-50.0};
 
   bool teleop_enabled_{false};
   bool offset_available_{false};

@@ -439,9 +439,9 @@ class VPStreamer(Node):
 
             output += self._motor_gain * motor
 
-            if not hasattr(self, "_last_motor_log") or (self.get_clock().now().nanoseconds - getattr(self, "_last_motor_log", 0)) > 3e8:
-                self.get_logger().info(f"Motor sound generated at speed: {speed}")
-                self._last_motor_log = self.get_clock().now().nanoseconds
+            # if not hasattr(self, "_last_motor_log") or (self.get_clock().now().nanoseconds - getattr(self, "_last_motor_log", 0)) > 3e8:
+            #     self.get_logger().info(f"Motor sound generated at speed: {speed}")
+            #     self._last_motor_log = self.get_clock().now().nanoseconds
 
 
         # ==============================
