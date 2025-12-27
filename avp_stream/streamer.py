@@ -950,6 +950,7 @@ class VisionProStreamer:
         self._benchmark_epoch = time.perf_counter()
         self._benchmark_condition = Condition()
         self._benchmark_events = {}
+        self._reset_callbacks: List[Callable[[Any, Any], None]] = []
         
         # Video/Audio configuration (set by configure_video/configure_audio)
         self._video_config: Optional[Dict[str, Any]] = None
@@ -1474,6 +1475,21 @@ class VisionProStreamer:
 
         self._send_control_response(status)
 
+    def register_reset_callback(self, callback: Callable[[Any, Any], None]):
+        """Register a callback invoked after a successful MuJoCo reset.
+
+        The callback receives the active MuJoCo model and data objects so
+        external code (e.g., ROS bridges) can resync their references.
+        """
+        self._reset_callbacks.append(callback)
+
+    def _notify_reset_callbacks(self, model, data):
+        for callback in list(self._reset_callbacks):
+            try:
+                callback(model, data)
+            except Exception as exc:  # pragma: no cover - best-effort notification
+                self._log(f"[CONTROL] Reset callback failed: {exc}", force=True)
+
     def _reset_mujoco_simulation(self):
         """Reset MuJoCo simulation to its initial state."""
         if self._sim_config is None or "xml_path" not in self._sim_config:
@@ -1485,9 +1501,16 @@ class VisionProStreamer:
         try:
             import mujoco
 
-            # Force a clean reload of the model/data from disk
-            model = mujoco.MjModel.from_xml_path(xml_path)
-            data = mujoco.MjData(model)
+            # Prefer resetting the existing model/data so external references remain valid.
+            # Fall back to reloading from disk if they are missing.
+            if self._mujoco_model is None or self._mujoco_data is None:
+                model = mujoco.MjModel.from_xml_path(xml_path)
+                data = mujoco.MjData(model)
+            else:
+                model = self._mujoco_model
+                data = self._mujoco_data
+                mujoco.mj_resetData(model, data)
+                mujoco.mj_forward(model, data)
 
             # Rebuild body maps
             self._mujoco_model = model
@@ -1522,6 +1545,7 @@ class VisionProStreamer:
 
             self.update_sim()
             self._log(f"[CONTROL] MuJoCo simulation reloaded from {xml_path}", force=True)
+            self._notify_reset_callbacks(model, data)
             return True, None
         except Exception as exc:
             self._log(f"[CONTROL] Failed to reset MuJoCo simulation: {exc}", force=True)
