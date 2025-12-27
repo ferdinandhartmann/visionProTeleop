@@ -11,6 +11,20 @@ import GRPCNIOTransportHTTP2
 import GRPCProtobuf
 import simd
 
+@MainActor
+final class CombinedStreamingUpdateCache {
+    var fixedMarkerTransforms: [Int: Transform] = [:]
+    var cachedLeftJointEntities: [ModelEntity] = []
+    var cachedRightJointEntities: [ModelEntity] = []
+    var cachedLeftBoneEntities: [ModelEntity] = []
+    var cachedRightBoneEntities: [ModelEntity] = []
+    var cachedHandJointsOpacity: Float = -1.0
+    var cachedLeftJointMaterial: RealityKit.Material? = nil
+    var cachedRightJointMaterial: RealityKit.Material? = nil
+    var cachedLeftBoneMaterial: RealityKit.Material? = nil
+    var cachedRightBoneMaterial: RealityKit.Material? = nil
+}
+
 // MARK: - Marker Label View (SwiftUI attachment for real-time text updates)
 
 struct MarkerLabelView: View {
@@ -170,6 +184,7 @@ struct CombinedStreamingView: View {
     @StateObject private var mujocoManager = CombinedMuJoCoManager()
     @StateObject private var uvcCameraManager = UVCCameraManager.shared
     @StateObject private var recordingManager = RecordingManager.shared
+    @StateObject private var updateCache = CombinedStreamingUpdateCache()
     @ObservedObject private var dataManager = DataManager.shared
     @ObservedObject private var markerDetectionManager = MarkerDetectionManager.shared
     @ObservedObject private var extrinsicCalibrationManager = ExtrinsicCalibrationManager.shared
@@ -191,9 +206,7 @@ struct CombinedStreamingView: View {
     @State private var previewStatusActive = false
     @State private var stereoMaterialEntity: Entity? = nil
     @State private var fixedWorldTransform: Transform? = nil
-    @State private var fixedMarkerTransforms: [Int: Transform] = [:]  // Per-marker fixed world transforms
     @State private var uvcFrame: UIImage? = nil  // UVC camera frame
-    @State private var currentVideoFrame: UIImage? = nil  // Current frame for recording
     
     // MuJoCo state
     @State private var mujocoEntity: Entity? = nil
@@ -212,20 +225,6 @@ struct CombinedStreamingView: View {
     
     // Hand joint visualization state
     @State private var handJointUpdateTrigger: UInt64 = 0
-    
-    // Marker visualization state
-    @State private var cachedMarkerEntities: [Int: ModelEntity] = [:]  // markerId -> entity
-    
-    // Cached hand joint entities for performance (avoid repeated findEntity calls)
-    @State private var cachedLeftJointEntities: [ModelEntity] = []
-    @State private var cachedRightJointEntities: [ModelEntity] = []
-    @State private var cachedLeftBoneEntities: [ModelEntity] = []
-    @State private var cachedRightBoneEntities: [ModelEntity] = []
-    @State private var cachedHandJointsOpacity: Float = -1.0  // Track last opacity to avoid unnecessary material updates
-    @State private var cachedLeftJointMaterial: RealityKit.Material? = nil
-    @State private var cachedRightJointMaterial: RealityKit.Material? = nil
-    @State private var cachedLeftBoneMaterial: RealityKit.Material? = nil
-    @State private var cachedRightBoneMaterial: RealityKit.Material? = nil
     
     private let applyInWorldSpace: Bool = true
     
@@ -402,7 +401,6 @@ struct CombinedStreamingView: View {
                         if videoRoot.parent !== headAnchor {
                             videoRoot.setParent(headAnchor, preservingWorldTransform: true)
                         }
-                        fixedWorldTransform = nil
                         var offsetTransform = Transform()
                         offsetTransform.translation = SIMD3<Float>(0.0, targetY, targetZ)
                         if dataManager.videoPlaneAutoPerpendicular {
@@ -458,9 +456,6 @@ struct CombinedStreamingView: View {
                         return
                     }
                     
-                    // Store current frame for recording
-                    currentVideoFrame = displayImage
-                    
                     // Record frame if recording is active (video-driven recording)
                     // Each new video frame captures the latest tracking data
                     if recordingManager.isRecording {
@@ -472,11 +467,6 @@ struct CombinedStreamingView: View {
                     let effectiveWidth = isUVCStereo ? imageWidth / 2 : imageWidth
                     let aspectRatio = Float(effectiveWidth / imageHeight)
                     let scale = dataManager.videoPlaneScale
-                    
-                    if currentAspectRatio == nil || abs(currentAspectRatio! - aspectRatio) > 0.01 {
-                        currentAspectRatio = aspectRatio
-                    }
-                    
                     // Apply scale factor to plane dimensions
                     let planeHeight: Float = 9.6 * scale
                     var planeWidth = planeHeight * aspectRatio
@@ -492,25 +482,6 @@ struct CombinedStreamingView: View {
                     previewEntity?.components[ModelComponent.self]?.mesh = newMesh
                     
                     skyBox.isEnabled = !videoMinimized
-                    
-                    if !hasFrames {
-                        // Mark that we received the first frame
-                        // Use Task to ensure state updates are properly committed
-                        Task { @MainActor in
-                            if !hasFrames {  // Double-check to avoid duplicate triggers
-                                hasFrames = true
-                                // Audio comes with the same WebRTC connection, so mark it as ready too
-                                if dataManager.audioEnabled && !isUVCMode {
-                                    hasAudio = true
-                                }
-                                dlog("🎬 [CombinedStreamingView] First video frame received (source: \(isUVCMode ? "UVC" : "Network")), hasFrames=\(hasFrames)")
-                                // Small delay to ensure state is fully committed
-                                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-                                dlog("🎬 [CombinedStreamingView] Checking auto-minimize after delay")
-                                tryAutoMinimize()
-                            }
-                        }
-                    }
                     
                     // Check stereo mode: UVC uses UVCCameraManager.stereoEnabled, network uses DataManager.stereoEnabled
                     let isStereo = isUVCMode ? UVCCameraManager.shared.stereoEnabled : DataManager.shared.stereoEnabled
@@ -630,10 +601,6 @@ struct CombinedStreamingView: View {
                     }
                 } else {
                     skyBoxEntity?.isEnabled = false
-                    // Only reset hasFrames if we were showing frames before
-                    if hasFrames && !isUVCMode {
-                        hasFrames = false
-                    }
                 }
             }
             
@@ -696,10 +663,10 @@ struct CombinedStreamingView: View {
                     
                     // Cache entity references on first access (avoids repeated findEntity calls)
                     // Use local variables to ensure we have the entities on the same frame
-                    var leftJoints = cachedLeftJointEntities
-                    var rightJoints = cachedRightJointEntities
-                    var leftBones = cachedLeftBoneEntities
-                    var rightBones = cachedRightBoneEntities
+                    var leftJoints = updateCache.cachedLeftJointEntities
+                    var rightJoints = updateCache.cachedRightJointEntities
+                    var leftBones = updateCache.cachedLeftBoneEntities
+                    var rightBones = updateCache.cachedRightBoneEntities
                     
                     if leftJoints.isEmpty {
                         for i in 0..<27 {
@@ -707,7 +674,7 @@ struct CombinedStreamingView: View {
                                 leftJoints.append(entity)
                             }
                         }
-                        cachedLeftJointEntities = leftJoints
+                        updateCache.cachedLeftJointEntities = leftJoints
                     }
                     if rightJoints.isEmpty {
                         for i in 0..<27 {
@@ -715,7 +682,7 @@ struct CombinedStreamingView: View {
                                 rightJoints.append(entity)
                             }
                         }
-                        cachedRightJointEntities = rightJoints
+                        updateCache.cachedRightJointEntities = rightJoints
                     }
                     if leftBones.isEmpty {
                         for (idx, connection) in allConnections.enumerated() {
@@ -723,7 +690,7 @@ struct CombinedStreamingView: View {
                                 leftBones.append(entity)
                             }
                         }
-                        cachedLeftBoneEntities = leftBones
+                        updateCache.cachedLeftBoneEntities = leftBones
                     }
                     if rightBones.isEmpty {
                         for (idx, connection) in allConnections.enumerated() {
@@ -731,7 +698,7 @@ struct CombinedStreamingView: View {
                                 rightBones.append(entity)
                             }
                         }
-                        cachedRightBoneEntities = rightBones
+                        updateCache.cachedRightBoneEntities = rightBones
                     }
                     
                     let trackingData = DataManager.shared.latestHandTrackingData
@@ -740,72 +707,72 @@ struct CombinedStreamingView: View {
                     let opacity = dataManager.handJointsOpacity
                     
                     // Only recreate materials if opacity changed (expensive operation)
-                    let opacityChanged = abs(cachedHandJointsOpacity - opacity) > 0.001
+                    let opacityChanged = abs(updateCache.cachedHandJointsOpacity - opacity) > 0.001
                     if opacityChanged {
-                        cachedHandJointsOpacity = opacity
+                        updateCache.cachedHandJointsOpacity = opacity
                         let cgOpacity = CGFloat(opacity)
                         
                         if opacity >= 0.99 {
                             // Fully opaque - use UnlitMaterial for brighter, unlit appearance
                             var leftJoint = UnlitMaterial()
                             leftJoint.color = .init(tint: UIColor(red: 0.2, green: 0.8, blue: 1.0, alpha: 1.0))
-                            cachedLeftJointMaterial = leftJoint
+                            updateCache.cachedLeftJointMaterial = leftJoint
                             
                             var rightJoint = UnlitMaterial()
                             rightJoint.color = .init(tint: UIColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0))
-                            cachedRightJointMaterial = rightJoint
+                            updateCache.cachedRightJointMaterial = rightJoint
                             
                             var leftBone = UnlitMaterial()
                             leftBone.color = .init(tint: UIColor(red: 0.1, green: 0.6, blue: 0.8, alpha: 1.0))
-                            cachedLeftBoneMaterial = leftBone
+                            updateCache.cachedLeftBoneMaterial = leftBone
                             
                             var rightBone = UnlitMaterial()
                             rightBone.color = .init(tint: UIColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1.0))
-                            cachedRightBoneMaterial = rightBone
+                            updateCache.cachedRightBoneMaterial = rightBone
                         } else {
                             // Transparent - use SimpleMaterial for proper alpha blending
                             var leftJoint = SimpleMaterial()
                             leftJoint.color = .init(tint: UIColor(red: 0.2, green: 0.8, blue: 1.0, alpha: cgOpacity))
                             leftJoint.metallic = 0.0
                             leftJoint.roughness = 1.0
-                            cachedLeftJointMaterial = leftJoint
+                            updateCache.cachedLeftJointMaterial = leftJoint
                             
                             var rightJoint = SimpleMaterial()
                             rightJoint.color = .init(tint: UIColor(red: 1.0, green: 0.6, blue: 0.2, alpha: cgOpacity))
                             rightJoint.metallic = 0.0
                             rightJoint.roughness = 1.0
-                            cachedRightJointMaterial = rightJoint
+                            updateCache.cachedRightJointMaterial = rightJoint
                             
                             var leftBone = SimpleMaterial()
                             leftBone.color = .init(tint: UIColor(red: 0.1, green: 0.6, blue: 0.8, alpha: cgOpacity * 0.9))
                             leftBone.metallic = 0.0
                             leftBone.roughness = 1.0
-                            cachedLeftBoneMaterial = leftBone
+                            updateCache.cachedLeftBoneMaterial = leftBone
                             
                             var rightBone = SimpleMaterial()
                             rightBone.color = .init(tint: UIColor(red: 0.9, green: 0.5, blue: 0.1, alpha: cgOpacity * 0.9))
                             rightBone.metallic = 0.0
                             rightBone.roughness = 1.0
-                            cachedRightBoneMaterial = rightBone
+                            updateCache.cachedRightBoneMaterial = rightBone
                         }
                         
                         // Apply materials to all entities when opacity changes
-                        if let leftMat = cachedLeftJointMaterial {
+                        if let leftMat = updateCache.cachedLeftJointMaterial {
                             for entity in leftJoints {
                                 entity.model?.materials = [leftMat]
                             }
                         }
-                        if let rightMat = cachedRightJointMaterial {
+                        if let rightMat = updateCache.cachedRightJointMaterial {
                             for entity in rightJoints {
                                 entity.model?.materials = [rightMat]
                             }
                         }
-                        if let leftBoneMat = cachedLeftBoneMaterial {
+                        if let leftBoneMat = updateCache.cachedLeftBoneMaterial {
                             for entity in leftBones {
                                 entity.model?.materials = [leftBoneMat]
                             }
                         }
-                        if let rightBoneMat = cachedRightBoneMaterial {
+                        if let rightBoneMat = updateCache.cachedRightBoneMaterial {
                             for entity in rightBones {
                                 entity.model?.materials = [rightBoneMat]
                             }
@@ -939,18 +906,18 @@ struct CombinedStreamingView: View {
                                 // Fixed marker: parent to world anchor, maintain world position
                                 if markerEntity.parent !== markerWorldAnchor {
                                     // Store the transform to apply after re-parenting
-                                    fixedMarkerTransforms[markerId] = transform
+                                    updateCache.fixedMarkerTransforms[markerId] = transform
                                     markerEntity.setParent(markerWorldAnchor, preservingWorldTransform: false)
                                 }
                                 // Apply the fixed transform
-                                if let lockedTransform = fixedMarkerTransforms[markerId] {
+                                if let lockedTransform = updateCache.fixedMarkerTransforms[markerId] {
                                     markerEntity.move(to: lockedTransform, relativeTo: markerWorldAnchor, duration: 0.1, timingFunction: .linear)
                                 }
                             } else {
                                 // Live marker: parent to markerRoot, update from tracking
                                 if markerEntity.parent !== markerRoot {
                                     markerEntity.setParent(markerRoot, preservingWorldTransform: true)
-                                    fixedMarkerTransforms.removeValue(forKey: markerId)
+                                    updateCache.fixedMarkerTransforms.removeValue(forKey: markerId)
                                 }
                                 // Use move for smoother transitions (no flashing)
                                 markerEntity.move(to: transform, relativeTo: markerRoot, duration: 0.05, timingFunction: .linear)
@@ -2535,15 +2502,13 @@ private struct VideoSourceModifiers: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onReceive(imageData.$left) { _ in
-                if dataManager.videoSource == .network {
-                    updateTrigger.toggle()
-                }
+                handleNetworkFrameUpdate()
+            }
+            .onReceive(imageData.$right) { _ in
+                handleNetworkFrameUpdate()
             }
             .onReceive(uvcCameraManager.$currentFrame) { frame in
-                if dataManager.videoSource == .uvcCamera {
-                    uvcFrame = frame
-                    updateTrigger.toggle()
-                }
+                handleUVCFrameUpdate(frame)
             }
             .onChange(of: dataManager.videoSource) { oldValue, newValue in
                 handleVideoSourceChange(oldValue: oldValue, newValue: newValue)
@@ -2554,6 +2519,65 @@ private struct VideoSourceModifiers: ViewModifier {
             .onChange(of: uvcCameraManager.selectedDevice) { oldDevice, newDevice in
                 handleDeviceSelection(oldDevice: oldDevice, newDevice: newDevice)
             }
+    }
+    
+    private func handleNetworkFrameUpdate() {
+        guard dataManager.videoSource == .network else { return }
+        
+        updateTrigger.toggle()
+        
+        guard let left = imageData.left, let right = imageData.right else {
+            updateHasFrames(false)
+            return
+        }
+        
+        updateHasFrames(true)
+        
+        if dataManager.audioEnabled && !hasAudio {
+            hasAudio = true
+        }
+        
+        updateAspectRatioIfNeeded(for: right, isUVCStereo: false)
+    }
+    
+    private func handleUVCFrameUpdate(_ frame: UIImage?) {
+        guard dataManager.videoSource == .uvcCamera else { return }
+        
+        uvcFrame = frame
+        updateTrigger.toggle()
+        
+        guard let frame else {
+            updateHasFrames(false)
+            return
+        }
+        
+        updateHasFrames(true)
+        
+        let width = frame.size.width
+        let height = frame.size.height
+        let effectiveWidth = uvcCameraManager.stereoEnabled ? width / 2 : width
+        let aspectRatio = Float(effectiveWidth / height)
+        updateAspectRatioIfNeeded(aspectRatio)
+    }
+    
+    private func updateHasFrames(_ newValue: Bool) {
+        if hasFrames != newValue {
+            hasFrames = newValue
+        }
+    }
+    
+    private func updateAspectRatioIfNeeded(for image: UIImage, isUVCStereo: Bool) {
+        let width = image.size.width
+        let height = image.size.height
+        let effectiveWidth = isUVCStereo ? width / 2 : width
+        let aspectRatio = Float(effectiveWidth / height)
+        updateAspectRatioIfNeeded(aspectRatio)
+    }
+    
+    private func updateAspectRatioIfNeeded(_ aspectRatio: Float) {
+        if currentAspectRatio == nil || abs(currentAspectRatio! - aspectRatio) > 0.01 {
+            currentAspectRatio = aspectRatio
+        }
     }
     
     private func handleVideoSourceChange(oldValue: VideoSource, newValue: VideoSource) {
