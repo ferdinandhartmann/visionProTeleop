@@ -4621,7 +4621,10 @@ class VisionProStreamer:
                         elif channel.label == "sim-poses":
                             streamer_instance._log("[WEBRTC] Remote sim-poses data channel detected")
                             streamer_instance._register_webrtc_sim_channel(channel)
-                
+                        elif channel.label == "control":
+                            streamer_instance._log("[WEBRTC] Remote control data channel detected")
+                            streamer_instance._register_webrtc_control_channel(channel)
+
                 # Create sim-poses data channel if simulation is configured
                 if streamer_instance._sim_config is not None:
                     # Use unreliable mode for lowest latency (dropped frames are replaced by next update)
@@ -4633,6 +4636,15 @@ class VisionProStreamer:
                     )
                     streamer_instance._register_webrtc_sim_channel(sim_channel)
                     streamer_instance._log("[WEBRTC] Created sim-poses data channel")
+
+                # Always provide a control channel for reset/commands (ordered, reliable)
+                control_channel = pc.createDataChannel(
+                    "control",
+                    ordered=True,
+                    maxRetransmits=0  # reliable because ordered + default retransmits
+                )
+                streamer_instance._register_webrtc_control_channel(control_channel)
+                streamer_instance._log("[WEBRTC] Created control data channel")
 
                 # Create audio track if audio is configured (configure_audio was called)
                 if streamer_instance._audio_config is not None:
