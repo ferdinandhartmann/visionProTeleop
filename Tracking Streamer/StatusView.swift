@@ -106,6 +106,7 @@ struct StatusOverlay: View {
     @State private var showExtrinsicCalibrationSheet: Bool = false
     @State private var showCalibrationWizard: Bool = false
     @State private var startCalibrationVerification: Bool = false
+    @State private var resetHighlight: Bool = false
 
     @ObservedObject private var calibrationManager = CameraCalibrationManager.shared
     @ObservedObject private var extrinsicCalibrationManager = ExtrinsicCalibrationManager.shared
@@ -525,7 +526,7 @@ struct StatusOverlay: View {
                     } label: {
                         ZStack {
                             Circle()
-                                .fill(recordingManager.isRecording ? Color.red : Color.red.opacity(0.8))
+                                .fill(recordingManager.isRecording ? Color.red : Color.gray.opacity(0.6))
                                 .frame(width: 60, height: 60)
                             if recordingManager.isRecording {
                                 // Stop icon (square)
@@ -582,17 +583,24 @@ struct StatusOverlay: View {
                             dlog("🔄 [StatusView] Reset button tapped")
                             onReset?()
                             userInteracted = true
+                            resetHighlight = true
+                            Task {
+                                try? await Task.sleep(nanoseconds: 800_000_000)
+                                await MainActor.run { resetHighlight = false }
+                            }
                         } label: {
                             ZStack {
                                 Circle()
-                                    .fill(Color.green.opacity(0.8))
+                                    .fill(resetHighlight ? Color.green.opacity(0.9) : Color.gray.opacity(0.6))
                                     .frame(width: 60, height: 60)
                                 Image(systemName: "arrow.counterclockwise.circle.fill")
                                     .font(.system(size: 24, weight: .bold))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(resetHighlight ? .white : .white.opacity(0.8))
                             }
                         }
                         .buttonStyle(.plain)
+                        .disabled(!dataManager.controlChannelReady)
+                        .opacity(dataManager.controlChannelReady ? 1.0 : 0.5)
                     }
                     
                     // Exit button
@@ -4588,7 +4596,7 @@ struct StatusPreviewView: View {
             // Recording button (non-functional in preview)
             ZStack {
                 Circle()
-                    .fill(Color.red.opacity(0.8))
+                    .fill(Color.gray.opacity(0.6))
                     .frame(width: 60, height: 60)
                 Circle()
                     .fill(Color.white)

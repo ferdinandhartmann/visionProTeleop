@@ -1462,21 +1462,33 @@ class VisionProStreamer:
 
     def _handle_reset_request(self):
         """Reset robot (if callback registered) and MuJoCo simulation."""
+        status = {"type": "reset", "status": "ok"}
+        message = None
+
         if self._reset_callback is not None:
             try:
                 self._reset_callback()
                 self._log("[CONTROL] Robot reset callback executed", force=True)
             except Exception as exc:
                 self._log(f"[CONTROL] Robot reset callback failed: {exc}", force=True)
+                status["status"] = "error"
+                message = f"robot reset failed: {exc}"
 
-        self._reset_mujoco_simulation()
-        self._send_control_response({"type": "reset", "status": "ok"})
+        sim_ok, sim_msg = self._reset_mujoco_simulation()
+        if not sim_ok:
+            status["status"] = "error"
+            message = sim_msg
+
+        if message:
+            status["message"] = message
+
+        self._send_control_response(status)
 
     def _reset_mujoco_simulation(self):
         """Reset MuJoCo simulation to its initial state."""
         if self._mujoco_model is None or self._mujoco_data is None:
             self._log("[CONTROL] Reset requested but no MuJoCo simulation configured", force=True)
-            return
+            return False, "no MuJoCo simulation configured"
 
         try:
             import mujoco
@@ -1484,10 +1496,13 @@ class VisionProStreamer:
             mujoco.mj_resetData(self._mujoco_model, self._mujoco_data)
             mujoco.mj_forward(self._mujoco_model, self._mujoco_data)
             self._sim_benchmark_seq = 0
+            self._current_poses = {}
             self.update_sim()
             self._log("[CONTROL] MuJoCo simulation reset to initial state", force=True)
+            return True, None
         except Exception as exc:
             self._log(f"[CONTROL] Failed to reset MuJoCo simulation: {exc}", force=True)
+            return False, f"mujoco reset failed: {exc}"
 
     def _send_control_response(self, payload: Dict[str, Any]):
         """Send a control response back to VisionOS over the control channel."""

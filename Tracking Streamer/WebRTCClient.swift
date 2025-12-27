@@ -590,8 +590,18 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
             return false
         }
 
+        if controlDataChannel == nil, let pc = peerConnection {
+            let config = LKRTCDataChannelConfiguration()
+            config.isOrdered = true
+            controlDataChannel = pc.dataChannel(forLabel: "control", configuration: config)
+            controlDataChannel?.delegate = self
+        }
+
         guard let channel = controlDataChannel, channel.readyState == .open else {
             dlog("⚠️ [WebRTC] Control channel not ready; cannot send \(command.rawValue)")
+            Task { @MainActor in
+                DataManager.shared.controlChannelReady = false
+            }
             return false
         }
 
@@ -612,6 +622,9 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
         audioTrack = nil
         stopHandTrackingStream()
         controlDataChannel = nil
+        Task { @MainActor in
+            DataManager.shared.controlChannelReady = false
+        }
     }
     
     // MARK: - Stats Monitoring
@@ -879,6 +892,9 @@ extension WebRTCClient {
             controlDataChannel = dataChannel
             dataChannel.delegate = self
             dlog("🔔 [WebRTC] Control data channel connected!")
+            Task { @MainActor in
+                DataManager.shared.controlChannelReady = true
+            }
         } else if dataChannel.label == "usdz-transfer" {
             usdzDataChannel = dataChannel
             dataChannel.delegate = self
@@ -921,6 +937,9 @@ extension WebRTCClient: LKRTCDataChannelDelegate {
             } else if dataChannel.label == "control" {
                 dlog("🟢 [WebRTC] Control channel OPEN")
                 controlDataChannel = dataChannel
+                Task { @MainActor in
+                    DataManager.shared.controlChannelReady = true
+                }
             }
         } else if dataChannel.readyState == .closed || dataChannel.readyState == .closing {
             if dataChannel == handDataChannel {
@@ -937,6 +956,9 @@ extension WebRTCClient: LKRTCDataChannelDelegate {
             } else if dataChannel == controlDataChannel {
                 dlog("⚠️ [WebRTC] Control channel is closing/closed")
                 controlDataChannel = nil
+                Task { @MainActor in
+                    DataManager.shared.controlChannelReady = false
+                }
             }
         }
     }
