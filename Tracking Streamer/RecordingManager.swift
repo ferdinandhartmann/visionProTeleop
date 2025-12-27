@@ -324,7 +324,7 @@ class RecordingManager: ObservableObject {
         }
         
         // Load auto-recording preference (default to true for auto-record by default)
-        self.autoRecordingEnabled = UserDefaults.standard.object(forKey: "autoRecordingEnabled") as? Bool ?? true
+        self.autoRecordingEnabled = UserDefaults.standard.object(forKey: "autoRecordingEnabled") as? Bool ?? false
         
         // Load cloud provider from keychain (synced from iOS)
         loadCloudSettings()
