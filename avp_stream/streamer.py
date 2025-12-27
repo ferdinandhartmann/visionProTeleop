@@ -1485,6 +1485,7 @@ class VisionProStreamer:
         try:
             import mujoco
 
+            # Force a clean reload of the model/data from disk
             model = mujoco.MjModel.from_xml_path(xml_path)
             data = mujoco.MjData(model)
 
@@ -1499,8 +1500,16 @@ class VisionProStreamer:
                     self._mujoco_bodies[body_name] = i
                     self._mujoco_clean_names[body_name] = body_name.replace("/", "").replace("-", "") if body_name else body_name
 
-            self._sim_benchmark_seq = 0
+            # Reset attachments and pose state
             self._current_poses = {}
+            self._pose_stream_running = False
+            self._sim_benchmark_seq = 0
+
+            # Restart pose streaming if it was active
+            if self._webrtc_sim_channel is not None:
+                self._webrtc_sim_ready = True
+                self._start_pose_streaming_webrtc()
+
             self.update_sim()
             self._log(f"[CONTROL] MuJoCo simulation reloaded from {xml_path}", force=True)
             return True, None
