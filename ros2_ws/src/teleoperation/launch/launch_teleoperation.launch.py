@@ -81,6 +81,8 @@ def generate_launch_description():
         executable="vp_transform_publisher.py",
         name="vp_transform_publisher",
         output="screen",
+        emulate_tty=True,
+        additional_env={"PYTHONUNBUFFERED": "1"},
         parameters=[
             teleop_config,
         ],
@@ -141,6 +143,8 @@ def generate_launch_description():
         executable="camera_streamer.py",
         name="camera_streamer",
         output="screen",
+        emulate_tty=True,
+        additional_env={"PYTHONUNBUFFERED": "1"},
         parameters=[teleop_config],
     )
 
@@ -149,6 +153,8 @@ def generate_launch_description():
         executable="vp_streamer.py",
         name="vp_streamer",
         output="screen",
+        emulate_tty=True,
+        additional_env={"PYTHONUNBUFFERED": "1"},
         parameters=[
             teleop_config,
             {"viewer": "ar"}, # Options: "None", "ar", "mujoco"
