@@ -89,6 +89,7 @@ struct StatusOverlay: View {
     @Binding var videoFixed: Bool
     @Binding var previewStatusPosition: (x: Float, y: Float)?
     @Binding var previewStatusActive: Bool
+    var onReset: (() -> Void)? = nil
     var mujocoManager: (any MuJoCoManager)?  // Optional MuJoCo manager for combined streaming
     @ObservedObject var dataManager = DataManager.shared
     @ObservedObject private var uvcCameraManager = UVCCameraManager.shared
@@ -105,6 +106,7 @@ struct StatusOverlay: View {
     @State private var showExtrinsicCalibrationSheet: Bool = false
     @State private var showCalibrationWizard: Bool = false
     @State private var startCalibrationVerification: Bool = false
+    @State private var resetHighlight: Bool = false
 
     @ObservedObject private var calibrationManager = CameraCalibrationManager.shared
     @ObservedObject private var extrinsicCalibrationManager = ExtrinsicCalibrationManager.shared
@@ -119,7 +121,7 @@ struct StatusOverlay: View {
     // Flashing animation for warnings
     @State private var flashingOpacity: Double = 1.0
     
-    init(hasFrames: Binding<Bool> = .constant(false), showVideoStatus: Bool = true, isMinimized: Binding<Bool> = .constant(false), showViewControls: Binding<Bool> = .constant(false), previewZDistance: Binding<Float?> = .constant(nil), previewActive: Binding<Bool> = .constant(false), userInteracted: Binding<Bool> = .constant(false), videoMinimized: Binding<Bool> = .constant(false), videoFixed: Binding<Bool> = .constant(false), previewStatusPosition: Binding<(x: Float, y: Float)?> = .constant(nil), previewStatusActive: Binding<Bool> = .constant(false), mujocoManager: (any MuJoCoManager)? = nil) {
+    init(hasFrames: Binding<Bool> = .constant(false), showVideoStatus: Bool = true, isMinimized: Binding<Bool> = .constant(false), showViewControls: Binding<Bool> = .constant(false), previewZDistance: Binding<Float?> = .constant(nil), previewActive: Binding<Bool> = .constant(false), userInteracted: Binding<Bool> = .constant(false), videoMinimized: Binding<Bool> = .constant(false), videoFixed: Binding<Bool> = .constant(false), previewStatusPosition: Binding<(x: Float, y: Float)?> = .constant(nil), previewStatusActive: Binding<Bool> = .constant(false), onReset: (() -> Void)? = nil, mujocoManager: (any MuJoCoManager)? = nil) {
         self._hasFrames = hasFrames
         self.showVideoStatus = showVideoStatus
         self._isMinimized = isMinimized
@@ -131,6 +133,7 @@ struct StatusOverlay: View {
         self._videoFixed = videoFixed
         self._previewStatusPosition = previewStatusPosition
         self._previewStatusActive = previewStatusActive
+        self.onReset = onReset
         self.mujocoManager = mujocoManager
 //        dlog("🟢 [StatusView] StatusOverlay init called, hasFrames: \(hasFrames.wrappedValue), showVideoStatus: \(showVideoStatus), mujocoEnabled: \(mujocoManager != nil)")
     }
@@ -523,7 +526,7 @@ struct StatusOverlay: View {
                     } label: {
                         ZStack {
                             Circle()
-                                .fill(recordingManager.isRecording ? Color.red : Color.red.opacity(0.8))
+                                .fill(recordingManager.isRecording ? Color.red : Color.gray.opacity(0.6))
                                 .frame(width: 60, height: 60)
                             if recordingManager.isRecording {
                                 // Stop icon (square)
@@ -549,9 +552,9 @@ struct StatusOverlay: View {
                         } label: {
                             ZStack {
                                 Circle()
-                                    .fill(Color.blue.opacity(0.8))
+                                    .fill(dataManager.videoEnabled && !videoMinimized ? Color.blue.opacity(0.8) : Color.gray.opacity(0.6))
                                     .frame(width: 60, height: 60)
-                                Image(systemName: videoMinimized ? "video.fill" : "video.slash.fill")
+                                Image(systemName: "video.fill")
                                     .font(.system(size: 24, weight: .bold))
                                     .foregroundColor(.white)
                             }
@@ -572,6 +575,31 @@ struct StatusOverlay: View {
                             }
                         }
                         .buttonStyle(.plain)
+                    }
+                    
+                    if onReset != nil {
+                        // Reset simulation/robot button
+                        Button {
+                            dlog("🔄 [StatusView] Reset button tapped")
+                            onReset?()
+                            userInteracted = true
+                            resetHighlight = true
+                            Task {
+                                try? await Task.sleep(nanoseconds: 1_600_000_000)
+                                await MainActor.run { resetHighlight = false }
+                            }
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(resetHighlight ? Color.green.opacity(0.9) : Color.gray.opacity(0.6))
+                                    .frame(width: 60, height: 60)
+                                Image(systemName: "arrow.counterclockwise.circle.fill")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(resetHighlight ? .white : .white.opacity(0.8))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .opacity(dataManager.controlChannelReady ? 1.0 : 0.5)
                     }
                     
                     // Exit button
@@ -4567,7 +4595,7 @@ struct StatusPreviewView: View {
             // Recording button (non-functional in preview)
             ZStack {
                 Circle()
-                    .fill(Color.red.opacity(0.8))
+                    .fill(Color.gray.opacity(0.6))
                     .frame(width: 60, height: 60)
                 Circle()
                     .fill(Color.white)

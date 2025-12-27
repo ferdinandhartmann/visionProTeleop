@@ -318,6 +318,7 @@ class DataManager: ObservableObject {
     @Published var audioEnabled: Bool = false  // Whether audio track is present at all
     @Published var videoEnabled: Bool = false  // Whether video track is present at all
     @Published var simEnabled: Bool = false    // Whether simulation is enabled
+    @Published var controlChannelReady: Bool = false  // Whether control data channel is open
     @Published var crossNetworkRoomCode: String? = nil  // Room code for cross-network mode (nil = local mode)
     
     // USDZ scene loaded via WebRTC (cross-network mode)

@@ -1116,6 +1116,9 @@ struct CombinedStreamingView: View {
                 ),
                 previewStatusPosition: $previewStatusPosition,
                 previewStatusActive: $previewStatusActive,
+                onReset: {
+                    videoStreamManager.sendControlCommand(.reset)
+                },
                 mujocoManager: mujocoManager
             )
         }
