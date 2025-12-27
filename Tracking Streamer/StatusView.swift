@@ -577,6 +577,7 @@ struct StatusOverlay: View {
                     // Exit button
                     Button {
                         dlog("🔴 [StatusView] Exit button tapped (minimized)")
+                        exit(0)
                         withAnimation {
                             showLocalExitConfirmation = true
                         }
@@ -647,6 +648,7 @@ struct StatusOverlay: View {
                 
                 Button {
                     dlog("🔴 [StatusView] Exit button tapped (expanded)")
+                    exit(0)
                     withAnimation {
                         showLocalExitConfirmation = true
                     }
@@ -2157,7 +2159,7 @@ struct StatusOverlay: View {
                             if !Task.isCancelled { previewActive = false }
                         }
                     }
-                ), in: 0.5...2.0, step: 0.1)
+                ), in: 0.2...3.0, step: 0.1)
                 .tint(.purple)
             }
             
@@ -2186,7 +2188,7 @@ struct StatusOverlay: View {
                             if !Task.isCancelled { previewZDistance = nil }
                         }
                     }
-                ), in: 2.0...20.0, step: 0.5)
+                ), in: 1.0...25.0, step: 0.5)
                 .tint(.blue)
             }
             
@@ -2214,7 +2216,7 @@ struct StatusOverlay: View {
                             if !Task.isCancelled { previewActive = false }
                         }
                     }
-                ), in: -2.0...2.0, step: 0.1)
+                ), in: -3.0...3.0, step: 0.1)
                 .tint(.green)
             }
             
@@ -2249,11 +2251,11 @@ struct StatusOverlay: View {
                 .buttonStyle(.plain)
                 
                 Button {
-                    dataManager.videoPlaneScale = 1.0
+                    dataManager.videoPlaneScale = 0.8
                     dataManager.videoPlaneZDistance = -10.0
                     dataManager.videoPlaneYPosition = 0.0
                     dataManager.videoPlaneAutoPerpendicular = false
-                    previewZDistance = -10.0
+                    previewZDistance = -12.0
                     previewActive = true
                     hidePreviewTask?.cancel()
                     hidePreviewTask = Task { @MainActor in
@@ -2504,7 +2506,7 @@ struct StatusOverlay: View {
                             ) {
                                 recordingManager.storageLocation = .cloud
                                 recordingManager.cloudProvider = .iCloudDrive
-                                KeychainManager.shared.save(CloudStorageProvider.iCloudDrive.rawValue, forKey: .selectedCloudProvider)
+                                // KeychainManager.shared.save(CloudStorageProvider.iCloudDrive.rawValue, forKey: .selectedCloudProvider)
                             }
                             
                             storageOptionRow(
@@ -2517,7 +2519,7 @@ struct StatusOverlay: View {
                             ) {
                                 recordingManager.storageLocation = .cloud
                                 recordingManager.cloudProvider = .googleDrive
-                                KeychainManager.shared.save(CloudStorageProvider.googleDrive.rawValue, forKey: .selectedCloudProvider)
+                                // KeychainManager.shared.save(CloudStorageProvider.googleDrive.rawValue, forKey: .selectedCloudProvider)
                             }
                             
                             storageOptionRow(
@@ -2530,7 +2532,7 @@ struct StatusOverlay: View {
                             ) {
                                 recordingManager.storageLocation = .cloud
                                 recordingManager.cloudProvider = .dropbox
-                                KeychainManager.shared.save(CloudStorageProvider.dropbox.rawValue, forKey: .selectedCloudProvider)
+                                // KeychainManager.shared.save(CloudStorageProvider.dropbox.rawValue, forKey: .selectedCloudProvider)
                             }
                         }
                     }

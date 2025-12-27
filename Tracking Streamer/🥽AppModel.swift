@@ -487,10 +487,10 @@ class DataManager: ObservableObject {
         
         // Use local vars for checks to avoid accessing self before full init
         let savedZ = UserDefaults.standard.float(forKey: "videoPlaneZDistance")
-        self.videoPlaneZDistance = (savedZ == 0) ? 1.6 : savedZ
+        self.videoPlaneZDistance = (savedZ == 0) ? 10.0 : savedZ
         
         let savedY = UserDefaults.standard.float(forKey: "videoPlaneYPosition")
-        self.videoPlaneYPosition = (savedY == 0) ? 1.5 : savedY
+        self.videoPlaneYPosition = (savedY == 0) ? 12.0 : savedY
         
         self.videoPlaneAutoPerpendicular = UserDefaults.standard.object(forKey: "videoPlaneAutoPerpendicular") as? Bool ?? true
         
@@ -525,7 +525,7 @@ class DataManager: ObservableObject {
         // Load saved hand prediction offset or default to 0.033 (33ms)
         self.handPredictionOffset = UserDefaults.standard.object(forKey: "handPredictionOffset") as? Float ?? 0.033
         // Load saved video plane scale or default to 1.0 (100%)
-        self.videoPlaneScale = UserDefaults.standard.object(forKey: "videoPlaneScale") as? Float ?? 1.0
+        self.videoPlaneScale = UserDefaults.standard.object(forKey: "videoPlaneScale") as? Float ?? 0.8
         // Load saved stereo baseline offset or default to 0.0 (no adjustment)
         self.stereoBaselineOffset = UserDefaults.standard.object(forKey: "stereoBaselineOffset") as? Float ?? 0.0
     }

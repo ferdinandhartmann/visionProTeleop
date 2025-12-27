@@ -183,14 +183,14 @@ struct ContentView: View {
                     onboardingState = .cloudSignInPrompt
                 }
             } else {
-                // User opted out of sign-in, but still try to show iOS promo
-                if !dontShowIOSPromoAgain {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        onboardingState = .iosAppShowcaseAfterSkip
-                    }
-                } else {
+//                // User opted out of sign-in, but still try to show iOS promo
+//                if !dontShowIOSPromoAgain {
+//                    withAnimation(.easeInOut(duration: 0.25)) {
+//                        onboardingState = .iosAppShowcaseAfterSkip
+//                    }
+//                } else {
                     proceedToImmersiveSpace()
-                }
+//                }
             }
             return
         }
@@ -263,9 +263,10 @@ struct ContentView: View {
                                 endPoint: .trailing
                             )
                         )
-                        .cornerRadius(16)
+                        .clipShape(Capsule()) // make button shape match system gaze highlight
                 }
                 .buttonStyle(.plain)
+
                 
                 // Arrows flowing right (from button toward hand tracking)
                 AnimatedArrows(color: Color(hex: "#6366F1"))
