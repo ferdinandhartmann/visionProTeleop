@@ -66,6 +66,20 @@ class VPStreamer(Node):
             descriptor=ParameterDescriptor(description="MuJoCo scene to stream."),
         )
         self.declare_parameter("update_simulation_hz", 60.0)
+        self.declare_parameter(
+            "initial_joint_positions_deg",
+            [0.0, 30.0, -90.0, 0.0, 0.0, 45.0],
+            descriptor=ParameterDescriptor(
+                description="Initial joint angles (degrees) used when issuing a reset."
+            ),
+        )
+        self.declare_parameter(
+            "initial_gripper_percent",
+            100.0,
+            descriptor=ParameterDescriptor(
+                description="Initial gripper percentage used when issuing a reset."
+            ),
+        )
 
         params = self._load_params()
         
@@ -162,12 +176,20 @@ class VPStreamer(Node):
         self.joint_sub = self.create_subscription(JointState, joint_topic, self._joint_state_cb, qos)
         self.get_logger().info(f"Listening for joint states on {joint_topic}")
 
+        # Publishers used to force-reset joint state topics when a MuJoCo reset occurs.
+        self.reset_joint_publishers = [
+            self.create_publisher(JointState, joint_topic, 10),
+            self.create_publisher(JointState, "/joint_states", 10),
+        ]
+
         self._latest_joint_state: Dict[str, float] = {}
         self._joint_state_lock = threading.Lock()
-        
+        self._initial_joint_state = self._build_initial_joint_state(params)
+        self._initial_gripper_percent = params["initial_gripper_percent"]
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        
+
         self.ee_fk_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame"
         )
@@ -175,6 +197,9 @@ class VPStreamer(Node):
         self.ee_target_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
         )
+
+        # Listen for reset events from the VisionProStreamer so we can re-publish joint states.
+        self.streamer.register_reset_callback(self._on_streamer_reset)
 
 
 
@@ -193,6 +218,12 @@ class VPStreamer(Node):
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
+        initial_joint_positions_deg = list(
+            self.get_parameter("initial_joint_positions_deg").get_parameter_value().double_array_value
+        )
+        initial_gripper_percent = (
+            self.get_parameter("initial_gripper_percent").get_parameter_value().double_value
+        )
         return {
             "viewer": viewer,
             "visionpro_ip": visionpro_ip,
@@ -208,7 +239,29 @@ class VPStreamer(Node):
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
+            "initial_joint_positions_deg": initial_joint_positions_deg,
+            "initial_gripper_percent": initial_gripper_percent,
         }
+
+    def _build_initial_joint_state(self, params: Dict[str, object]) -> Dict[str, float]:
+        """Return the initial joint state mapping in radians keyed by joint name."""
+        initial_deg: List[float] = params.get("initial_joint_positions_deg", [])
+        if len(initial_deg) != 6:
+            self.get_logger().warn(
+                "initial_joint_positions_deg must contain 6 values; falling back to zeros."
+            )
+            initial_deg = [0.0] * 6
+
+        initial_rad = [np.deg2rad(v) for v in initial_deg]
+        joint_names = [
+            "joint1",
+            "joint2",
+            "joint3",
+            "joint4",
+            "joint5",
+            "joint6",
+        ]
+        return dict(zip(joint_names, initial_rad))
         
 
     def _build_joint_mapping(self, mujoco) -> Dict[str, int]:
@@ -340,6 +393,41 @@ class VPStreamer(Node):
 
         except (LookupException, ConnectivityException, ExtrapolationException):
             pass
+
+    def _publish_initial_joint_states(self) -> None:
+        """Publish initial joint states on both ROS topics after a reset."""
+        joint_names = [
+            "joint1",
+            "joint2",
+            "joint3",
+            "joint4",
+            "joint5",
+            "joint6",
+            "gripper_controller",
+        ]
+        positions = [self._initial_joint_state.get(name, 0.0) for name in joint_names[:-1]]
+        positions.append(self._initial_gripper_percent)
+
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = joint_names
+        msg.position = positions
+        msg.velocity = [0.0] * len(positions)
+
+        for pub in self.reset_joint_publishers:
+            pub.publish(msg)
+
+    def _set_latest_joint_state_to_initial(self) -> None:
+        with self._joint_state_lock:
+            self._latest_joint_state = dict(self._initial_joint_state)
+            self._latest_joint_state["gripper_controller"] = self._initial_gripper_percent
+
+    def _on_streamer_reset(self, model, data) -> None:
+        self.get_logger().info("MuJoCo reset detected; republishing initial joint states.")
+        self._set_latest_joint_state_to_initial()
+        # Apply immediately to simulation state
+        self._apply_joint_state()
+        self._publish_initial_joint_states()
 
 
             

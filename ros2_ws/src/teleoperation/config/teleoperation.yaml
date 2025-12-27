@@ -16,6 +16,8 @@ vp_streamer:
     attach_to: [0.0, 0.3, 0.65, -55.0]    # y-axis goes from viewer straight to the distance
     update_simulation_hz: 120.0
     force_reload: true
+    initial_joint_positions_deg: [0.0, 30.0, -90.0, 0.0, 0.0, 45.0]
+    initial_gripper_percent: 100.0
     ###### Camera parameters 
     camera_device: "/dev/video0"
     camera_resolution: "320x240" #"160x120" #"640x480"
@@ -93,4 +95,3 @@ sam_client:
 
     add_to_mujoco: true
     mujoco_scene_name: "scene_mycobot"
-
