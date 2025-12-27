@@ -1505,6 +1505,11 @@ class VisionProStreamer:
             self._pose_stream_running = False
             self._sim_benchmark_seq = 0
 
+            # Reload and send USDZ/scene the same way as initial load
+            attach_to = self._sim_config.get("attach_to")
+            grpc_port = self._sim_config.get("grpc_port", 50051)
+            self._load_and_send_mujoco_scene(attach_to, grpc_port)
+
             # Restart pose streaming if it was active
             if self._webrtc_sim_channel is not None:
                 self._webrtc_sim_ready = True
