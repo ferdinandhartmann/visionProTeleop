@@ -12,7 +12,7 @@ import GRPCProtobuf
 import simd
 
 @MainActor
-final class CombinedStreamingUpdateCache {
+final class CombinedStreamingUpdateCache: ObservableObject {
     var fixedMarkerTransforms: [Int: Transform] = [:]
     var cachedLeftJointEntities: [ModelEntity] = []
     var cachedRightJointEntities: [ModelEntity] = []
@@ -271,6 +271,7 @@ struct CombinedStreamingView: View {
                 uvcFrame: $uvcFrame,
                 updateTrigger: $updateTrigger,
                 hasFrames: $hasFrames,
+                hasAudio: $hasAudio,
                 currentAspectRatio: $currentAspectRatio
             ))
             .modifier(LifecycleModifiers(
@@ -2500,6 +2501,7 @@ private struct VideoSourceModifiers: ViewModifier {
     @Binding var uvcFrame: UIImage?
     @Binding var updateTrigger: Bool
     @Binding var hasFrames: Bool
+    @Binding var hasAudio: Bool
     @Binding var currentAspectRatio: Float?
     
     func body(content: Content) -> some View {
