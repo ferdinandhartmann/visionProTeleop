@@ -95,13 +95,17 @@ class KeychainManager {
         var dataTypeRef: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
         
-        if status == errSecSuccess, let data = dataTypeRef as? Data {
-            dlog("✅ [KeychainManager] Loaded \(key.rawValue) from keychain")
-            return data
-        } else if status == errSecItemNotFound {
-            // dlog("ℹ️ [KeychainManager] Key \(key.rawValue) not found in keychain")
+        switch status {
+        case errSecSuccess:
+            if let data = dataTypeRef as? Data {
+                dlog("✅ [KeychainManager] Loaded \(key.rawValue) from keychain")
+                return data
+            }
             return nil
-        } else {
+        case errSecItemNotFound, errSecMissingEntitlement:
+            // Treat missing values or entitlements as non-errors to avoid noisy logs when the user hasn't configured cloud storage.
+            return nil
+        default:
             dlog("❌ [KeychainManager] Failed to load \(key.rawValue): \(status)")
             return nil
         }
