@@ -188,28 +188,23 @@ class VPStreamer(Node):
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
         )
         
-        # To reset visual target frame when resetting
+        # FOR RESET
+        self.streamer.register_reset_callback(self._on_streamer_reset)
+
+        self.ee_target_pub = self.create_publisher(TeleopTarget, "/teleop/ee_target", 10)
+       
         self._tf_pub = TransformBroadcaster(self)
         self._reset_tf_msg = None
         self._reset_tf_frames_left = 0
-        self._reset_target_min_time = None
-
-
-        # Listen for reset events from the VisionProStreamer so we can re-publish joint states.
-        self.streamer.register_reset_callback(self._on_streamer_reset)
-        self.get_logger().info(f"Registered reset callback with streamer id={id(self.streamer)}")
-        self.get_logger().info("VPStreamer initialized and listening for reset events.")
-
-        # Publisher for TeleopTarget messages (pose + gripper)
-        self.ee_target_pub = self.create_publisher(TeleopTarget, "/teleop/ee_target", 10)
-
+        self._reset_target_min_time = None        
         self._reset_requested = False
         self._reset_lock = threading.Lock()
         self._pending_model = None
         self._pending_data = None
         self._reset_state = "idle"
         self._skip_joint_apply_frames = 0
-
+        
+        self.get_logger().info("VPStreamer initialized and listening for reset events.")
         
 
     def _load_params(self) -> Dict[str, object]:
@@ -341,12 +336,8 @@ class VPStreamer(Node):
 
                 self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
 
-                self.ee_fk_body_id = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame"
-                )
-                self.ee_target_body_id = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
-                )
+                self.ee_fk_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame")
+                self.ee_target_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame")
                 
                 self._hard_reset_mujoco_state()
 
@@ -363,7 +354,8 @@ class VPStreamer(Node):
                     
                 time.sleep(0.6)  # brief pause to ensure stability after reset
                 
-                # Publish a tf so that ee_target_offset_mycobot_base_vis matches gripper_ee for visual
+                # Publish a tf so that ee_target_offset_mycobot_base_vis snaps to gripper_ee 
+                # (tf doesnt work only direct modification but left it anyways)
                 try:
                     tf_fk = self.tf_buffer.lookup_transform("mycobot_base", "gripper_ee", rclpy.time.Time(seconds=0))
 
@@ -420,7 +412,7 @@ class VPStreamer(Node):
         # 1) reset dynamic state
         mujoco.mj_resetData(self.model, self.data)
 
-        # 2) put robot in a known good configuration (critical)
+        # 2) put robot in a known good configuration
         with self._joint_state_lock:
             joint_init = {
                 "joint1": 0.0,
@@ -438,7 +430,7 @@ class VPStreamer(Node):
                 continue
             self.data.qpos[idx] = float(position)
 
-        # gripper mapping (use your existing mapping)
+        # gripper mapping
         idx = self.joint_name_to_qpos.get("gripper_controller")
         if idx is not None:
             gl0, gu0 = -0.25, 0.8
@@ -461,7 +453,7 @@ class VPStreamer(Node):
 
         self.data.time = 0.0
 
-        # 4) rebuild derived quantities once (critical before stepping)
+        # 4) rebuild derived quantities once (before any mj_step calls)
         mujoco.mj_forward(self.model, self.data)
 
 
