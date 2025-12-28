@@ -1377,6 +1377,9 @@ class VisionProStreamer:
             self._log("[WEBRTC] Sim-poses data channel closed", force=True)
             # Stop pose streaming so we can cleanly restart when the channel reopens
             self._stop_pose_streaming()
+            # Force a fresh USDZ send on next connection (VisionOS likely dropped the scene)
+            self._usdz_sent = False
+            self._usdz_transfer_complete = False
             self._webrtc_sim_ready = False
             self._webrtc_sim_channel = None
 
