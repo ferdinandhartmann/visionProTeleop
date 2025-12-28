@@ -1343,6 +1343,16 @@ class VisionProStreamer:
         def _on_open():
             self._log("[WEBRTC] Sim-poses data channel opened", force=True)
             self._webrtc_sim_ready = True
+            # Force USDZ to be resent on each channel open so the model appears after reconnect/reset
+            self._usdz_sent = False
+            self._usdz_transfer_complete = False
+            if self._sim_config is not None:
+                # Default to waiting for USDZ transfer before streaming to avoid “poses without model”
+                self._sim_config.setdefault("wait_for_usdz_transfer", True)
+                attach_to = self._sim_config.get("attach_to")
+                grpc_port = self._sim_config.get("grpc_port", 50051)
+                self._log("[WEBRTC] Triggering USDZ send on sim-poses open...", force=True)
+                self._load_and_send_mujoco_scene(attach_to, grpc_port)
             
             # Start pose streaming with thread-based approach
             import threading
