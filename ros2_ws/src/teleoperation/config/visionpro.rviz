@@ -41,6 +41,8 @@ Visualization Manager:
           Value: true
         ee_target_offset_mycobot_base:
           Value: true
+        ee_target_offset_mycobot_base_vis:
+          Value: true
         gripper_base:
           Value: true
         gripper_ee:
@@ -195,6 +197,8 @@ Visualization Manager:
           mycobot_base:
             ee_target_offset_mycobot_base:
               {}
+            ee_target_offset_mycobot_base_vis:
+              {}
             gripper_ee:
               {}
             link1:
@@ -316,32 +320,6 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /visionpro/hand_markers
       Value: true
-    - Alpha: 1
-      Class: rviz_default_plugins/RobotModel
-      Collision Enabled: false
-      Description File: ""
-      Description Source: Topic
-      Description Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: ""
-      Enabled: true
-      Links:
-        All Links Enabled: true
-        Expand Joint Details: false
-        Expand Link Details: false
-        Expand Tree: false
-        Link Tree Style: ""
-      Mass Properties:
-        Inertia: false
-        Mass: false
-      Name: RobotModel
-      TF Prefix: ""
-      Update Interval: 0
-      Value: true
-      Visual Enabled: true
     - Alpha: 1
       Axes Length: 0.10000000149011612
       Axes Radius: 0.009999999776482582

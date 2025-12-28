@@ -29,6 +29,8 @@ from avp_stream import VisionProStreamer
 from tf2_ros import Buffer, TransformListener
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 from teleoperation.msg import TeleopTarget
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import TransformBroadcaster
 
     # import avp_stream, inspect
     # print("USING avp_stream from:", avp_stream.__file__, flush=True)
@@ -71,20 +73,6 @@ class VPStreamer(Node):
             descriptor=ParameterDescriptor(description="MuJoCo scene to stream."),
         )
         self.declare_parameter("update_simulation_hz", 60.0)
-        self.declare_parameter(
-            "initial_joint_positions_deg",
-            [0.0, 30.0, -90.0, 0.0, 0.0, 45.0],
-            descriptor=ParameterDescriptor(
-                description="Initial joint angles (degrees) used when issuing a reset."
-            ),
-        )
-        self.declare_parameter(
-            "initial_gripper_percent",
-            100.0,
-            descriptor=ParameterDescriptor(
-                description="Initial gripper percentage used when issuing a reset."
-            ),
-        )
 
         # Parameters for publishing a TeleopTarget when MuJoCo is reset
         self.declare_parameter("ee_target_on_reset_position", [0.109, -0.063, 0.314])
@@ -199,6 +187,13 @@ class VPStreamer(Node):
         self.ee_target_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
         )
+        
+        # To reset visual target frame when resetting
+        self._tf_pub = TransformBroadcaster(self)
+        self._reset_tf_msg = None
+        self._reset_tf_frames_left = 0
+        self._reset_target_min_time = None
+
 
         # Listen for reset events from the VisionProStreamer so we can re-publish joint states.
         self.streamer.register_reset_callback(self._on_streamer_reset)
@@ -352,8 +347,7 @@ class VPStreamer(Node):
                 self.ee_target_body_id = mujoco.mj_name2id(
                     self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
                 )
-
-
+                
                 self._hard_reset_mujoco_state()
 
                 self._publish_ee_target_on_reset()
@@ -361,27 +355,50 @@ class VPStreamer(Node):
                 self._pending_model = None
                 self._pending_data = None
                 self._reset_state = "idle"
-                self._skip_joint_apply_frames = 30
+                self._skip_joint_apply_frames = 1
                 
                 with self._joint_state_lock:
                     self._latest_joint_state.clear()
                     self.get_logger().info("Cleared joint state buffer on reset.")
+                    
+                time.sleep(0.6)  # brief pause to ensure stability after reset
+                
+                # Publish a tf so that ee_target_offset_mycobot_base_vis matches gripper_ee for visual
+                try:
+                    tf_fk = self.tf_buffer.lookup_transform("mycobot_base", "gripper_ee", rclpy.time.Time(seconds=0))
 
+                    tf_msg = TransformStamped()
+                    tf_msg.header.frame_id = "mycobot_base"
+                    tf_msg.child_frame_id = "ee_target_offset_mycobot_base_vis"
+                    tf_msg.transform = tf_fk.transform
+
+                    self._reset_tf_msg = tf_msg
+                    self._reset_tf_frames_left = 5
+
+                    # Also snap the MuJoCo target to the gripper immediately on reset.
+                    self._set_mocap_from_tf(self.ee_target_body_id, tf_fk)
+                    mujoco.mj_forward(self.model, self.data)
+                    self._reset_target_min_time = self.get_clock().now()
+
+                    self.get_logger().info("Armed reset TF publish window for ee_target_offset_mycobot_base_vis")
+                except (LookupException, ConnectivityException, ExtrapolationException):
+                    # Clear the target mocap to avoid freezing at a stale pose.
+                    self._clear_target_mocap()
+                    self._reset_target_min_time = self.get_clock().now()
+                    self.get_logger().info("Could not lookup transform from mycobot_base to gripper_ee for ee_target_offset_mycobot_base_vis; cleared target mocap")
+                    pass
 
                 return 
 
-            # If we were notified that a reset is starting but the new model/data
-            # have not yet been provided, enter paused mode: stop applying
-            # incoming joint states and skip stepping until final notify arrives.
             if self._reset_state == "paused":
-                self.get_logger().info("MuJoCo reset pending; waiting for new model/data...")
-                
-                # While paused do nothing (skip apply/step). This keeps the
-                # simulation thread idle until the streamer provides the new
-                # model/data via the second notify.
+                self._periodic_log("reset_paused", 0.5, "MuJoCo reset pending; waiting for new model/data...")
                 return
+            
+        if self._reset_tf_frames_left > 0 and self._reset_tf_msg is not None:
+            self._reset_tf_msg.header.stamp = self.get_clock().now().to_msg()
+            self._tf_pub.sendTransform(self._reset_tf_msg)
+            self._reset_tf_frames_left -= 1
 
-        # 🚫 If we ever get here, NO reset is pending
         if self._skip_joint_apply_frames > 0:
             self._skip_joint_apply_frames -= 1
         else:
@@ -391,12 +408,11 @@ class VPStreamer(Node):
 
         if self.streamer:
             if self.streamer.is_sim_channel_open():
-            # if True:
                 self.streamer.update_sim()
-                # Periodic logging (use helper so multiple messages/intervals can be used)
-                self._periodic_log("update_scene", 2.0, "Updated MuJoCo scene...")
+                self._periodic_log("update_scene", 1.0, "Updated MuJoCo scene...")
             else:
-                self._periodic_log("webrtc", 1.5, "Sim channel not open, skipping update")
+                self._periodic_log("webrtc", 1.0, "Sim channel not open, skipping update")
+
         # self._contact_active = self._detect_impact_contact()
 
 
@@ -405,16 +421,16 @@ class VPStreamer(Node):
         mujoco.mj_resetData(self.model, self.data)
 
         # 2) put robot in a known good configuration (critical)
-        initial_joint_positions_deg = list(
-            self.get_parameter("initial_joint_positions_deg").value
-        )
-        joint_init = dict(
-            zip(
-                ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
-                np.deg2rad(initial_joint_positions_deg),
-            )
-        )
-        gripper = float(self.get_parameter("initial_gripper_percent").value)
+        with self._joint_state_lock:
+            joint_init = {
+                "joint1": 0.0,
+                "joint2": 30.0,
+                "joint3": -90.0,
+                "joint4": 0.0,
+                "joint5": 0.0,
+                "joint6": 45.0,
+            }
+            gripper = 100.0
 
         for name, position in joint_init.items():
             idx = self.joint_name_to_qpos.get(name)
@@ -475,6 +491,15 @@ class VPStreamer(Node):
             self._last_log_times[key] = now
 
 
+    def _clear_target_mocap(self) -> None:
+        mocap_id = self.model.body_mocapid[self.ee_target_body_id]
+        if mocap_id < 0:
+            return
+        self.data.mocap_pos[mocap_id, :] = 0.0
+        self.data.mocap_quat[mocap_id, :] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        mujoco.mj_forward(self.model, self.data)
+
+
 
     def _set_mocap_from_tf(self, body_id, tf):
         mocap_id = self.model.body_mocapid[body_id]
@@ -513,15 +538,36 @@ class VPStreamer(Node):
             )
             self._set_mocap_from_tf(self.ee_fk_body_id, tf_fk)
 
+            if not self._teleop_enabled:
+                # While teleop is disabled, force target to track the gripper.
+                self._set_mocap_from_tf(self.ee_target_body_id, tf_fk)
+                mujoco.mj_forward(self.model, self.data)
+                return
+
             # Teleop target pose — latest available
             tf_target = self.tf_buffer.lookup_transform(
                 "mycobot_base",
                 "ee_target_offset_mycobot_base_vis",
                 latest_time
             )
+            if self._reset_target_min_time is not None:
+                tf_time = rclpy.time.Time.from_msg(tf_target.header.stamp)
+                if tf_time < self._reset_target_min_time:
+                    try:
+                        tf_fk = self.tf_buffer.lookup_transform(
+                            "mycobot_base",
+                            "gripper_ee",
+                            latest_time
+                        )
+                        self._set_mocap_from_tf(self.ee_target_body_id, tf_fk)
+                    except (LookupException, ConnectivityException, ExtrapolationException):
+                        self._clear_target_mocap()
+                    return
             self._set_mocap_from_tf(self.ee_target_body_id, tf_target)
 
             mujoco.mj_forward(self.model, self.data)
+            
+            # self.get_logger().info("Updated target ee_target_offset_mycobot_base_vis, current tf:\n" + str(tf_target))
 
         except (LookupException, ConnectivityException, ExtrapolationException):
             pass

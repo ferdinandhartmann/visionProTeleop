@@ -91,6 +91,9 @@ inverse_kinematics_node:
 
     initial_joint_positions_deg: [0.0, 30.0, -90.0, 0.0, 0.0, 45.0]
 
+    ee_target_on_reset_position: [0.109, -0.063, 0.314]
+    ee_target_on_reset_orientation_xyzw: [-0.002, 0.500, -0.004, 0.866]
+
 sam_client:
   ros__parameters:
     watch_dir: "/home/ferdinand/Dropbox/sam_data"
