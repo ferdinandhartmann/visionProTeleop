@@ -28,7 +28,12 @@ from avp_stream import VisionProStreamer
 
 from tf2_ros import Buffer, TransformListener
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
+from teleoperation.msg import TeleopTarget
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import TransformBroadcaster
 
+    # import avp_stream, inspect
+    # print("USING avp_stream from:", avp_stream.__file__, flush=True)
 
 class VPStreamer(Node):
     """Bridge ROS joint states into the MuJoCo scene and stream it to Vision Pro."""
@@ -36,6 +41,8 @@ class VPStreamer(Node):
     def __init__(self) -> None:
         super().__init__("vp_streamer")
 
+        self._last_log_times = {}
+        
         self.declare_parameter(
             "viewer",
             "ar",
@@ -66,6 +73,11 @@ class VPStreamer(Node):
             descriptor=ParameterDescriptor(description="MuJoCo scene to stream."),
         )
         self.declare_parameter("update_simulation_hz", 60.0)
+
+        # Parameters for publishing a TeleopTarget when MuJoCo is reset
+        self.declare_parameter("ee_target_on_reset_position", [0.109, -0.063, 0.314])
+        self.declare_parameter("ee_target_on_reset_orientation_xyzw", [-0.002, 0.500, -0.004, 0.866])
+        self.declare_parameter("ee_target_on_reset_gripper", 100)
 
         params = self._load_params()
         
@@ -161,13 +173,13 @@ class VPStreamer(Node):
         joint_topic = params["joint_state_topic"]
         self.joint_sub = self.create_subscription(JointState, joint_topic, self._joint_state_cb, qos)
         self.get_logger().info(f"Listening for joint states on {joint_topic}")
-
+        
         self._latest_joint_state: Dict[str, float] = {}
         self._joint_state_lock = threading.Lock()
-        
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        
+
         self.ee_fk_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame"
         )
@@ -175,8 +187,25 @@ class VPStreamer(Node):
         self.ee_target_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
         )
+        
+        # FOR RESET
+        self.streamer.register_reset_callback(self._on_streamer_reset)
 
-
+        self.ee_target_pub = self.create_publisher(TeleopTarget, "/teleop/ee_target", 10)
+       
+        self._tf_pub = TransformBroadcaster(self)
+        self._reset_tf_msg = None
+        self._reset_tf_frames_left = 0
+        self._reset_target_min_time = None        
+        self._reset_requested = False
+        self._reset_lock = threading.Lock()
+        self._pending_model = None
+        self._pending_data = None
+        self._reset_state = "idle"
+        self._skip_joint_apply_frames = 0
+        
+        self.get_logger().info("VPStreamer initialized and listening for reset events.")
+        
 
     def _load_params(self) -> Dict[str, object]:
         viewer = self.get_parameter("viewer").get_parameter_value().string_value
@@ -193,6 +222,9 @@ class VPStreamer(Node):
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
+        ee_target_on_reset_position = list(self.get_parameter("ee_target_on_reset_position").get_parameter_value().double_array_value)
+        ee_target_on_reset_orientation_xyzw = list(self.get_parameter("ee_target_on_reset_orientation_xyzw").get_parameter_value().double_array_value)
+        ee_target_on_reset_gripper = int(self.get_parameter("ee_target_on_reset_gripper").get_parameter_value().integer_value)
         return {
             "viewer": viewer,
             "visionpro_ip": visionpro_ip,
@@ -208,8 +240,11 @@ class VPStreamer(Node):
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
+            "ee_target_on_reset_position": ee_target_on_reset_position,
+            "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
+            "ee_target_on_reset_gripper": ee_target_on_reset_gripper,
         }
-        
+
 
     def _build_joint_mapping(self, mujoco) -> Dict[str, int]:
         mapping: Dict[str, int] = {}
@@ -244,12 +279,13 @@ class VPStreamer(Node):
         if not self._latest_joint_state:
             return
 
-        def clamp(val: float, min_val: float, max_val: float) -> float:
-            return max(min(val, max_val), min_val)
-
         with self._joint_state_lock:
             # copy to avoid holding the lock while writing into MuJoCo buffers
             joint_copy = dict(self._latest_joint_state)
+            for name, position in joint_copy.items():
+                if not np.isfinite(position):
+                    self.get_logger().warn(f"Skipping non-finite joint '{name}': {position}")
+                    continue
 
         ################# Apply joint states into MuJoCo buffers #################
         for name, position in joint_copy.items():
@@ -271,24 +307,190 @@ class VPStreamer(Node):
         # Ensure derived values (sites, tendons) stay in sync
         mujoco.mj_forward(self.model, self.data)
 
-
     def _update_scene(self) -> None:
-        self._apply_joint_state()
-        
+        with self._reset_lock:
+            # If a final reset has been requested (model/data available),
+            # handle swap in the sim thread.
+            if self._reset_state == "requested":
+                self.get_logger().info("Handling MuJoCo reset now...")
+                self._reset_state = "handling"
+
+                self.get_logger().info("Performing MuJoCo reset in sim thread.")
+
+                if self._pending_model is not None:
+                    self.model = self._pending_model
+                if self._pending_data is not None:
+                    self.data = self._pending_data
+                    
+               # After swapping self.model/self.data
+                if self.data.qpos.shape[0] != self.model.nq or self.data.qvel.shape[0] != self.model.nv:
+                    self.get_logger().error(
+                        f"Model/Data mismatch after reload: "
+                        f"len(qpos)={self.data.qpos.shape[0]} vs model.nq={self.model.nq}, "
+                        f"len(qvel)={self.data.qvel.shape[0]} vs model.nv={self.model.nv}"
+                    )
+                    self._pending_model = None
+                    self._pending_data = None
+                    self._reset_state = "idle"
+                    return
+
+                self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
+
+                self.ee_fk_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame")
+                self.ee_target_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame")
+                
+                self._hard_reset_mujoco_state()
+
+                self._publish_ee_target_on_reset()
+
+                self._pending_model = None
+                self._pending_data = None
+                self._reset_state = "idle"
+                self._skip_joint_apply_frames = 1
+                
+                with self._joint_state_lock:
+                    self._latest_joint_state.clear()
+                    self.get_logger().info("Cleared joint state buffer on reset.")
+                    
+                time.sleep(0.6)  # brief pause to ensure stability after reset
+                
+                # Publish a tf so that ee_target_offset_mycobot_base_vis snaps to gripper_ee 
+                # (tf doesnt work only direct modification but left it anyways)
+                try:
+                    tf_fk = self.tf_buffer.lookup_transform("mycobot_base", "gripper_ee", rclpy.time.Time(seconds=0))
+
+                    tf_msg = TransformStamped()
+                    tf_msg.header.frame_id = "mycobot_base"
+                    tf_msg.child_frame_id = "ee_target_offset_mycobot_base_vis"
+                    tf_msg.transform = tf_fk.transform
+
+                    self._reset_tf_msg = tf_msg
+                    self._reset_tf_frames_left = 5
+
+                    # Also snap the MuJoCo target to the gripper immediately on reset.
+                    self._set_mocap_from_tf(self.ee_target_body_id, tf_fk)
+                    mujoco.mj_forward(self.model, self.data)
+                    self._reset_target_min_time = self.get_clock().now()
+
+                    self.get_logger().info("Armed reset TF publish window for ee_target_offset_mycobot_base_vis")
+                except (LookupException, ConnectivityException, ExtrapolationException):
+                    # Clear the target mocap to avoid freezing at a stale pose.
+                    self._clear_target_mocap()
+                    self._reset_target_min_time = self.get_clock().now()
+                    self.get_logger().info("Could not lookup transform from mycobot_base to gripper_ee for ee_target_offset_mycobot_base_vis; cleared target mocap")
+                    pass
+
+                return 
+
+            if self._reset_state == "paused":
+                self._periodic_log("reset_paused", 0.5, "MuJoCo reset pending; waiting for new model/data...")
+                return
+            
+        if self._reset_tf_frames_left > 0 and self._reset_tf_msg is not None:
+            self._reset_tf_msg.header.stamp = self.get_clock().now().to_msg()
+            self._tf_pub.sendTransform(self._reset_tf_msg)
+            self._reset_tf_frames_left -= 1
+
+        if self._skip_joint_apply_frames > 0:
+            self._skip_joint_apply_frames -= 1
+        else:
+            self._apply_joint_state()        
         self._update_target_frames()
-        
         mujoco.mj_step(self.model, self.data)
 
-        if self.streamer is not None:
-            self.streamer.update_sim()
-        elif self.viewer_handle is not None and self.viewer_handle.is_running():
-            self.viewer_handle.sync()
-        else:
-            # If the viewer was closed, stop the timer to avoid spamming logs
-            self.timer.cancel()
-            self.get_logger().info("Viewer closed; stopping VPStreamer timer")
-            
-        self._contact_active = self._detect_impact_contact()
+        if self.streamer:
+            if self.streamer.is_sim_channel_open():
+                self.streamer.update_sim()
+                self._periodic_log("update_scene", 1.0, "Updated MuJoCo scene...")
+            else:
+                self._periodic_log("webrtc", 1.0, "Sim channel not open, skipping update")
+
+        # self._contact_active = self._detect_impact_contact()
+
+
+    def _hard_reset_mujoco_state(self):
+        # 1) reset dynamic state
+        mujoco.mj_resetData(self.model, self.data)
+
+        # 2) put robot in a known good configuration
+        with self._joint_state_lock:
+            joint_init = {
+                "joint1": 0.0,
+                "joint2": 30.0,
+                "joint3": -90.0,
+                "joint4": 0.0,
+                "joint5": 0.0,
+                "joint6": 45.0,
+            }
+            gripper = 100.0
+
+        for name, position in joint_init.items():
+            idx = self.joint_name_to_qpos.get(name)
+            if idx is None:
+                continue
+            self.data.qpos[idx] = float(position)
+
+        # gripper mapping
+        idx = self.joint_name_to_qpos.get("gripper_controller")
+        if idx is not None:
+            gl0, gu0 = -0.25, 0.8
+            v0 = gl0 + (gu0 - gl0) * ((100.0 - gripper) / 100.0)
+            self.data.qpos[idx]   = v0
+            self.data.qpos[idx+1] = v0
+
+            gl1, gu1 = 0.0, 0.8
+            v1 = gl1 + (gu1 - gl1) * ((100.0 - gripper) / 100.0)
+            self.data.qpos[idx+2] = v1
+            self.data.qpos[idx+3] = v1
+
+        # 3) zero velocities/actuators/controls
+        if self.model.nv:
+            self.data.qvel[:] = 0.0
+        if self.model.na:
+            self.data.act[:] = 0.0
+        if self.model.nu:
+            self.data.ctrl[:] = 0.0
+
+        self.data.time = 0.0
+
+        # 4) rebuild derived quantities once (before any mj_step calls)
+        mujoco.mj_forward(self.model, self.data)
+
+
+    def _periodic_log(self, key: str, interval: float, message: str, level: str = "info") -> None:
+        """Log `message` no more often than `interval` seconds.
+
+        - `key` is an identifier for this message stream (so multiple
+          periodic logs can coexist independently).
+        - `level` supports: "info", "warn"/"warning", "error", "debug".
+        """
+        now = time.time()
+        if not hasattr(self, "_last_log_times"):
+            self._last_log_times = {}
+        last = float(self._last_log_times.get(key, 0.0))
+        if last is None or now - last > float(interval):
+            if level == "info":
+                self.get_logger().info(message)
+            elif level in ("warn", "warning"):
+                # existing code uses warn in places; preserve that
+                self.get_logger().warn(message)
+            elif level == "error":
+                self.get_logger().error(message)
+            elif level == "debug":
+                self.get_logger().debug(message)
+            else:
+                self.get_logger().info(message)
+            self._last_log_times[key] = now
+
+
+    def _clear_target_mocap(self) -> None:
+        mocap_id = self.model.body_mocapid[self.ee_target_body_id]
+        if mocap_id < 0:
+            return
+        self.data.mocap_pos[mocap_id, :] = 0.0
+        self.data.mocap_quat[mocap_id, :] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        mujoco.mj_forward(self.model, self.data)
+
 
 
     def _set_mocap_from_tf(self, body_id, tf):
@@ -328,19 +530,112 @@ class VPStreamer(Node):
             )
             self._set_mocap_from_tf(self.ee_fk_body_id, tf_fk)
 
+            if not self._teleop_enabled:
+                # While teleop is disabled, force target to track the gripper.
+                self._set_mocap_from_tf(self.ee_target_body_id, tf_fk)
+                mujoco.mj_forward(self.model, self.data)
+                return
+
             # Teleop target pose — latest available
             tf_target = self.tf_buffer.lookup_transform(
                 "mycobot_base",
                 "ee_target_offset_mycobot_base_vis",
                 latest_time
             )
+            if self._reset_target_min_time is not None:
+                tf_time = rclpy.time.Time.from_msg(tf_target.header.stamp)
+                if tf_time < self._reset_target_min_time:
+                    try:
+                        tf_fk = self.tf_buffer.lookup_transform(
+                            "mycobot_base",
+                            "gripper_ee",
+                            latest_time
+                        )
+                        self._set_mocap_from_tf(self.ee_target_body_id, tf_fk)
+                    except (LookupException, ConnectivityException, ExtrapolationException):
+                        self._clear_target_mocap()
+                    return
             self._set_mocap_from_tf(self.ee_target_body_id, tf_target)
 
             mujoco.mj_forward(self.model, self.data)
+            
+            # self.get_logger().info("Updated target ee_target_offset_mycobot_base_vis, current tf:\n" + str(tf_target))
 
         except (LookupException, ConnectivityException, ExtrapolationException):
             pass
 
+
+    def _on_streamer_reset(self, model, data) -> None:
+        import threading
+
+        with self._reset_lock:
+            # Debug trace to help diagnose why callbacks may not be
+            # observed by the ROS node. Log the types and calling thread.
+            try:
+                mtype = type(model).__name__ if model is not None else 'None'
+            except Exception:
+                mtype = str(model)
+            try:
+                dtype = type(data).__name__ if data is not None else 'None'
+            except Exception:
+                dtype = str(data)
+            self.get_logger().info(
+                f"_on_streamer_reset invoked (model={mtype}, data={dtype}, thread={threading.current_thread().name})"
+            )
+            # Two-phase notification protocol:
+            #  - First call: (model, data) == (None, None) => reset STARTED
+            #    -> pause simulation updates until final notify.
+            #  - Second call: model/data provided => perform pending swap.
+
+            if model is None and data is None:
+                # Start phase
+                if self._reset_state != "idle":
+                    self.get_logger().info("Reset already in progress; ignoring duplicate start notification.")
+                    return
+                self.get_logger().info("MuJoCo reset start received; pausing simulation updates.")
+                self._pending_model = None
+                self._pending_data = None
+                self._reset_state = "paused"
+                return
+
+            # Final phase: model/data provided
+            # Accept final notify even if we are in paused state.
+            if self._reset_state not in {"idle", "paused"}:
+                self.get_logger().info("Reset already in progress; ignoring duplicate VisionOS reset.")
+                return
+
+            self.get_logger().info("MuJoCo reset requested.")
+            self._pending_model = model
+            self._pending_data = data
+            self._reset_state = "requested"
+
+
+    def _publish_ee_target_on_reset(self):
+        msg = TeleopTarget()
+
+        # Header
+        msg.pose.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.header.frame_id = "mycobot_base"
+
+        # Pose
+        pos = self.get_parameter("ee_target_on_reset_position").value
+        quat = self.get_parameter("ee_target_on_reset_orientation_xyzw").value
+
+        msg.pose.pose.position.x = float(pos[0])
+        msg.pose.pose.position.y = float(pos[1])
+        msg.pose.pose.position.z = float(pos[2])
+
+        msg.pose.pose.orientation.x = float(quat[0])
+        msg.pose.pose.orientation.y = float(quat[1])
+        msg.pose.pose.orientation.z = float(quat[2])
+        msg.pose.pose.orientation.w = float(quat[3])
+
+        # Gripper
+        msg.gripper = int(self.get_parameter("ee_target_on_reset_gripper").value)
+
+        self.ee_target_pub.publish(msg)
+
+        self.get_logger().info("Published ee_target reset pose on /teleop/ee_target")
 
             
     def _camera_cb(self) -> None:

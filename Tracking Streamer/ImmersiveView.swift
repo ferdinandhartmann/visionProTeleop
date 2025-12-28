@@ -367,9 +367,9 @@ struct ImmersiveView: View {
                     ),
                     previewStatusPosition: $previewStatusPosition,
                     previewStatusActive: $previewStatusActive,
-                    onReset: {
-                        videoStreamManager.sendControlCommand(.reset)
-                    }
+//                    onReset: {
+//                        sendResetToSimulator()
+//                    }
                 )
             }
             
@@ -721,6 +721,15 @@ class VideoStreamManager: ObservableObject {
             }
         }
     }
+
+//    private func sendResetToSimulator() {
+//        let sent = videoStreamManager.sendControlCommand(.reset)
+//        if sent {
+//            dlog("✅ [ImmersiveView] Sent reset control command to simulator")
+//        } else {
+//            dlog("⚠️ [ImmersiveView] Control channel not ready; reset command not sent")
+//        }
+//    }
     
     /// Connection mode for dual-mode support
     private enum ConnectionMode {
@@ -767,10 +776,11 @@ class VideoStreamManager: ObservableObject {
         }
     }
     
-    func sendControlCommand(_ command: ControlCommand) {
+    @discardableResult
+    func sendControlCommand(_ command: ControlCommand) -> Bool {
         guard let client = webrtcClient else {
             dlog("⚠️ [DEBUG] Cannot send control command; WebRTC client is nil")
-            return
+            return false
         }
         let sent = client.sendControlCommand(command)
         if sent {
@@ -778,6 +788,7 @@ class VideoStreamManager: ObservableObject {
         } else {
             dlog("⚠️ [DEBUG] Failed to send control command: \(command.rawValue)")
         }
+        return sent
     }
     
     /// Stop the video stream manager

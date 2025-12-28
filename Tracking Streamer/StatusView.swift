@@ -567,7 +567,7 @@ struct StatusOverlay: View {
                         } label: {
                             ZStack {
                                 Circle()
-                                    .fill(videoFixed ? Color.orange.opacity(0.8) : Color.white.opacity(0.3))
+                                    .fill(videoFixed ? Color.orange.opacity(0.8) : Color.gray.opacity(0.6))
                                     .frame(width: 60, height: 60)
                                 Image(systemName: videoFixed ? "lock.fill" : "lock.open.fill")
                                     .font(.system(size: 24, weight: .bold))
@@ -578,7 +578,7 @@ struct StatusOverlay: View {
                     }
                     
                     if onReset != nil {
-                        // Reset simulation/robot button
+                        // Mujoco Reset Button or Simulation reset button
                         Button {
                             dlog("🔄 [StatusView] Reset button tapped")
                             onReset?()
@@ -591,24 +591,24 @@ struct StatusOverlay: View {
                         } label: {
                             ZStack {
                                 Circle()
-                                    .fill(resetHighlight ? Color.green.opacity(0.9) : Color.gray.opacity(0.6))
+                                    .fill(resetHighlight ? Color.green.opacity(0.8) : Color.gray.opacity(0.6))
                                     .frame(width: 60, height: 60)
                                 Image(systemName: "arrow.counterclockwise.circle.fill")
                                     .font(.system(size: 24, weight: .bold))
-                                    .foregroundColor(resetHighlight ? .white : .white.opacity(0.8))
+                                    .foregroundColor(.white)
                             }
                         }
                         .buttonStyle(.plain)
-                        .opacity(dataManager.controlChannelReady ? 1.0 : 0.5)
+//                        .opacity(dataManager.controlChannelReady ? 1.0 : 0.5)
                     }
                     
                     // Exit button
                     Button {
                         dlog("🔴 [StatusView] Exit button tapped (minimized)")
                         exit(0)
-                        withAnimation {
-                            showLocalExitConfirmation = true
-                        }
+//                        withAnimation {
+//                            showLocalExitConfirmation = true
+//                        }
                     } label: {
                         ZStack {
                             Circle()
@@ -677,9 +677,9 @@ struct StatusOverlay: View {
                 Button {
                     dlog("🔴 [StatusView] Exit button tapped (expanded)")
                     exit(0)
-                    withAnimation {
-                        showLocalExitConfirmation = true
-                    }
+//                    withAnimation {
+//                        showLocalExitConfirmation = true
+//                    }
                 } label: {
                     ZStack {
                         Circle()
@@ -3402,7 +3402,7 @@ struct StatusOverlay: View {
                 }
             }
             
-            // Reset button
+            // Baseline Reset button
             Button {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     dataManager.stereoBaselineOffset = 0.0

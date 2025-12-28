@@ -12,3 +12,4 @@ icloudpd --directory ~/visionpro_teleop_project/visionProTeleop/ros2_ws/icloud_d
 https://github.com/icloud-photos-downloader/icloud_photos_downloader?tab=readme-ov-file
 
 
+if changing somehthing in apv_streamer files install with pip install -e .instead of pip --upgrade

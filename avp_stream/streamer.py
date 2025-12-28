@@ -26,6 +26,8 @@ from av import VideoFrame, AudioFrame
 from avp_stream.mujoco_msg import mujoco_ar_pb2, mujoco_ar_pb2_grpc
 from scipy.spatial.transform import Rotation as R
 
+from aiortc.exceptions import InvalidStateError
+
 # Suppress noisy aioice TURN channel bind errors (non-fatal, connection still works via STUN)
 logging.getLogger("aioice.turn").setLevel(logging.ERROR)
 
@@ -950,6 +952,7 @@ class VisionProStreamer:
         self._benchmark_epoch = time.perf_counter()
         self._benchmark_condition = Condition()
         self._benchmark_events = {}
+        self._reset_callbacks: List[Callable[[Any, Any], None]] = []
         
         # Video/Audio configuration (set by configure_video/configure_audio)
         self._video_config: Optional[Dict[str, Any]] = None
@@ -1004,6 +1007,13 @@ class VisionProStreamer:
         else:
             self._start_info_server()  # Start HTTP endpoint immediately
             self._start_hand_tracking()  # Start hand tracking stream
+                    
+        
+    def is_sim_channel_open(self):
+        return (
+            self._webrtc_sim_channel is not None
+            and self._webrtc_sim_channel.readyState == "open"
+        )
     
     def cleanup(self):
         """Clean up resources and notify VisionOS of disconnect.
@@ -1342,6 +1352,16 @@ class VisionProStreamer:
         def _on_open():
             self._log("[WEBRTC] Sim-poses data channel opened", force=True)
             self._webrtc_sim_ready = True
+            # Force USDZ to be resent on each channel open so the model appears after reconnect/reset
+            self._usdz_sent = False
+            self._usdz_transfer_complete = False
+            if self._sim_config is not None:
+                # Default to waiting for USDZ transfer before streaming to avoid “poses without model”
+                self._sim_config.setdefault("wait_for_usdz_transfer", True)
+                attach_to = self._sim_config.get("attach_to")
+                grpc_port = self._sim_config.get("grpc_port", 50051)
+                self._log("[WEBRTC] Triggering USDZ send on sim-poses open...", force=True)
+                self._load_and_send_mujoco_scene(attach_to, grpc_port)
             
             # Start pose streaming with thread-based approach
             import threading
@@ -1374,6 +1394,11 @@ class VisionProStreamer:
         @channel.on("close")
         def _on_close():
             self._log("[WEBRTC] Sim-poses data channel closed", force=True)
+            # Stop pose streaming so we can cleanly restart when the channel reopens
+            self._stop_pose_streaming()
+            # Force a fresh USDZ send on next connection (VisionOS likely dropped the scene)
+            self._usdz_sent = False
+            self._usdz_transfer_complete = False
             self._webrtc_sim_ready = False
             self._webrtc_sim_channel = None
 
@@ -1455,6 +1480,18 @@ class VisionProStreamer:
         command = payload.get("type")
         if command == "reset":
             self._log("[CONTROL] Reset command received from VisionOS", force=True)
+            # Notify registered callbacks immediately so external bridges
+            # (e.g. ROS nodes) can mark themselves as resetting before the
+            # potentially long-running reset/reload work completes.
+            try:
+                # Early notify that a reset is starting. Pass (None, None)
+                # so external listeners can treat this as a "pause" event
+                # (stop applying updates) before the model/data are reloaded.
+                self._notify_reset_callbacks(None, None)
+            except Exception:
+                # Best-effort: ignore exceptions from early notification.
+                pass
+
             Thread(target=self._handle_reset_request, daemon=True).start()
         else:
             self._log(f"[CONTROL] Unknown control command: {command}", force=True)
@@ -1474,6 +1511,36 @@ class VisionProStreamer:
 
         self._send_control_response(status)
 
+    def register_reset_callback(self, callback: Callable[[Any, Any], None]):
+        """Register a callback invoked after a successful MuJoCo reset.
+
+        The callback receives the active MuJoCo model and data objects so
+        external code (e.g., ROS bridges) can resync their references.
+        """
+        self._reset_callbacks.append(callback)
+        try:
+            logging.getLogger(__name__).info(
+                f"[CONTROL] register_reset_callback called; total_callbacks={len(self._reset_callbacks)}, callback_id={id(callback)}"
+            )
+        except Exception:
+            pass
+
+    def _notify_reset_callbacks(self, model, data):
+        callbacks = list(self._reset_callbacks)
+        try:
+            logging.getLogger(__name__).info(f"[CONTROL] Notifying {len(callbacks)} reset callbacks (model={'set' if model is not None else 'None'})")
+        except Exception:
+            pass
+        for callback in callbacks:
+            try:
+                logging.getLogger(__name__).info(f"[CONTROL] Invoking reset callback id={id(callback)}")
+            except Exception:
+                pass
+            try:
+                callback(model, data)
+            except Exception as exc:  # pragma: no cover - best-effort notification
+                self._log(f"[CONTROL] Reset callback failed: {exc}", force=True)
+
     def _reset_mujoco_simulation(self):
         """Reset MuJoCo simulation to its initial state."""
         if self._sim_config is None or "xml_path" not in self._sim_config:
@@ -1485,9 +1552,16 @@ class VisionProStreamer:
         try:
             import mujoco
 
-            # Force a clean reload of the model/data from disk
-            model = mujoco.MjModel.from_xml_path(xml_path)
-            data = mujoco.MjData(model)
+            # Prefer resetting the existing model/data so external references remain valid.
+            # Fall back to reloading from disk if they are missing.
+            if self._mujoco_model is None or self._mujoco_data is None:
+                model = mujoco.MjModel.from_xml_path(xml_path)
+                data = mujoco.MjData(model)
+            else:
+                model = self._mujoco_model
+                data = self._mujoco_data
+                mujoco.mj_resetData(model, data)
+                mujoco.mj_forward(model, data)
 
             # Rebuild body maps
             self._mujoco_model = model
@@ -1522,6 +1596,7 @@ class VisionProStreamer:
 
             self.update_sim()
             self._log(f"[CONTROL] MuJoCo simulation reloaded from {xml_path}", force=True)
+            self._notify_reset_callbacks(model, data)
             return True, None
         except Exception as exc:
             self._log(f"[CONTROL] Failed to reset MuJoCo simulation: {exc}", force=True)
@@ -1535,9 +1610,31 @@ class VisionProStreamer:
             return
 
         try:
-            channel.send(json.dumps(payload))
+            # channel.send(json.dumps(payload))
+            asyncio.run_coroutine_threadsafe(
+            self._send_control_response_async(payload),
+            self._webrtc_loop
+            )
         except Exception as exc:
             self._log(f"[CONTROL] Failed to send control response: {exc}", force=True)
+
+    async def _send_control_response_async(self, payload: Dict[str, Any]):
+        """Async helper to send control responses over the WebRTC data channel.
+
+        This is scheduled onto the WebRTC event loop with
+        `asyncio.run_coroutine_threadsafe` so it must be a coroutine.
+        """
+        try:
+            channel = self._control_channel
+            if channel is None or getattr(channel, "readyState", None) != "open":
+                self._log("[CONTROL] Control channel not open; cannot send response", force=True)
+                return
+
+            # aiortc DataChannel.send is synchronous (not awaitable), so call it directly.
+            channel.send(json.dumps(payload))
+        except InvalidStateError:
+            self._sim_channel = None
+            self._log(f"[CONTROL] Failed to send control response async:", force=True)
 
     def _start_hand_tracking(self): 
         """Start the hand tracking gRPC stream in a background thread."""
@@ -2786,7 +2883,7 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:], scalar_first=True).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Register model and data
@@ -2904,7 +3001,7 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:], scalar_first=True).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Store the Isaac stage and scene
@@ -4597,7 +4694,10 @@ class VisionProStreamer:
                         elif channel.label == "sim-poses":
                             streamer_instance._log("[WEBRTC] Remote sim-poses data channel detected")
                             streamer_instance._register_webrtc_sim_channel(channel)
-                
+                        elif channel.label == "control":
+                            streamer_instance._log("[WEBRTC] Remote control data channel detected")
+                            streamer_instance._register_webrtc_control_channel(channel)
+
                 # Create sim-poses data channel if simulation is configured
                 if streamer_instance._sim_config is not None:
                     # Use unreliable mode for lowest latency (dropped frames are replaced by next update)
@@ -4609,6 +4709,15 @@ class VisionProStreamer:
                     )
                     streamer_instance._register_webrtc_sim_channel(sim_channel)
                     streamer_instance._log("[WEBRTC] Created sim-poses data channel")
+
+                # Always provide a control channel for reset/commands (ordered, reliable)
+                control_channel = pc.createDataChannel(
+                    "control",
+                    ordered=True,
+                    maxRetransmits=0  # reliable because ordered + default retransmits
+                )
+                streamer_instance._register_webrtc_control_channel(control_channel)
+                streamer_instance._log("[WEBRTC] Created control data channel")
 
                 # Create audio track if audio is configured (configure_audio was called)
                 if streamer_instance._audio_config is not None:

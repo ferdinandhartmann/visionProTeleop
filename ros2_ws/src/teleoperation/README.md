@@ -9,7 +9,46 @@
 4. **Send to Robot** – `joint_state_to_mycobot.py` gets the pose and gripper command from the inverse kinematics node and sends it to the robot. It is subscribed with a timer and sends joint commands when the angle change is bigger than some limit.
 5. **Keyboard fallback** – `keyboard_ee_teleop.py` publishes targets without any Vision Pro and robot.
 
-## Check the images in the ros2_ws folder to see the tf and the node graph
+## -> Check the images in the ros2_ws folder to see the tf and the node graph
+
+
+## VPStreamer Reset Flow
+
+This section explains how the VPStreamer node resets MuJoCo when VisionOS requests a reset.
+
+### Main Components
+
+- **VPStreamer**: ROS2 node at `ros2_ws/src/teleoperation/scripts/vp_streamer.py`
+- **VisionProStreamer**: Streamer in `avp_stream/streamer.py`
+- **Control Channel**: WebRTC data channel used to send reset commands
+
+### Reset Flow
+
+1. VisionOS sends a reset message.
+2. VisionProStreamer notifies VPStreamer that a reset is starting.
+3. VPStreamer pauses the simulation loop to prevent MuJoCo access during reload.
+4. VisionProStreamer reloads and provides the new model/data.
+5. VPStreamer swaps in the new model/data and resets the simulation state.
+
+#### Why Two Steps?
+
+The reset is split into two parts to ensure the MuJoCo model is never accessed while being replaced.
+
+#### What VPStreamer Does on Reset
+
+- Uses a lock to ensure thread safety.
+- Holds the new model/data until the simulation thread is ready.
+- Resets joint states and clears old joint commands.
+- Skips a few frames after reset to allow the scene to settle.
+
+#### Flow Diagram
+
+```
+VisionOS → VisionProStreamer → VPStreamer (pause)
+VisionProStreamer reloads model/data
+VisionProStreamer → VPStreamer (swap and reset)
+```
+
 
 ## Custom message: `teleoperation/TeleopTarget`
 

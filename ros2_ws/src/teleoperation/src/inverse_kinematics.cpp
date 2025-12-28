@@ -74,6 +74,9 @@ InverseKinematicsNode()
   // Optional initial joint configuration in degrees (6 values: joint1..joint6).
   // Use a typed default (double array); YAML must then provide doubles.
   declare_parameter<std::vector<double>>("initial_joint_positions_deg", std::vector<double>{});
+  // Parameters used to detect a MuJoCo reset TeleopTarget
+  declare_parameter<std::vector<double>>("ee_target_on_reset_position");
+  declare_parameter<std::vector<double>>("ee_target_on_reset_orientation_xyzw");
 
   const auto target_topic = get_parameter("target_topic").as_string();
   const auto joint_target_topic = get_parameter("joint_target_topic").as_string();
@@ -88,6 +91,8 @@ InverseKinematicsNode()
   gripper_percent_ = get_parameter("gripper_percent").as_int();
   joint_states_ros2_update_rate_ = get_parameter("joint_states_ros2_update_rate").as_double();
   mycobot_target_pose_update_rate_ = get_parameter("mycobot_target_pose_update_rate").as_double();
+  reset_pos_param_ = get_parameter("ee_target_on_reset_position").as_double_array();
+  reset_ori_param_ = get_parameter("ee_target_on_reset_orientation_xyzw").as_double_array();
 
   // Read joint limits (degrees) and convert to radians
   joint_lower_limits_rad_.resize(6);
@@ -112,22 +117,24 @@ InverseKinematicsNode()
 
   // Optional: override initial joint_state_ from parameter (degrees -> radians)
   const auto initial_joints_deg = get_parameter("initial_joint_positions_deg").as_double_array();
-    if (!initial_joints_deg.empty()) {
-      if (initial_joints_deg.size() != 6) {
-        RCLCPP_WARN(
-          get_logger(),
-          "Parameter 'initial_joint_positions_deg' must have 6 values; got %zu. Ignoring.",
-          initial_joints_deg.size());
-      } else {
-        for (size_t i = 0; i < 6; ++i) {
-          joint_state_[i] = initial_joints_deg[i] * M_PI / 180.0;
-        }
-        RCLCPP_INFO(get_logger(),
-          "Initial joint_state set from initial_joint_positions_deg (degrees): [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
-          initial_joints_deg[0], initial_joints_deg[1], initial_joints_deg[2],
-          initial_joints_deg[3], initial_joints_deg[4], initial_joints_deg[5]);
+  if (!initial_joints_deg.empty()) {
+    if (initial_joints_deg.size() != 6) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Parameter 'initial_joint_positions_deg' must have 6 values; got %zu. Ignoring.",
+        initial_joints_deg.size());
+    } else {
+      initial_joints_rad_.resize(6);
+      for (size_t i = 0; i < 6; ++i) {
+        initial_joints_rad_[i] = initial_joints_deg[i] * M_PI / 180.0;
+        joint_state_[i] = initial_joints_rad_[i];
       }
+      RCLCPP_INFO(get_logger(),
+        "Initial joint_state set from initial_joint_positions_deg (degrees): [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+        initial_joints_deg[0], initial_joints_deg[1], initial_joints_deg[2],
+        initial_joints_deg[3], initial_joints_deg[4], initial_joints_deg[5]);
     }
+  }
 
   prev_joint_state_ = joint_state_;
   prev_joint_time_ = now();
@@ -150,8 +157,11 @@ InverseKinematicsNode()
 	joint_state_mycobot_timer_ = create_wall_timer(
 		std::chrono::milliseconds(static_cast<int>(mycobot_target_pose_update_rate_ * 1000.0)),
 		std::bind(&InverseKinematicsNode::jointStateMycobotTimerCallback, this));
+    
+	joint_seed_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+		joint_target_topic, 10,
+		std::bind(&InverseKinematicsNode::jointSeedCallback, this, std::placeholders::_1));
 
-	// Build DH parameters for
 
   dh_chain_ = buildDhParameters();
 
@@ -167,13 +177,44 @@ private:
 
   void poseCallback(const teleoperation::msg::TeleopTarget::SharedPtr msg)
   {
+		if (!have_seed_) {
+			RCLCPP_WARN(get_logger(), "No joint seed received yet; using internal joint_state_.");
+		}
+
     Pose target = poseFromMsg(msg->pose);
     gripper_percent_ = std::clamp(msg->gripper, 0, 100);
 
     // RCLCPP_INFO(get_logger(),
     //   "Received target pose: frame=%s pos=(%.3f, %.3f, %.3f)",
-    //   msg->header.frame_id.c_str(),
+    //   msg->pose.header.frame_id.c_str(),
     //   target.position.x(), target.position.y(), target.position.z());
+
+
+    // If this TeleopTarget the configured ee_target_on_reset, treat it as
+    // a MuJoCo reset notification and publish the configured initial joint
+    // positions (from YAML `initial_joint_positions_deg`) to the mycobot target topic.
+		if (reset_pos_param_.size() == 3 && reset_ori_param_.size() == 4) {
+			Eigen::Vector3d reset_pos(reset_pos_param_[0], reset_pos_param_[1], reset_pos_param_[2]);
+			bool pos_eq = (target.position == reset_pos);
+
+			tf2::Quaternion q_msg;
+			tf2::fromMsg(msg->pose.pose.orientation, q_msg);
+			Eigen::Quaterniond q_msg_eig(q_msg.w(), q_msg.x(), q_msg.y(), q_msg.z());
+			Eigen::Quaterniond q_reset(reset_ori_param_[3], reset_ori_param_[0], reset_ori_param_[1], reset_ori_param_[2]); // w,x,y,z
+			q_msg_eig.normalize();
+			q_reset.normalize();
+			bool ori_eq = (q_msg_eig.coeffs() == q_reset.coeffs());
+
+			if (pos_eq && ori_eq) {
+				RCLCPP_INFO(get_logger(), "Detected reset ee_target!");
+				publishHomeJointState();
+				return;
+			}
+			// else{
+			// 	RCLCPP_INFO(get_logger(), "Not a reset ee_target (pos_eq=%d ori_eq=%d)", pos_eq, ori_eq);
+			// }
+		}
+
 
     std::vector<double> solution;
     bool success = solveInverseKinematics(target, joint_state_, solution);
@@ -182,7 +223,7 @@ private:
       joint_state_ = solution;
     }
     else{
-    //   RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
+      // RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
     }
 
     // publishEndEffectorTf(msg->pose.header);
@@ -477,6 +518,35 @@ private:
     joint_state_publisher_->publish(msg);
   }
 
+	void publishHomeJointState()
+	{
+		if (!joint_state_publisher_ && !joint_state_ros2_publisher_) return;
+
+		sensor_msgs::msg::JointState msg;
+		msg.header.stamp = now();
+		msg.header.frame_id = mycobot_base_frame_;
+		msg.name = joint_names_;
+
+		if (initial_joints_rad_.size() == 6) {
+			msg.position.reserve(7);
+			for (size_t i = 0; i < 6; ++i) {
+				msg.position.push_back(initial_joints_rad_[i]);
+			}
+			// Set joint_state_ and prev_joint_state_ to home
+			joint_state_ = initial_joints_rad_;
+			prev_joint_state_ = initial_joints_rad_;
+		} else {
+			// Fallback: use current joint_state_
+			msg.position.assign(joint_state_.begin(), joint_state_.end());
+		}
+
+		msg.position.push_back(gripper_percent_);
+
+		joint_state_publisher_->publish(msg);
+		joint_state_ros2_publisher_->publish(msg);
+		RCLCPP_INFO(get_logger(), "Published home joint state");
+	}
+
   void publishEndEffectorTf(const std_msgs::msg::Header & header)
   {
     if (!tf_broadcaster_)
@@ -506,11 +576,34 @@ private:
     tf_broadcaster_->sendTransform(tf_msg);
   }
 
+	void jointSeedCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
+	{
+		// Expect at least joints 1..6
+		auto find_idx = [&](const std::string& name)->int {
+			auto it = std::find(msg->name.begin(), msg->name.end(), name);
+			if (it == msg->name.end()) return -1;
+			return static_cast<int>(std::distance(msg->name.begin(), it));
+		};
+
+		std::array<std::string,6> jn = {"joint1","joint2","joint3","joint4","joint5","joint6"};
+		for (size_t i=0;i<6;i++){
+			int idx = find_idx(jn[i]);
+			if (idx < 0 || idx >= (int)msg->position.size()) return; // ignore partial
+			joint_state_[i] = msg->position[idx]; // radians
+		}
+
+		have_seed_ = true;
+	}
+
+
     rclcpp::Subscription<teleoperation::msg::TeleopTarget>::SharedPtr pose_subscription_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_ros2_publisher_;
     rclcpp::TimerBase::SharedPtr joint_state_ros2_timer_;
 		rclcpp::TimerBase::SharedPtr joint_state_mycobot_timer_;
+		rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_seed_sub_;
+		
+		bool have_seed_{false};
 
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -519,6 +612,7 @@ private:
     std::vector<DhParameter> dh_chain_;
     std::vector<std::string> joint_names_;
     std::vector<double> joint_state_;
+		std::vector<double> initial_joints_rad_;
     std::string mycobot_base_frame_;
 
     double position_tolerance_{};
@@ -537,6 +631,8 @@ private:
     std::vector<double> joint_lower_limits_rad_;
     std::vector<double> joint_upper_limits_rad_;
 
+    std::vector<double> reset_pos_param_;
+    std::vector<double> reset_ori_param_;
 
     std::vector<double> prev_joint_state_;
     rclcpp::Time prev_joint_time_;

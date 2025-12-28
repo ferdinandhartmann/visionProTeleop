@@ -590,16 +590,8 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
             return false
         }
 
-        if controlDataChannel == nil, let pc = peerConnection {
-            let config = LKRTCDataChannelConfiguration()
-            config.isOrdered = true
-            controlDataChannel = pc.dataChannel(forLabel: "control", configuration: config)
-            controlDataChannel?.delegate = self
-            dlog("ℹ️ [WebRTC] Created local control data channel for command \(command.rawValue)")
-        }
-
         guard let channel = controlDataChannel, channel.readyState == .open else {
-            dlog("⚠️ [WebRTC] Control channel not ready; cannot send \(command.rawValue)")
+            dlog("⚠️ [WebRTC] Control channel not open; cannot send \(command.rawValue)")
             Task { @MainActor in
                 DataManager.shared.controlChannelReady = false
             }
