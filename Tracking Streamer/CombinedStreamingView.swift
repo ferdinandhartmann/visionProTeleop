@@ -2949,7 +2949,25 @@ private struct StateChangeModifiers: ViewModifier {
                 handleVideoPlaneFixedChange(isFixed: isFixed)
             }
             .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
-                handleStatusFixedChange(isFixed: isFixed)
+                if isFixed {
+                    let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+                    let targetTranslation: SIMD3<Float>
+                    if isMinimized {
+                        targetTranslation = SIMD3<Float>(
+                            dataManager.statusMinimizedXPosition,
+                            dataManager.statusMinimizedYPosition,
+                            -1.0
+                        )
+                    } else {
+                        targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
+                    }
+                    var offsetTransform = Transform()
+                    offsetTransform.translation = targetTranslation
+                    let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+                    fixedStatusTransform = Transform(matrix: worldMatrix)
+                } else {
+                    fixedStatusTransform = nil
+                }
             }
             .onChange(of: userInteracted) { oldValue, newValue in
                 dlog("⚠️ [CombinedStreamingView] userInteracted changed from \(oldValue) to \(newValue)")
@@ -3091,28 +3109,6 @@ private struct StateChangeModifiers: ViewModifier {
             fixedWorldTransform = Transform(matrix: worldMatrix)
         } else {
             fixedWorldTransform = nil
-        }
-    }
-    
-    private func handleStatusFixedChange(isFixed: Bool) {
-        if isFixed {
-            let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
-            let targetTranslation: SIMD3<Float>
-            if isMinimized {
-                targetTranslation = SIMD3<Float>(
-                    dataManager.statusMinimizedXPosition,
-                    dataManager.statusMinimizedYPosition,
-                    -1.0
-                )
-            } else {
-                targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
-            }
-            var offsetTransform = Transform()
-            offsetTransform.translation = targetTranslation
-            let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
-            fixedStatusTransform = Transform(matrix: worldMatrix)
-        } else {
-            fixedStatusTransform = nil
         }
     }
     
