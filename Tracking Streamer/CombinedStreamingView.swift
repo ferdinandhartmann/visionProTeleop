@@ -642,8 +642,14 @@ struct CombinedStreamingView: View {
                     targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
                 }
                 
-                if isStatusFixed, let lockedTransform = fixedStatusTransform {
-                    statusContainer.move(to: lockedTransform, relativeTo: statusContainer.parent, duration: 0.1, timingFunction: .linear)
+                if isStatusFixed {
+                    // Ensure we have a captured transform even if lock was toggled mid-frame
+                    if fixedStatusTransform == nil {
+                        fixedStatusTransform = captureStatusTransform(isMinimized: isMinimized)
+                    }
+                    if let lockedTransform = fixedStatusTransform {
+                        statusContainer.move(to: lockedTransform, relativeTo: statusContainer.parent, duration: 0.1, timingFunction: .linear)
+                    }
                 } else {
                     var transform = statusContainer.transform
                     transform.translation = targetTranslation
@@ -2949,25 +2955,7 @@ private struct StateChangeModifiers: ViewModifier {
                 handleVideoPlaneFixedChange(isFixed: isFixed)
             }
             .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
-                if isFixed {
-                    let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
-                    let targetTranslation: SIMD3<Float>
-                    if isMinimized {
-                        targetTranslation = SIMD3<Float>(
-                            dataManager.statusMinimizedXPosition,
-                            dataManager.statusMinimizedYPosition,
-                            -1.0
-                        )
-                    } else {
-                        targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
-                    }
-                    var offsetTransform = Transform()
-                    offsetTransform.translation = targetTranslation
-                    let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
-                    fixedStatusTransform = Transform(matrix: worldMatrix)
-                } else {
-                    fixedStatusTransform = nil
-                }
+                fixedStatusTransform = isFixed ? captureStatusTransform(isMinimized: isMinimized) : nil
             }
             .onChange(of: userInteracted) { oldValue, newValue in
                 dlog("⚠️ [CombinedStreamingView] userInteracted changed from \(oldValue) to \(newValue)")
@@ -3073,6 +3061,7 @@ private struct StateChangeModifiers: ViewModifier {
         videoMinimized = false
         hasAutoMinimized = false
         fixedWorldTransform = nil
+        fixedStatusTransform = nil
         mujocoManager.poseStreamingViaWebRTC = false
         mujocoManager.simEnabled = false
         videoStreamManager.stop(preserveForReconnect: true)
@@ -3110,6 +3099,24 @@ private struct StateChangeModifiers: ViewModifier {
         } else {
             fixedWorldTransform = nil
         }
+    }
+    
+    private func captureStatusTransform(isMinimized: Bool) -> Transform? {
+        let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+        let targetTranslation: SIMD3<Float>
+        if isMinimized {
+            targetTranslation = SIMD3<Float>(
+                dataManager.statusMinimizedXPosition,
+                dataManager.statusMinimizedYPosition,
+                -1.0
+            )
+        } else {
+            targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
+        }
+        var offsetTransform = Transform()
+        offsetTransform.translation = targetTranslation
+        let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+        return Transform(matrix: worldMatrix)
     }
     
     private func handleOnDisappear() {
