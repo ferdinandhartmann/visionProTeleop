@@ -383,6 +383,9 @@ class DataManager: ObservableObject {
     // Lock video plane to world frame (not persistent, always defaults to head-following)
     @Published var videoPlaneFixedToWorld: Bool
     
+    // Lock status view to world frame (not persistent, always defaults to head-following)
+    @Published var statusFixedToWorld: Bool
+    
     // Status window minimized position (persistent via UserDefaults)
     @Published var statusMinimizedXPosition: Float {
         didSet {
@@ -498,6 +501,7 @@ class DataManager: ObservableObject {
         self.isCrossNetworkMode = UserDefaults.standard.bool(forKey: "isCrossNetworkMode")
         // Always default to head-following (false) on startup, ignoring any saved state
         self.videoPlaneFixedToWorld = false
+        self.statusFixedToWorld = false
         // Load saved minimized status position or use defaults
         self.statusMinimizedXPosition = UserDefaults.standard.object(forKey: "statusMinimizedXPosition") as? Float ?? 0.0
         self.statusMinimizedYPosition = UserDefaults.standard.object(forKey: "statusMinimizedYPosition") as? Float ?? -0.3

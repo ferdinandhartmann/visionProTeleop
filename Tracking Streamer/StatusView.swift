@@ -2720,6 +2720,16 @@ struct StatusOverlay: View {
     
     private var statusPositionPanelContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Lock To World")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.8))
+                Spacer()
+                Toggle("", isOn: $dataManager.statusFixedToWorld)
+                    .labelsHidden()
+                    .tint(.orange)
+            }
+            
             // X position control
             VStack(alignment: .leading, spacing: 4) {
                 HStack {

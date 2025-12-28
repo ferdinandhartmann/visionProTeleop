@@ -206,6 +206,7 @@ struct CombinedStreamingView: View {
     @State private var previewStatusActive = false
     @State private var stereoMaterialEntity: Entity? = nil
     @State private var fixedWorldTransform: Transform? = nil
+    @State private var statusFixedWorldTransform: Transform? = nil
     @State private var uvcFrame: UIImage? = nil  // UVC camera frame
     
     // MuJoCo state
@@ -323,7 +324,9 @@ struct CombinedStreamingView: View {
                 videoMinimized: $videoMinimized,
                 hasAutoMinimized: $hasAutoMinimized,
                 fixedWorldTransform: $fixedWorldTransform,
+                statusFixedWorldTransform: $statusFixedWorldTransform,
                 userInteracted: $userInteracted,
+                isMinimized: $isMinimized,
                 mujocoUsdzURL: $mujocoUsdzURL,
                 mujocoEntity: $mujocoEntity,
                 mujocoBodyEntities: $mujocoBodyEntities,
@@ -370,6 +373,8 @@ struct CombinedStreamingView: View {
             let _ = dataManager.statusMinimizedYPosition
             let _ = previewStatusPosition
             let _ = previewStatusActive
+            let _ = dataManager.statusFixedToWorld
+            let _ = statusFixedWorldTransform
             let _ = isMinimized
             let _ = mujocoPoseUpdateTrigger
             let _ = mujocoEntity  // Trigger update when model is loaded
@@ -386,14 +391,14 @@ struct CombinedStreamingView: View {
                 }
                 return nil
             }
+
+            let headAnchor = findEntity(named: "videoAnchor", in: updateContent.entities) as? AnchorEntity
+            let worldAnchor = findEntity(named: "videoWorldAnchor", in: updateContent.entities) as? AnchorEntity
             
             // === VIDEO UPDATE (from ImmersiveView) ===
             if let videoRoot = findEntity(named: "videoRoot", in: updateContent.entities) {
                 let skyBoxEntity = videoRoot.findEntity(named: "videoPlane")
                 let previewEntity = videoRoot.findEntity(named: "previewPlane")
-                let headAnchor = findEntity(named: "videoAnchor", in: updateContent.entities) as? AnchorEntity
-                let worldAnchor = findEntity(named: "videoWorldAnchor", in: updateContent.entities) as? AnchorEntity
-                
                 let framesAvailable = imageData.left != nil && imageData.right != nil
                 let isFixed = dataManager.videoPlaneFixedToWorld
                 let shouldShowPreview = previewZDistance != nil || previewActive
@@ -618,8 +623,23 @@ struct CombinedStreamingView: View {
             }
             
             // === STATUS UPDATE ===
-            if let statusAnchor = updateContent.entities.first(where: { $0.name == "statusHeadAnchor" }) as? AnchorEntity {
-                if let statusContainer = statusAnchor.children.first(where: { $0.name == "statusContainer" }) {
+            let statusFixed = dataManager.statusFixedToWorld
+            let statusHeadAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity
+            
+            if let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
+                if statusFixed {
+                    if let worldAnchor {
+                        if statusContainer.parent !== worldAnchor {
+                            statusContainer.setParent(worldAnchor, preservingWorldTransform: true)
+                        }
+                        if let lockedTransform = statusFixedWorldTransform {
+                            statusContainer.move(to: lockedTransform, relativeTo: worldAnchor, duration: 0.1, timingFunction: .linear)
+                        }
+                    }
+                } else if let statusHeadAnchor {
+                    if statusContainer.parent !== statusHeadAnchor {
+                        statusContainer.setParent(statusHeadAnchor, preservingWorldTransform: true)
+                    }
                     let targetTranslation: SIMD3<Float>
                     if isMinimized {
                         targetTranslation = SIMD3<Float>(
@@ -634,8 +654,18 @@ struct CombinedStreamingView: View {
                     transform.translation = targetTranslation
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
-                
-                if let statusPreviewContainer = statusAnchor.children.first(where: { $0.name == "statusPreviewContainer" }) {
+            }
+            
+            if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
+                if statusFixed {
+                    if let worldAnchor, statusPreviewContainer.parent !== worldAnchor {
+                        statusPreviewContainer.setParent(worldAnchor, preservingWorldTransform: true)
+                    }
+                    statusPreviewContainer.isEnabled = false
+                } else if let statusHeadAnchor {
+                    if statusPreviewContainer.parent !== statusHeadAnchor {
+                        statusPreviewContainer.setParent(statusHeadAnchor, preservingWorldTransform: true)
+                    }
                     let shouldShowPreview = previewStatusPosition != nil || previewStatusActive
                     if shouldShowPreview {
                         let xPos = previewStatusPosition?.x ?? dataManager.statusMinimizedXPosition
@@ -2857,7 +2887,9 @@ private struct StateChangeModifiers: ViewModifier {
     @Binding var videoMinimized: Bool
     @Binding var hasAutoMinimized: Bool
     @Binding var fixedWorldTransform: Transform?
+    @Binding var statusFixedWorldTransform: Transform?
     @Binding var userInteracted: Bool
+    @Binding var isMinimized: Bool
     @Binding var mujocoUsdzURL: String?
     @Binding var mujocoEntity: Entity?
     @Binding var mujocoBodyEntities: [String: ModelEntity]
@@ -2914,6 +2946,9 @@ private struct StateChangeModifiers: ViewModifier {
             }
             .onChange(of: dataManager.videoPlaneFixedToWorld) { _, isFixed in
                 handleVideoPlaneFixedChange(isFixed: isFixed)
+            }
+            .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
+                handleStatusFixedChange(isFixed: isFixed)
             }
             .onChange(of: userInteracted) { oldValue, newValue in
                 dlog("⚠️ [CombinedStreamingView] userInteracted changed from \(oldValue) to \(newValue)")
@@ -3019,6 +3054,7 @@ private struct StateChangeModifiers: ViewModifier {
         videoMinimized = false
         hasAutoMinimized = false
         fixedWorldTransform = nil
+        statusFixedWorldTransform = nil
         mujocoManager.poseStreamingViaWebRTC = false
         mujocoManager.simEnabled = false
         videoStreamManager.stop(preserveForReconnect: true)
@@ -3058,11 +3094,31 @@ private struct StateChangeModifiers: ViewModifier {
         }
     }
     
+    private func handleStatusFixedChange(isFixed: Bool) {
+        if isFixed {
+            let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+            let targetTranslation = SIMD3<Float>(
+                isMinimized ? dataManager.statusMinimizedXPosition : 0.0,
+                isMinimized ? dataManager.statusMinimizedYPosition : -0.1,
+                -1.0
+            )
+            
+            var offsetTransform = Transform()
+            offsetTransform.translation = targetTranslation
+            
+            let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+            statusFixedWorldTransform = Transform(matrix: worldMatrix)
+        } else {
+            statusFixedWorldTransform = nil
+        }
+    }
+    
     private func handleOnDisappear() {
         dlog("🛑 [CombinedStreamingView] View disappeared, stopping services")
         videoStreamManager.stop(preserveForReconnect: false)  // Full cleanup on disappear
         uvcCameraManager.stopCapture()
         fixedWorldTransform = nil
+        statusFixedWorldTransform = nil
         Task { await mujocoManager.stopServer() }
     }
 }

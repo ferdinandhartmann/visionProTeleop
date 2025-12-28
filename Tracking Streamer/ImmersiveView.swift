@@ -25,6 +25,7 @@ struct ImmersiveView: View {
     @State private var previewStatusActive = false  // Track if status preview should be shown
     @State private var stereoMaterialEntity: Entity? = nil  // Store reference to RealityKit stereo material entity
     @State private var fixedWorldTransform: Transform? = nil  // Preserve world transform when locked
+    @State private var statusFixedWorldTransform: Transform? = nil  // Preserve status transform when locked
     
     var body: some View {
         RealityView { content, attachments in
@@ -113,6 +114,8 @@ struct ImmersiveView: View {
             let _ = previewStatusPosition  // React to status preview changes
             let _ = previewStatusActive  // React to status preview active state
             let _ = isMinimized  // React to minimized state changes
+            let _ = dataManager.statusFixedToWorld  // React to status anchoring mode changes
+            let _ = statusFixedWorldTransform
             
             func findEntity(named name: String, in collection: RealityViewEntityCollection) -> Entity? {
                 for entity in collection {
@@ -183,8 +186,23 @@ struct ImmersiveView: View {
             }
             
             // Update status container position based on minimized state (do this BEFORE early return)
-            if let statusAnchor = updateContent.entities.first(where: { $0.name == "statusHeadAnchor" }) as? AnchorEntity {
-                if let statusContainer = statusAnchor.children.first(where: { $0.name == "statusContainer" }) {
+            let statusFixed = dataManager.statusFixedToWorld
+            let statusHeadAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity
+            
+            if let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
+                if statusFixed {
+                    if let worldAnchor {
+                        if statusContainer.parent !== worldAnchor {
+                            statusContainer.setParent(worldAnchor, preservingWorldTransform: true)
+                        }
+                        if let lockedTransform = statusFixedWorldTransform {
+                            statusContainer.move(to: lockedTransform, relativeTo: worldAnchor, duration: 0.1, timingFunction: .linear)
+                        }
+                    }
+                } else if let statusHeadAnchor {
+                    if statusContainer.parent !== statusHeadAnchor {
+                        statusContainer.setParent(statusHeadAnchor, preservingWorldTransform: true)
+                    }
                     // When minimized, use custom position; when maximized, use (0, 0, -1.0)
                     let targetTranslation: SIMD3<Float>
                     if isMinimized {
@@ -203,9 +221,18 @@ struct ImmersiveView: View {
                     transform.translation = targetTranslation
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
-                
-                // Handle status preview
-                if let statusPreviewContainer = statusAnchor.children.first(where: { $0.name == "statusPreviewContainer" }) {
+            }
+            
+            if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
+                if statusFixed {
+                    if let worldAnchor, statusPreviewContainer.parent !== worldAnchor {
+                        statusPreviewContainer.setParent(worldAnchor, preservingWorldTransform: true)
+                    }
+                    statusPreviewContainer.isEnabled = false
+                } else if let statusHeadAnchor {
+                    if statusPreviewContainer.parent !== statusHeadAnchor {
+                        statusPreviewContainer.setParent(statusHeadAnchor, preservingWorldTransform: true)
+                    }
                     let shouldShowPreview = previewStatusPosition != nil || previewStatusActive
                     
                     if shouldShowPreview {
@@ -430,6 +457,7 @@ struct ImmersiveView: View {
                 videoMinimized = false
                 hasAutoMinimized = false
                 fixedWorldTransform = nil
+                statusFixedWorldTransform = nil
                 // Stop the video stream but preserve for potential reconnection
                 videoStreamManager.stop(preserveForReconnect: true)
             }
@@ -443,6 +471,7 @@ struct ImmersiveView: View {
                 hasFrames = false
                 videoMinimized = false
                 fixedWorldTransform = nil
+                statusFixedWorldTransform = nil
                 videoStreamManager.stop(preserveForReconnect: false)  // Full cleanup
             } else if newValue > 0 && oldValue != newValue {
                 // New connection or reconnection - preserve client for smooth transition
@@ -486,10 +515,28 @@ struct ImmersiveView: View {
                 fixedWorldTransform = nil
             }
         }
+        .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
+            if isFixed {
+                let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+                let targetTranslation = SIMD3<Float>(
+                    isMinimized ? dataManager.statusMinimizedXPosition : 0.0,
+                    isMinimized ? dataManager.statusMinimizedYPosition : 0.0,
+                    -1.0
+                )
+                var offsetTransform = Transform()
+                offsetTransform.translation = targetTranslation
+                
+                let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+                statusFixedWorldTransform = Transform(matrix: worldMatrix)
+            } else {
+                statusFixedWorldTransform = nil
+            }
+        }
         .onDisappear {
             dlog("DEBUG: ImmersiveView disappeared, stopping video stream")
             videoStreamManager.stop(preserveForReconnect: false)  // Full cleanup on disappear
             fixedWorldTransform = nil
+            statusFixedWorldTransform = nil
         }
         .upperLimbVisibility(dataManager.upperLimbVisible ? .visible : .hidden)
     }
