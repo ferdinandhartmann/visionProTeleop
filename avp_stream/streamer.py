@@ -1375,6 +1375,8 @@ class VisionProStreamer:
         @channel.on("close")
         def _on_close():
             self._log("[WEBRTC] Sim-poses data channel closed", force=True)
+            # Stop pose streaming so we can cleanly restart when the channel reopens
+            self._stop_pose_streaming()
             self._webrtc_sim_ready = False
             self._webrtc_sim_channel = None
 
