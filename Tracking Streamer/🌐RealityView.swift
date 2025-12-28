@@ -11,6 +11,7 @@ struct 🌐RealityView: View {
     @State private var userInteracted = false
     @State private var previewStatusPosition: (x: Float, y: Float)? = nil
     @State private var previewStatusActive = false
+    @State private var fixedStatusTransform: Transform? = nil
     @ObservedObject private var dataManager = DataManager.shared
     
     var body: some View {
@@ -25,6 +26,10 @@ struct 🌐RealityView: View {
             let statusAnchor = AnchorEntity(.head)
             statusAnchor.name = "statusHeadAnchor"
             content.add(statusAnchor)
+            
+            let statusWorldAnchor = AnchorEntity(world: .zero)
+            statusWorldAnchor.name = "statusWorldAnchor"
+            content.add(statusWorldAnchor)
             
             // Create status container entity
             let statusContainer = Entity()
@@ -68,44 +73,74 @@ struct 🌐RealityView: View {
             let _ = previewStatusActive
             let _ = dataManager.statusMinimizedXPosition
             let _ = dataManager.statusMinimizedYPosition
+            let _ = dataManager.statusFixedToWorld
+            
+            func findEntity(named name: String, in collection: RealityViewEntityCollection) -> Entity? {
+                for entity in collection {
+                    if entity.name == name { return entity }
+                    if let nested = entity.findEntity(named: name) { return nested }
+                }
+                return nil
+            }
             
             // Update status container position based on minimized state
-            if let statusAnchor = updateContent.entities.first(where: { $0.name == "statusHeadAnchor" }) as? AnchorEntity {
-                if let statusContainer = statusAnchor.children.first(where: { $0.name == "statusContainer" }) {
-                    // When minimized, use custom position; when maximized, use (0, 0, -1.0)
-                    let targetTranslation: SIMD3<Float>
-                    if isMinimized {
-                        targetTranslation = SIMD3<Float>(
-                            dataManager.statusMinimizedXPosition,
-                            dataManager.statusMinimizedYPosition,
-                            -1.0
-                        )
-                    } else {
-                        // Maximized stays at (0, 0, -1.0)
-                        targetTranslation = SIMD3<Float>(0.0, 0.0, -1.0)
-                    }
-                    
+            if let statusAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusWorldAnchor = findEntity(named: "statusWorldAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
+                let isStatusFixed = dataManager.statusFixedToWorld
+                if isStatusFixed, statusContainer.parent !== statusWorldAnchor {
+                    statusContainer.setParent(statusWorldAnchor, preservingWorldTransform: true)
+                } else if !isStatusFixed, statusContainer.parent !== statusAnchor {
+                    statusContainer.setParent(statusAnchor, preservingWorldTransform: true)
+                }
+                
+                // When minimized, use custom position; when maximized, use (0, 0, -1.0)
+                let targetTranslation: SIMD3<Float>
+                if isMinimized {
+                    targetTranslation = SIMD3<Float>(
+                        dataManager.statusMinimizedXPosition,
+                        dataManager.statusMinimizedYPosition,
+                        -1.0
+                    )
+                } else {
+                    // Maximized stays at (0, 0, -1.0)
+                    targetTranslation = SIMD3<Float>(0.0, 0.0, -1.0)
+                }
+                
+                if isStatusFixed, let lockedTransform = fixedStatusTransform {
+                    statusContainer.move(to: lockedTransform, relativeTo: statusContainer.parent, duration: 0.1, timingFunction: .linear)
+                } else {
                     // Animate the position change
                     var transform = statusContainer.transform
                     transform.translation = targetTranslation
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
+            }
+            
+            // Handle status preview
+            if let statusAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusWorldAnchor = findEntity(named: "statusWorldAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
+                let isStatusFixed = dataManager.statusFixedToWorld
                 
-                // Handle status preview
-                if let statusPreviewContainer = statusAnchor.children.first(where: { $0.name == "statusPreviewContainer" }) {
-                    let shouldShowPreview = previewStatusPosition != nil || previewStatusActive
+                if isStatusFixed, statusPreviewContainer.parent !== statusWorldAnchor {
+                    statusPreviewContainer.setParent(statusWorldAnchor, preservingWorldTransform: true)
+                } else if !isStatusFixed, statusPreviewContainer.parent !== statusAnchor {
+                    statusPreviewContainer.setParent(statusAnchor, preservingWorldTransform: true)
+                }
+                
+                let shouldShowPreview = previewStatusPosition != nil || previewStatusActive
+                
+                if shouldShowPreview {
+                    let xPos = previewStatusPosition?.x ?? dataManager.statusMinimizedXPosition
+                    let yPos = previewStatusPosition?.y ?? dataManager.statusMinimizedYPosition
                     
-                    if shouldShowPreview {
-                        let xPos = previewStatusPosition?.x ?? dataManager.statusMinimizedXPosition
-                        let yPos = previewStatusPosition?.y ?? dataManager.statusMinimizedYPosition
-                        
-                        statusPreviewContainer.isEnabled = true
-                        var previewTransform = statusPreviewContainer.transform
-                        previewTransform.translation = SIMD3<Float>(xPos, yPos, -1.0)
-                        statusPreviewContainer.move(to: previewTransform, relativeTo: statusPreviewContainer.parent, duration: 0.1, timingFunction: .linear)
-                    } else {
-                        statusPreviewContainer.isEnabled = false
-                    }
+                    statusPreviewContainer.isEnabled = true
+                    var previewTransform = statusPreviewContainer.transform
+                    previewTransform.translation = SIMD3<Float>(xPos, yPos, -1.0)
+                    statusPreviewContainer.move(to: previewTransform, relativeTo: statusPreviewContainer.parent, duration: 0.1, timingFunction: .linear)
+                } else {
+                    statusPreviewContainer.isEnabled = false
                 }
             }
         } attachments: {
@@ -121,6 +156,10 @@ struct 🌐RealityView: View {
                     previewActive: $previewActive,
                     userInteracted: $userInteracted,
                     videoFixed: .constant(false),
+                    statusFixed: Binding(
+                        get: { dataManager.statusFixedToWorld },
+                        set: { newValue in dataManager.statusFixedToWorld = newValue }
+                    ),
                     previewStatusPosition: $previewStatusPosition,
                     previewStatusActive: $previewStatusActive
                 )
@@ -129,7 +168,8 @@ struct 🌐RealityView: View {
             Attachment(id: "statusPreview") {
                 StatusPreviewView(
                     showVideoStatus: false,
-                    videoFixed: false
+                    videoFixed: false,
+                    statusFixed: dataManager.statusFixedToWorld
                 )
             }
         }
@@ -141,11 +181,29 @@ struct 🌐RealityView: View {
         .task { await self.model.processDeviceAnchorUpdates() }
         // .task { self.model.startserver() }
         .task(priority: .low) { await self.model.processReconstructionUpdates() }
+        .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
+            if isFixed {
+                let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+                let targetTranslation: SIMD3<Float>
+                if isMinimized {
+                    targetTranslation = SIMD3<Float>(
+                        dataManager.statusMinimizedXPosition,
+                        dataManager.statusMinimizedYPosition,
+                        -1.0
+                    )
+                } else {
+                    targetTranslation = SIMD3<Float>(0.0, 0.0, -1.0)
+                }
+                var offsetTransform = Transform()
+                offsetTransform.translation = targetTranslation
+                let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+                fixedStatusTransform = Transform(matrix: worldMatrix)
+            } else {
+                fixedStatusTransform = nil
+            }
+        }
         .upperLimbVisibility(dataManager.upperLimbVisible ? .visible : .hidden)
     }
     static let resultLabelID: String = "resultLabel"
     static let statusAttachmentID: String = "status"
 }
-
-
-

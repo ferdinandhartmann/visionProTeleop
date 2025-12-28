@@ -25,6 +25,7 @@ struct ImmersiveView: View {
     @State private var previewStatusActive = false  // Track if status preview should be shown
     @State private var stereoMaterialEntity: Entity? = nil  // Store reference to RealityKit stereo material entity
     @State private var fixedWorldTransform: Transform? = nil  // Preserve world transform when locked
+    @State private var fixedStatusTransform: Transform? = nil  // Preserve status transform when locked
     
     var body: some View {
         RealityView { content, attachments in
@@ -61,6 +62,11 @@ struct ImmersiveView: View {
             let statusAnchor = AnchorEntity(.head)
             statusAnchor.name = "statusHeadAnchor"
             content.add(statusAnchor)
+            
+            // World anchor for pinning status in space
+            let statusWorldAnchor = AnchorEntity(world: .zero)
+            statusWorldAnchor.name = "statusWorldAnchor"
+            content.add(statusWorldAnchor)
             
             // Create status container entity
             let statusContainer = Entity()
@@ -110,6 +116,7 @@ struct ImmersiveView: View {
             let _ = currentAspectRatio  // React to aspect ratio changes
             let _ = dataManager.statusMinimizedXPosition  // React to status position changes
             let _ = dataManager.statusMinimizedYPosition  // React to status position changes
+            let _ = dataManager.statusFixedToWorld  // React to status lock changes
             let _ = previewStatusPosition  // React to status preview changes
             let _ = previewStatusActive  // React to status preview active state
             let _ = isMinimized  // React to minimized state changes
@@ -183,8 +190,19 @@ struct ImmersiveView: View {
             }
             
             // Update status container position based on minimized state (do this BEFORE early return)
-            if let statusAnchor = updateContent.entities.first(where: { $0.name == "statusHeadAnchor" }) as? AnchorEntity {
-                if let statusContainer = statusAnchor.children.first(where: { $0.name == "statusContainer" }) {
+            if let statusAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusWorldAnchor = findEntity(named: "statusWorldAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
+                if let _ = statusContainer.parent {
+                    let isStatusFixed = dataManager.statusFixedToWorld
+                    
+                    // Reparent based on lock state
+                    if isStatusFixed, statusContainer.parent !== statusWorldAnchor {
+                        statusContainer.setParent(statusWorldAnchor, preservingWorldTransform: true)
+                    } else if !isStatusFixed, statusContainer.parent !== statusAnchor {
+                        statusContainer.setParent(statusAnchor, preservingWorldTransform: true)
+                    }
+                    
                     // When minimized, use custom position; when maximized, use (0, 0, -1.0)
                     let targetTranslation: SIMD3<Float>
                     if isMinimized {
@@ -198,14 +216,26 @@ struct ImmersiveView: View {
                         targetTranslation = SIMD3<Float>(0.0, 0.0, -1.0)
                     }
                     
-                    // Animate the position change
-                    var transform = statusContainer.transform
-                    transform.translation = targetTranslation
-                    statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
+                    // Animate the position change (if not locked) or apply fixed transform
+                    if isStatusFixed, let lockedTransform = fixedStatusTransform {
+                        statusContainer.move(to: lockedTransform, relativeTo: statusContainer.parent, duration: 0.1, timingFunction: .linear)
+                    } else {
+                        var transform = statusContainer.transform
+                        transform.translation = targetTranslation
+                        statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
+                    }
                 }
                 
                 // Handle status preview
-                if let statusPreviewContainer = statusAnchor.children.first(where: { $0.name == "statusPreviewContainer" }) {
+                if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
+                    let isStatusFixed = dataManager.statusFixedToWorld
+                    // Reparent preview based on lock state
+                    if isStatusFixed, statusPreviewContainer.parent !== statusWorldAnchor {
+                        statusPreviewContainer.setParent(statusWorldAnchor, preservingWorldTransform: true)
+                    } else if !isStatusFixed, statusPreviewContainer.parent !== statusAnchor {
+                        statusPreviewContainer.setParent(statusAnchor, preservingWorldTransform: true)
+                    }
+                    
                     let shouldShowPreview = previewStatusPosition != nil || previewStatusActive
                     
                     if shouldShowPreview {
@@ -365,6 +395,10 @@ struct ImmersiveView: View {
                         get: { dataManager.videoPlaneFixedToWorld },
                         set: { newValue in dataManager.videoPlaneFixedToWorld = newValue }
                     ),
+                    statusFixed: Binding(
+                        get: { dataManager.statusFixedToWorld },
+                        set: { newValue in dataManager.statusFixedToWorld = newValue }
+                    ),
                     previewStatusPosition: $previewStatusPosition,
                     previewStatusActive: $previewStatusActive,
 //                    onReset: {
@@ -376,7 +410,8 @@ struct ImmersiveView: View {
             Attachment(id: "statusPreview") {
                 StatusPreviewView(
                     showVideoStatus: true,
-                    videoFixed: dataManager.videoPlaneFixedToWorld
+                    videoFixed: dataManager.videoPlaneFixedToWorld,
+                    statusFixed: dataManager.statusFixedToWorld
                 )
             }
         }
@@ -486,10 +521,34 @@ struct ImmersiveView: View {
                 fixedWorldTransform = nil
             }
         }
+        .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
+            if isFixed {
+                dlog("🔒 [ImmersiveView] Status Fixed Mode ENABLED - Capturing Transform")
+                let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+                let targetTranslation: SIMD3<Float>
+                if isMinimized {
+                    targetTranslation = SIMD3<Float>(
+                        dataManager.statusMinimizedXPosition,
+                        dataManager.statusMinimizedYPosition,
+                        -1.0
+                    )
+                } else {
+                    targetTranslation = SIMD3<Float>(0.0, 0.0, -1.0)
+                }
+                var offsetTransform = Transform()
+                offsetTransform.translation = targetTranslation
+                let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+                fixedStatusTransform = Transform(matrix: worldMatrix)
+            } else {
+                dlog("🔓 [ImmersiveView] Status Fixed Mode DISABLED")
+                fixedStatusTransform = nil
+            }
+        }
         .onDisappear {
             dlog("DEBUG: ImmersiveView disappeared, stopping video stream")
             videoStreamManager.stop(preserveForReconnect: false)  // Full cleanup on disappear
             fixedWorldTransform = nil
+            fixedStatusTransform = nil
         }
         .upperLimbVisibility(dataManager.upperLimbVisible ? .visible : .hidden)
     }

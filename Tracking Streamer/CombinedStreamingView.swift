@@ -206,6 +206,7 @@ struct CombinedStreamingView: View {
     @State private var previewStatusActive = false
     @State private var stereoMaterialEntity: Entity? = nil
     @State private var fixedWorldTransform: Transform? = nil
+    @State private var fixedStatusTransform: Transform? = nil
     @State private var uvcFrame: UIImage? = nil  // UVC camera frame
     
     // MuJoCo state
@@ -368,6 +369,7 @@ struct CombinedStreamingView: View {
             let _ = currentAspectRatio
             let _ = dataManager.statusMinimizedXPosition
             let _ = dataManager.statusMinimizedYPosition
+            let _ = dataManager.statusFixedToWorld
             let _ = previewStatusPosition
             let _ = previewStatusActive
             let _ = isMinimized
@@ -618,35 +620,57 @@ struct CombinedStreamingView: View {
             }
             
             // === STATUS UPDATE ===
-            if let statusAnchor = updateContent.entities.first(where: { $0.name == "statusHeadAnchor" }) as? AnchorEntity {
-                if let statusContainer = statusAnchor.children.first(where: { $0.name == "statusContainer" }) {
-                    let targetTranslation: SIMD3<Float>
-                    if isMinimized {
-                        targetTranslation = SIMD3<Float>(
-                            dataManager.statusMinimizedXPosition,
-                            dataManager.statusMinimizedYPosition,
-                            -1.0
-                        )
-                    } else {
-                        targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
-                    }
+            if let statusAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusWorldAnchor = findEntity(named: "statusWorldAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
+                let isStatusFixed = dataManager.statusFixedToWorld
+                
+                if isStatusFixed, statusContainer.parent !== statusWorldAnchor {
+                    statusContainer.setParent(statusWorldAnchor, preservingWorldTransform: true)
+                } else if !isStatusFixed, statusContainer.parent !== statusAnchor {
+                    statusContainer.setParent(statusAnchor, preservingWorldTransform: true)
+                }
+                
+                let targetTranslation: SIMD3<Float>
+                if isMinimized {
+                    targetTranslation = SIMD3<Float>(
+                        dataManager.statusMinimizedXPosition,
+                        dataManager.statusMinimizedYPosition,
+                        -1.0
+                    )
+                } else {
+                    targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
+                }
+                
+                if isStatusFixed, let lockedTransform = fixedStatusTransform {
+                    statusContainer.move(to: lockedTransform, relativeTo: statusContainer.parent, duration: 0.1, timingFunction: .linear)
+                } else {
                     var transform = statusContainer.transform
                     transform.translation = targetTranslation
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
+            }
+            
+            if let statusAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusWorldAnchor = findEntity(named: "statusWorldAnchor", in: updateContent.entities) as? AnchorEntity,
+               let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
+                let isStatusFixed = dataManager.statusFixedToWorld
+                if isStatusFixed, statusPreviewContainer.parent !== statusWorldAnchor {
+                    statusPreviewContainer.setParent(statusWorldAnchor, preservingWorldTransform: true)
+                } else if !isStatusFixed, statusPreviewContainer.parent !== statusAnchor {
+                    statusPreviewContainer.setParent(statusAnchor, preservingWorldTransform: true)
+                }
                 
-                if let statusPreviewContainer = statusAnchor.children.first(where: { $0.name == "statusPreviewContainer" }) {
-                    let shouldShowPreview = previewStatusPosition != nil || previewStatusActive
-                    if shouldShowPreview {
-                        let xPos = previewStatusPosition?.x ?? dataManager.statusMinimizedXPosition
-                        let yPos = previewStatusPosition?.y ?? dataManager.statusMinimizedYPosition
-                        statusPreviewContainer.isEnabled = true
-                        var previewTransform = statusPreviewContainer.transform
-                        previewTransform.translation = SIMD3<Float>(xPos, yPos, -1.0)
-                        statusPreviewContainer.move(to: previewTransform, relativeTo: statusPreviewContainer.parent, duration: 0.1, timingFunction: .linear)
-                    } else {
-                        statusPreviewContainer.isEnabled = false
-                    }
+                let shouldShowPreview = previewStatusPosition != nil || previewStatusActive
+                if shouldShowPreview {
+                    let xPos = previewStatusPosition?.x ?? dataManager.statusMinimizedXPosition
+                    let yPos = previewStatusPosition?.y ?? dataManager.statusMinimizedYPosition
+                    statusPreviewContainer.isEnabled = true
+                    var previewTransform = statusPreviewContainer.transform
+                    previewTransform.translation = SIMD3<Float>(xPos, yPos, -1.0)
+                    statusPreviewContainer.move(to: previewTransform, relativeTo: statusPreviewContainer.parent, duration: 0.1, timingFunction: .linear)
+                } else {
+                    statusPreviewContainer.isEnabled = false
                 }
             }
             
@@ -1126,6 +1150,10 @@ struct CombinedStreamingView: View {
                     get: { dataManager.videoPlaneFixedToWorld },
                     set: { newValue in dataManager.videoPlaneFixedToWorld = newValue }
                 ),
+                statusFixed: Binding(
+                    get: { dataManager.statusFixedToWorld },
+                    set: { newValue in dataManager.statusFixedToWorld = newValue }
+                ),
                 previewStatusPosition: $previewStatusPosition,
                 previewStatusActive: $previewStatusActive,
                 onReset: {
@@ -1138,7 +1166,8 @@ struct CombinedStreamingView: View {
         Attachment(id: "statusPreview") {
             StatusPreviewView(
                 showVideoStatus: true,
-                videoFixed: dataManager.videoPlaneFixedToWorld
+                videoFixed: dataManager.videoPlaneFixedToWorld,
+                statusFixed: dataManager.statusFixedToWorld
             )
         }
         
@@ -1446,6 +1475,10 @@ struct CombinedStreamingView: View {
         let statusAnchor = AnchorEntity(.head)
         statusAnchor.name = "statusHeadAnchor"
         content.add(statusAnchor)
+        
+        let statusWorldAnchor = AnchorEntity(world: .zero)
+        statusWorldAnchor.name = "statusWorldAnchor"
+        content.add(statusWorldAnchor)
         
         let statusContainer = Entity()
         statusContainer.name = "statusContainer"
@@ -2915,6 +2948,9 @@ private struct StateChangeModifiers: ViewModifier {
             .onChange(of: dataManager.videoPlaneFixedToWorld) { _, isFixed in
                 handleVideoPlaneFixedChange(isFixed: isFixed)
             }
+            .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
+                handleStatusFixedChange(isFixed: isFixed)
+            }
             .onChange(of: userInteracted) { oldValue, newValue in
                 dlog("⚠️ [CombinedStreamingView] userInteracted changed from \(oldValue) to \(newValue)")
                 if newValue {
@@ -3058,11 +3094,34 @@ private struct StateChangeModifiers: ViewModifier {
         }
     }
     
+    private func handleStatusFixedChange(isFixed: Bool) {
+        if isFixed {
+            let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+            let targetTranslation: SIMD3<Float>
+            if isMinimized {
+                targetTranslation = SIMD3<Float>(
+                    dataManager.statusMinimizedXPosition,
+                    dataManager.statusMinimizedYPosition,
+                    -1.0
+                )
+            } else {
+                targetTranslation = SIMD3<Float>(0.0, -0.1, -1.0)
+            }
+            var offsetTransform = Transform()
+            offsetTransform.translation = targetTranslation
+            let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+            fixedStatusTransform = Transform(matrix: worldMatrix)
+        } else {
+            fixedStatusTransform = nil
+        }
+    }
+    
     private func handleOnDisappear() {
         dlog("🛑 [CombinedStreamingView] View disappeared, stopping services")
         videoStreamManager.stop(preserveForReconnect: false)  // Full cleanup on disappear
         uvcCameraManager.stopCapture()
         fixedWorldTransform = nil
+        fixedStatusTransform = nil
         Task { await mujocoManager.stopServer() }
     }
 }

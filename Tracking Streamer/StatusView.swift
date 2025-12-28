@@ -87,6 +87,7 @@ struct StatusOverlay: View {
     @Binding var userInteracted: Bool
     @Binding var videoMinimized: Bool
     @Binding var videoFixed: Bool
+    @Binding var statusFixed: Bool
     @Binding var previewStatusPosition: (x: Float, y: Float)?
     @Binding var previewStatusActive: Bool
     var onReset: (() -> Void)? = nil
@@ -121,7 +122,7 @@ struct StatusOverlay: View {
     // Flashing animation for warnings
     @State private var flashingOpacity: Double = 1.0
     
-    init(hasFrames: Binding<Bool> = .constant(false), showVideoStatus: Bool = true, isMinimized: Binding<Bool> = .constant(false), showViewControls: Binding<Bool> = .constant(false), previewZDistance: Binding<Float?> = .constant(nil), previewActive: Binding<Bool> = .constant(false), userInteracted: Binding<Bool> = .constant(false), videoMinimized: Binding<Bool> = .constant(false), videoFixed: Binding<Bool> = .constant(false), previewStatusPosition: Binding<(x: Float, y: Float)?> = .constant(nil), previewStatusActive: Binding<Bool> = .constant(false), onReset: (() -> Void)? = nil, mujocoManager: (any MuJoCoManager)? = nil) {
+    init(hasFrames: Binding<Bool> = .constant(false), showVideoStatus: Bool = true, isMinimized: Binding<Bool> = .constant(false), showViewControls: Binding<Bool> = .constant(false), previewZDistance: Binding<Float?> = .constant(nil), previewActive: Binding<Bool> = .constant(false), userInteracted: Binding<Bool> = .constant(false), videoMinimized: Binding<Bool> = .constant(false), videoFixed: Binding<Bool> = .constant(false), statusFixed: Binding<Bool> = .constant(false), previewStatusPosition: Binding<(x: Float, y: Float)?> = .constant(nil), previewStatusActive: Binding<Bool> = .constant(false), onReset: (() -> Void)? = nil, mujocoManager: (any MuJoCoManager)? = nil) {
         self._hasFrames = hasFrames
         self.showVideoStatus = showVideoStatus
         self._isMinimized = isMinimized
@@ -131,6 +132,7 @@ struct StatusOverlay: View {
         self._userInteracted = userInteracted
         self._videoMinimized = videoMinimized
         self._videoFixed = videoFixed
+        self._statusFixed = statusFixed
         self._previewStatusPosition = previewStatusPosition
         self._previewStatusActive = previewStatusActive
         self.onReset = onReset
@@ -576,6 +578,21 @@ struct StatusOverlay: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    
+                    // Toggle world-fixed mode for the status panel
+                    Button {
+                        statusFixed.toggle()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(statusFixed ? Color.orange.opacity(0.8) : Color.gray.opacity(0.6))
+                                .frame(width: 60, height: 60)
+                            Image(systemName: statusFixed ? "location.fill" : "location")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .buttonStyle(.plain)
                     
                     if onReset != nil {
                         // Mujoco Reset Button or Simulation reset button
@@ -2720,6 +2737,19 @@ struct StatusOverlay: View {
     
     private var statusPositionPanelContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Lock to World")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.8))
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { dataManager.statusFixedToWorld },
+                    set: { newValue in dataManager.statusFixedToWorld = newValue }
+                ))
+                .labelsHidden()
+                .tint(.orange)
+            }
+            
             // X position control
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -4579,6 +4609,7 @@ struct StatusOverlay: View {
 struct StatusPreviewView: View {
     let showVideoStatus: Bool
     let videoFixed: Bool
+    let statusFixed: Bool
     
     var body: some View {
         HStack(spacing: 16) {
@@ -4621,6 +4652,15 @@ struct StatusPreviewView: View {
                         .font(.system(size: 24, weight: .bold))
                         .foregroundColor(.white)
                 }
+            }
+            
+            ZStack {
+                Circle()
+                    .fill(statusFixed ? Color.orange.opacity(0.8) : Color.white.opacity(0.3))
+                    .frame(width: 60, height: 60)
+                Image(systemName: statusFixed ? "location.fill" : "location")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
             }
             
             // Close button (non-functional in preview)
