@@ -391,14 +391,14 @@ struct CombinedStreamingView: View {
                 }
                 return nil
             }
+
+            let headAnchor = findEntity(named: "videoAnchor", in: updateContent.entities) as? AnchorEntity
+            let worldAnchor = findEntity(named: "videoWorldAnchor", in: updateContent.entities) as? AnchorEntity
             
             // === VIDEO UPDATE (from ImmersiveView) ===
             if let videoRoot = findEntity(named: "videoRoot", in: updateContent.entities) {
                 let skyBoxEntity = videoRoot.findEntity(named: "videoPlane")
                 let previewEntity = videoRoot.findEntity(named: "previewPlane")
-                let headAnchor = findEntity(named: "videoAnchor", in: updateContent.entities) as? AnchorEntity
-                let worldAnchor = findEntity(named: "videoWorldAnchor", in: updateContent.entities) as? AnchorEntity
-                
                 let framesAvailable = imageData.left != nil && imageData.right != nil
                 let isFixed = dataManager.videoPlaneFixedToWorld
                 let shouldShowPreview = previewZDistance != nil || previewActive
