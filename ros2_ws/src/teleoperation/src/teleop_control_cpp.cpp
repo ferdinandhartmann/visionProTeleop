@@ -459,7 +459,7 @@ private:
 
     publishEeTargetTf(ee_target_pos_, ee_target_ori_, "ee_target_offset_mycobot_base", "mycobot_base");
 
-		teleoperation::msg::TeleopTarget target_msg;
+	teleoperation::msg::TeleopTarget target_msg;
     target_msg.pose.header.stamp = this->get_clock()->now();
     target_msg.pose.header.frame_id = "mycobot_base";
     target_msg.pose.pose.position.x = ee_target_pos_.x();

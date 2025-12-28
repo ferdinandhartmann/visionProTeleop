@@ -150,8 +150,11 @@ InverseKinematicsNode()
 	joint_state_mycobot_timer_ = create_wall_timer(
 		std::chrono::milliseconds(static_cast<int>(mycobot_target_pose_update_rate_ * 1000.0)),
 		std::bind(&InverseKinematicsNode::jointStateMycobotTimerCallback, this));
+    
+	joint_seed_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+		joint_target_topic, 10,
+		std::bind(&InverseKinematicsNode::jointSeedCallback, this, std::placeholders::_1));
 
-	// Build DH parameters for
 
   dh_chain_ = buildDhParameters();
 
@@ -167,13 +170,54 @@ private:
 
   void poseCallback(const teleoperation::msg::TeleopTarget::SharedPtr msg)
   {
+		if (!have_seed_) {
+			RCLCPP_WARN(get_logger(), "No joint seed received yet; using internal joint_state_.");
+		}
+
     Pose target = poseFromMsg(msg->pose);
     gripper_percent_ = std::clamp(msg->gripper, 0, 100);
 
     // RCLCPP_INFO(get_logger(),
     //   "Received target pose: frame=%s pos=(%.3f, %.3f, %.3f)",
-    //   msg->header.frame_id.c_str(),
+    //   msg->pose.header.frame_id.c_str(),
     //   target.position.x(), target.position.y(), target.position.z());
+
+
+    // If this TeleopTarget the configured ee_target_on_reset, treat it as
+    // a MuJoCo reset notification and publish the configured initial joint
+    // positions (from YAML `initial_joint_positions_deg`) to the mycobot target topic.
+    try {
+      const auto reset_pos_param = get_parameter("ee_target_on_reset_position").as_double_array();
+      const auto reset_ori_param = get_parameter("ee_target_on_reset_orientation_xyzw").as_double_array();
+
+      if (reset_pos_param.size() == 3 && reset_ori_param.size() == 4) {
+        Eigen::Vector3d reset_pos(reset_pos_param[0], reset_pos_param[1], reset_pos_param[2]);
+        double pos_err = (target.position - reset_pos).norm();
+
+        tf2::Quaternion q_msg;
+        tf2::fromMsg(msg->pose.pose.orientation, q_msg);
+        Eigen::Quaterniond q_msg_eig(q_msg.w(), q_msg.x(), q_msg.y(), q_msg.z());
+        Eigen::Quaterniond q_reset(reset_ori_param[3], reset_ori_param[0], reset_ori_param[1], reset_ori_param[2]); // w,x,y,z
+        q_msg_eig.normalize();
+        q_reset.normalize();
+        double dot = std::abs(q_msg_eig.dot(q_reset));
+        if (dot > 1.0) dot = 1.0;
+        if (dot < -1.0) dot = -1.0;
+        double ang_err = 2.0 * std::acos(dot);
+
+        const double POS_TOL = 0.005; // 5 mm
+        const double ANG_TOL = 0.10;  // ~5.7 deg
+
+        if (pos_err < POS_TOL && ang_err < ANG_TOL) {
+          RCLCPP_INFO(get_logger(), "Detected reset ee_target; publishing home joint state.");
+          publishHomeJointState();
+        }
+      }
+    } catch (const std::exception & /*ex*/) {
+      // ignore parameter lookup failures
+    }
+
+
 
     std::vector<double> solution;
     bool success = solveInverseKinematics(target, joint_state_, solution);
@@ -182,7 +226,7 @@ private:
       joint_state_ = solution;
     }
     else{
-    //   RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
+      // RCLCPP_WARN(get_logger(), "IK solution not found; publishing last known joint state");
     }
 
     // publishEndEffectorTf(msg->pose.header);
@@ -477,6 +521,35 @@ private:
     joint_state_publisher_->publish(msg);
   }
 
+  // Publish the configured initial/home joint positions (from parameter
+  // `initial_joint_positions_deg`) to the mycobot joint target topic. This is
+  // intended to be called after a MuJoCo hard reset so external controllers
+  // and bridges can re-sync to the expected joint commands for the robot.
+  void publishHomeJointState()
+  {
+    if (!joint_state_publisher_) return;
+
+    sensor_msgs::msg::JointState msg;
+    msg.header.stamp = now();
+    msg.header.frame_id = mycobot_base_frame_;
+    msg.name = joint_names_;
+
+    const auto init_deg = get_parameter("initial_joint_positions_deg").as_double_array();
+    if (init_deg.size() == 6) {
+      msg.position.reserve(7);
+      for (size_t i = 0; i < 6; ++i) {
+        msg.position.push_back(init_deg[i] * M_PI / 180.0);
+      }
+    } else {
+      // Fallback: use current joint_state_
+      msg.position.assign(joint_state_.begin(), joint_state_.end());
+    }
+
+    msg.position.push_back(gripper_percent_);
+    joint_state_publisher_->publish(msg);
+    RCLCPP_INFO(get_logger(), "Published home joint state to %s", get_parameter("joint_target_topic").as_string().c_str());
+  }
+
   void publishEndEffectorTf(const std_msgs::msg::Header & header)
   {
     if (!tf_broadcaster_)
@@ -506,11 +579,34 @@ private:
     tf_broadcaster_->sendTransform(tf_msg);
   }
 
+	void jointSeedCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
+	{
+		// Expect at least joints 1..6
+		auto find_idx = [&](const std::string& name)->int {
+			auto it = std::find(msg->name.begin(), msg->name.end(), name);
+			if (it == msg->name.end()) return -1;
+			return static_cast<int>(std::distance(msg->name.begin(), it));
+		};
+
+		std::array<std::string,6> jn = {"joint1","joint2","joint3","joint4","joint5","joint6"};
+		for (size_t i=0;i<6;i++){
+			int idx = find_idx(jn[i]);
+			if (idx < 0 || idx >= (int)msg->position.size()) return; // ignore partial
+			joint_state_[i] = msg->position[idx]; // radians
+		}
+
+		have_seed_ = true;
+	}
+
+
     rclcpp::Subscription<teleoperation::msg::TeleopTarget>::SharedPtr pose_subscription_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_ros2_publisher_;
     rclcpp::TimerBase::SharedPtr joint_state_ros2_timer_;
 		rclcpp::TimerBase::SharedPtr joint_state_mycobot_timer_;
+		rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_seed_sub_;
+		
+		bool have_seed_{false};
 
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

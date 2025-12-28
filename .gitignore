@@ -9,7 +9,7 @@ build/
 
 # *.usdz
 
-__pycache__/
+**/__pycache__/
 
 # **/sam_models/
 

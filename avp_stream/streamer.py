@@ -26,6 +26,8 @@ from av import VideoFrame, AudioFrame
 from avp_stream.mujoco_msg import mujoco_ar_pb2, mujoco_ar_pb2_grpc
 from scipy.spatial.transform import Rotation as R
 
+from aiortc.exceptions import InvalidStateError
+
 # Suppress noisy aioice TURN channel bind errors (non-fatal, connection still works via STUN)
 logging.getLogger("aioice.turn").setLevel(logging.ERROR)
 
@@ -1005,6 +1007,13 @@ class VisionProStreamer:
         else:
             self._start_info_server()  # Start HTTP endpoint immediately
             self._start_hand_tracking()  # Start hand tracking stream
+                    
+        
+    def is_sim_channel_open(self):
+        return (
+            self._webrtc_sim_channel is not None
+            and self._webrtc_sim_channel.readyState == "open"
+        )
     
     def cleanup(self):
         """Clean up resources and notify VisionOS of disconnect.
@@ -1471,6 +1480,18 @@ class VisionProStreamer:
         command = payload.get("type")
         if command == "reset":
             self._log("[CONTROL] Reset command received from VisionOS", force=True)
+            # Notify registered callbacks immediately so external bridges
+            # (e.g. ROS nodes) can mark themselves as resetting before the
+            # potentially long-running reset/reload work completes.
+            try:
+                # Early notify that a reset is starting. Pass (None, None)
+                # so external listeners can treat this as a "pause" event
+                # (stop applying updates) before the model/data are reloaded.
+                self._notify_reset_callbacks(None, None)
+            except Exception:
+                # Best-effort: ignore exceptions from early notification.
+                pass
+
             Thread(target=self._handle_reset_request, daemon=True).start()
         else:
             self._log(f"[CONTROL] Unknown control command: {command}", force=True)
@@ -1497,9 +1518,24 @@ class VisionProStreamer:
         external code (e.g., ROS bridges) can resync their references.
         """
         self._reset_callbacks.append(callback)
+        try:
+            logging.getLogger(__name__).info(
+                f"[CONTROL] register_reset_callback called; total_callbacks={len(self._reset_callbacks)}, callback_id={id(callback)}"
+            )
+        except Exception:
+            pass
 
     def _notify_reset_callbacks(self, model, data):
-        for callback in list(self._reset_callbacks):
+        callbacks = list(self._reset_callbacks)
+        try:
+            logging.getLogger(__name__).info(f"[CONTROL] Notifying {len(callbacks)} reset callbacks (model={'set' if model is not None else 'None'})")
+        except Exception:
+            pass
+        for callback in callbacks:
+            try:
+                logging.getLogger(__name__).info(f"[CONTROL] Invoking reset callback id={id(callback)}")
+            except Exception:
+                pass
             try:
                 callback(model, data)
             except Exception as exc:  # pragma: no cover - best-effort notification
@@ -1574,9 +1610,31 @@ class VisionProStreamer:
             return
 
         try:
-            channel.send(json.dumps(payload))
+            # channel.send(json.dumps(payload))
+            asyncio.run_coroutine_threadsafe(
+            self._send_control_response_async(payload),
+            self._webrtc_loop
+            )
         except Exception as exc:
             self._log(f"[CONTROL] Failed to send control response: {exc}", force=True)
+
+    async def _send_control_response_async(self, payload: Dict[str, Any]):
+        """Async helper to send control responses over the WebRTC data channel.
+
+        This is scheduled onto the WebRTC event loop with
+        `asyncio.run_coroutine_threadsafe` so it must be a coroutine.
+        """
+        try:
+            channel = self._control_channel
+            if channel is None or getattr(channel, "readyState", None) != "open":
+                self._log("[CONTROL] Control channel not open; cannot send response", force=True)
+                return
+
+            # aiortc DataChannel.send is synchronous (not awaitable), so call it directly.
+            channel.send(json.dumps(payload))
+        except InvalidStateError:
+            self._sim_channel = None
+            self._log(f"[CONTROL] Failed to send control response async:", force=True)
 
     def _start_hand_tracking(self): 
         """Start the hand tracking gRPC stream in a background thread."""
@@ -2825,7 +2883,7 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:], scalar_first=True).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Register model and data
@@ -2943,7 +3001,7 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:], scalar_first=True).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Store the Isaac stage and scene
