@@ -1,7 +1,6 @@
 # visionpro_ip: "192.168.50.153" #jemaro room
 # visionpro_ip: "192.168.10.113" # ferdinand home
 # visionpro_ip: "192.168.10.137" # ferdinand home
-# visionpro_ip: "192.0.0.3"        # ferdinand
 
 vp_transform_publisher:
   ros__parameters:
