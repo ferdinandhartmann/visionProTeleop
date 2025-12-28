@@ -367,9 +367,9 @@ struct ImmersiveView: View {
                     ),
                     previewStatusPosition: $previewStatusPosition,
                     previewStatusActive: $previewStatusActive,
-                    onReset: {
-                        sendResetToSimulator()
-                    }
+//                    onReset: {
+//                        sendResetToSimulator()
+//                    }
                 )
             }
             
@@ -722,14 +722,14 @@ class VideoStreamManager: ObservableObject {
         }
     }
 
-    private func sendResetToSimulator() {
-        let sent = videoStreamManager.sendControlCommand(.reset)
-        if sent {
-            dlog("✅ [ImmersiveView] Sent reset control command to simulator")
-        } else {
-            dlog("⚠️ [ImmersiveView] Control channel not ready; reset command not sent")
-        }
-    }
+//    private func sendResetToSimulator() {
+//        let sent = videoStreamManager.sendControlCommand(.reset)
+//        if sent {
+//            dlog("✅ [ImmersiveView] Sent reset control command to simulator")
+//        } else {
+//            dlog("⚠️ [ImmersiveView] Control channel not ready; reset command not sent")
+//        }
+//    }
     
     /// Connection mode for dual-mode support
     private enum ConnectionMode {
