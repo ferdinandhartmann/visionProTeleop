@@ -776,10 +776,11 @@ class VideoStreamManager: ObservableObject {
         }
     }
     
-    func sendControlCommand(_ command: ControlCommand) {
+    @discardableResult
+    func sendControlCommand(_ command: ControlCommand) -> Bool {
         guard let client = webrtcClient else {
             dlog("⚠️ [DEBUG] Cannot send control command; WebRTC client is nil")
-            return
+            return false
         }
         let sent = client.sendControlCommand(command)
         if sent {
@@ -787,6 +788,7 @@ class VideoStreamManager: ObservableObject {
         } else {
             dlog("⚠️ [DEBUG] Failed to send control command: \(command.rawValue)")
         }
+        return sent
     }
     
     /// Stop the video stream manager

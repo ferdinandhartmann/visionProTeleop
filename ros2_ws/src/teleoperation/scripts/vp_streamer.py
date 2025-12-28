@@ -405,16 +405,16 @@ class VPStreamer(Node):
         mujoco.mj_resetData(self.model, self.data)
 
         # 2) put robot in a known good configuration (critical)
-        with self._joint_state_lock:
-            joint_init = {
-                "joint1": 0.0,
-                "joint2": 0.0,
-                "joint3": 0.0,
-                "joint4": 0.0,
-                "joint5": 0.0,
-                "joint6": 0.0,
-            }
-            gripper = 100.0
+        initial_joint_positions_deg = list(
+            self.get_parameter("initial_joint_positions_deg").value
+        )
+        joint_init = dict(
+            zip(
+                ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
+                np.deg2rad(initial_joint_positions_deg),
+            )
+        )
+        gripper = float(self.get_parameter("initial_gripper_percent").value)
 
         for name, position in joint_init.items():
             idx = self.joint_name_to_qpos.get(name)
