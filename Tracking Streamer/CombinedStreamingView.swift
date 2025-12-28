@@ -262,8 +262,7 @@ struct CombinedStreamingView: View {
         let muManager = CombinedMuJoCoManager()
         muManager.setResetHandler { [weak videoManager] in
             guard let videoManager else { return false }
-            videoManager.sendControlCommand(.reset)
-            return true
+            return videoManager.sendControlCommand(.reset)
         }
         _mujocoManager = StateObject(wrappedValue: muManager)
     }

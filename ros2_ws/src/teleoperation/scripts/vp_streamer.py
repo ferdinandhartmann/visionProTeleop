@@ -352,15 +352,10 @@ class VPStreamer(Node):
                 self.ee_target_body_id = mujoco.mj_name2id(
                     self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
                 )
-                
-                self._publish_ee_target_on_reset()
 
 
                 self._hard_reset_mujoco_state()
 
-                self._publish_ee_target_on_reset()
-                self._publish_ee_target_on_reset()
-                self._publish_ee_target_on_reset()
                 self._publish_ee_target_on_reset()
 
                 self._pending_model = None
