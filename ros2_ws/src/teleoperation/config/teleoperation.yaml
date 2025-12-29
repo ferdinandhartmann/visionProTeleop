@@ -4,22 +4,22 @@
 
 vp_transform_publisher:
   ros__parameters:
-    visionpro_ip: "192.168.10.113"
+    visionpro_ip: "192.168.50.153"
     pinch_threshold: 0.02   # just for markers for rviz
 
 vp_streamer:
   ros__parameters:
-    visionpro_ip: "192.168.10.113"
+    visionpro_ip: "192.168.50.153"
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
     attach_to: [0.0, 0.3, 0.65, -55.0]    # y-axis goes from viewer straight to the distance
     update_simulation_hz: 120.0
     force_reload: true
     ###### Camera parameters 
-    camera_device: "/dev/video0"
-    camera_resolution: "320x240" #"160x120" #"640x480"
+    camera_device: "/dev/video4" # laptop: "/dev/video0"
+    camera_resolution: "320x240" # "640x480" #"160x120" #"640x480"
     format: "v4l2"
-    camera_fps: 30
+    camera_fps: 25
     # Teleop target to publish when MuJoCo stream is reset. Values are in
     # the `mycobot_base` frame by default and will be published as
     # `teleoperation/TeleopTarget` on `/teleop/ee_target`.
@@ -29,10 +29,10 @@ vp_streamer:
 
 camera_streamer:
   ros__parameters:
-    visionpro_ip: "192.168.10.113"
+    visionpro_ip: "192.168.50.153"
     resolution:  "320x240"  # "1280x720"
-    # camera_input: "/dev/video4" # Robot camera
-    camera_input: "/dev/video0" # Laptop camera
+    camera_input: "/dev/video4" # Robot camera
+    # camera_input: "/dev/video0" # Laptop camera
     format: "v4l2" # on linux "v4l2", on windows "dshow", on mac "avfoundation"
     fps: 25
 
@@ -58,14 +58,13 @@ joint_state_to_mycobot:
   ros__parameters:
     port: "/dev/ttyACM0"
     baud: 115200
-    joint_state_topic: "/joint_states_mycobot"
     gripper_speed: 100
     speed: 70               # default movement speed if adaptive speed is false
     adaptive_speed: true
-    adaptive_speed_low_speed: 60
-    adaptive_speed_high_speed: 90
+    adaptive_speed_low_speed: 70
+    adaptive_speed_high_speed: 95
 
-    initial_angles_deg: [0, 0, 0, 0, 0, 45]
+    initial_angles_deg: [0, 30, -90, 0, 0, 45]
     initial_move_speed: 35
 
 inverse_kinematics_node:
@@ -75,18 +74,18 @@ inverse_kinematics_node:
     joint_target_topic: "/joint_states_mycobot"
 
     # IK tuning parameters
-    position_tolerance: 0.01       # meters
-    orientation_tolerance: 0.02    # radians
+    position_tolerance: 0.01      # meters
+    orientation_tolerance: 0.02   # radians
     max_iterations: 100
     damping: 0.015
-    step_tolerance: 2.0e-6          # rad magnitude of joint update
-    gripper_percent: 100            # default gripper position in percent
+    step_tolerance: 2.0e-6        # rad magnitude of joint update
+    gripper_percent: 100          # default gripper position in percent
 
-    joint_states_ros2_update_rate: 100.0 #hz
+    joint_states_ros2_update_rate: 60.0 # Hz
     mycobot_target_pose_update_rate: 0.02 ######### Change the frequeny to send topic to my_cobot
 
-    joint_lower_limits_deg: [-160.0, -160.0, -160.0, -160.0, -160.0, -170.0]
-    joint_upper_limits_deg: [ 160.0,  160.0,  160.0,  160.0,  160.0,  170.0]
+    joint_lower_limits_deg: [-150.0, -150.0, -150.0, -150.0, -150.0, -170.0]
+    joint_upper_limits_deg: [ 150.0,  150.0,  150.0,  150.0,  150.0,  170.0]
 
     initial_joint_positions_deg: [0.0, 30.0, -90.0, 0.0, 0.0, 45.0]
 

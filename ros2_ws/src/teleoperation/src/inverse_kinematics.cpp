@@ -339,27 +339,28 @@ private:
 
     // joint7_to_camera:
     // origin xyz="0 0 0.01" rpy="1.579 0 0.7854"
-    Eigen::Matrix4d T_joint7_to_camera = Eigen::Matrix4d::Identity();
-    T_joint7_to_camera.block<3, 3>(0, 0) = rpyToMatrix(1.579, 0.0, 0.7854);
-    T_joint7_to_camera.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.0, 0.01);
+    // Eigen::Matrix4d T_joint7_to_camera = Eigen::Matrix4d::Identity();
+    // T_joint7_to_camera.block<3, 3>(0, 0) = rpyToMatrix(1.579, 0.0, 0.7854);
+    // T_joint7_to_camera.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.0, 0.01);
     // camera_flange_to_gripper_base:
     //   origin xyz="0.0 0.041 0.0" rpy="0 -1.57 0"
-    Eigen::Matrix4d T_camera_to_gripper = Eigen::Matrix4d::Identity();
-    T_camera_to_gripper.block<3, 3>(0, 0) = rpyToMatrix(0.0, -1.57, 0.0);
-    T_camera_to_gripper.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.041, 0.0);
+    // Eigen::Matrix4d T_camera_to_gripper = Eigen::Matrix4d::Identity();
+    // T_camera_to_gripper.block<3, 3>(0, 0) = rpyToMatrix(0.0, -1.57, 0.0);
+    // T_camera_to_gripper.block<3, 1>(0, 3) = Eigen::Vector3d(0.0, 0.041, 0.0);
 
-    T = T * T_joint7_to_camera * T_camera_to_gripper;
+    // T = T * T_joint7_to_camera * T_camera_to_gripper;
 
-    // Constant offset to place the pose in the grippers middle
-    // constexpr double gripper_offset_front = 0.05;  // between the gripper end
-    constexpr double gripper_offset_front = -0.09;
-    constexpr double gripper_offset_down = 0.015; 
-    Eigen::Vector3d tool_offset = T.block<3, 3>(0, 0) * Eigen::Vector3d(0.0, gripper_offset_front, gripper_offset_down);
+    // Constant offset to move the endeffector back a little from joint 7 (in the last frame frame)
+    Eigen::Vector3d tool_offset = T.block<3, 3>(0, 0) * Eigen::Vector3d(0.0, 0.0, -0.04);
     T.block<3, 1>(0, 3) += tool_offset;
 
     // Apply rotation: 90 deg around X
-    Eigen::Matrix3d rot_z = Eigen::AngleAxisd(M_PI/2, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    Eigen::Matrix3d rot_z = Eigen::AngleAxisd(M_PI/4, Eigen::Vector3d::UnitZ()).toRotationMatrix();
     T.block<3,3>(0,0) = T.block<3,3>(0,0) * rot_z;
+
+    // Apply rotation: -90 deg about Y axis
+    Eigen::Matrix3d rot_y = Eigen::AngleAxisd(-M_PI / 2, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    T.block<3,3>(0,0) = T.block<3,3>(0,0) * rot_y;
 
     Pose pose;
     pose.position = T.block<3, 1>(0, 3);

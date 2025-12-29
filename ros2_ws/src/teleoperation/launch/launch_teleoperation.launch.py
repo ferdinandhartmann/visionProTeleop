@@ -68,7 +68,7 @@ def generate_launch_description():
         executable="static_transform_publisher",
         name="static_transform_map_mycobot_base",
         arguments=[
-            "0", "0", "0",  # translation x y z
+            "0", "0", str(0.032 - 0.025),  # translation x y z
             "0", "0", "0",  # rotation roll pitch yaw (radians)
             "map",
             "mycobot_base"
@@ -183,7 +183,7 @@ def generate_launch_description():
         
         rviz2_node,
                         
-        # joint_state_to_mycobot_node,
+        joint_state_to_mycobot_node,
 
     ]
 

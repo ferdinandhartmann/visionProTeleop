@@ -5,6 +5,8 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
 from avp_stream import VisionProStreamer
+import threading
+import time
 
 # Optional: Vision Pro streaming
 USE_VISIONPRO = True
@@ -18,11 +20,11 @@ class CameraStreamer(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('visionpro_ip', '192.168.10.113'),
-                ('resolution', '1280x720'),
-                ('camera_input', '/dev/video0'),
+                ('visionpro_ip', '192.168.50.153'),
+                ('resolution', '640x480'),
+                ('camera_input', '/dev/video4'),
                 ('format', 'v4l2'),
-                ('fps', 25),
+                ('fps', 30),
             ]
         )
 
@@ -35,6 +37,7 @@ class CameraStreamer(Node):
 
         self.publisher = self.create_publisher(Image, "/webcam/image_raw", 10)
         self.bridge = CvBridge()
+        self._stop_event = threading.Event()
 
         # Start Vision Pro streaming
         if USE_VISIONPRO:
@@ -49,29 +52,49 @@ class CameraStreamer(Node):
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open camera! {self.camera_input}")
         
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        # Parse resolution parameter (expects format "WIDTHxHEIGHT", e.g., "1280x720")
+        width, height = map(int, self.resolution.lower().split('x'))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
 
-        # Timer for ~30 FPS
-        self.timer = self.create_timer(0.033, self.timer_callback)
+        self._camera_period = 1.0 / self.fps if self.fps > 0 else 0.0
+        self._camera_thread = threading.Thread(target=self._camera_loop, name="camera_streamer", daemon=True)
+        self._camera_thread.start()
 
-    def timer_callback(self):
-        ret, frame = self.cap.read()
-        if not ret:
-            return
+    def _camera_loop(self):
+        next_time = time.perf_counter()
+        while not self._stop_event.is_set():
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(self._camera_period or 0.01)
+                continue
 
-        # Publish to ROS2
-        img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-        self.publisher.publish(img_msg)
+            # Publish to ROS2
+            img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            self.publisher.publish(img_msg)
 
-        # Optional VisionPro streaming
-        if USE_VISIONPRO:
-            self.streamer.update_frame(frame)
+            # Optional VisionPro streaming
+            if USE_VISIONPRO:
+                self.streamer.update_frame(frame)
 
-        # # Optional local OpenCV preview
-        cv2.imshow("Webcam", frame)
-        cv2.waitKey(1)
+            # # Optional local OpenCV preview
+            cv2.imshow("Webcam", frame)
+            cv2.waitKey(1)
+
+            if self._camera_period > 0:
+                next_time += self._camera_period
+                sleep_time = next_time - time.perf_counter()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+    def destroy_node(self):
+        self._stop_event.set()
+        if getattr(self, "_camera_thread", None):
+            self._camera_thread.join(timeout=1.0)
+        if getattr(self, "cap", None):
+            self.cap.release()
+        return super().destroy_node()
 
 
 def main():

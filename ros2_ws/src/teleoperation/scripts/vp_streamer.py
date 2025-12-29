@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+import queue
 from typing import Dict, List, Optional
 
 from ament_index_python.packages import get_package_share_directory
@@ -42,6 +43,9 @@ class VPStreamer(Node):
         super().__init__("vp_streamer")
 
         self._last_log_times = {}
+        self._stop_event = threading.Event()
+        self._audio_lock = threading.Lock()
+        self.streamer = None
         
         self.declare_parameter(
             "viewer",
@@ -58,7 +62,7 @@ class VPStreamer(Node):
         )
         self.declare_parameter("force_reload", False)
         self.declare_parameter("camera_device", "/dev/video0")
-        self.declare_parameter("camera_resolution", "1280x720")
+        self.declare_parameter("camera_resolution", "320x240")
         self.declare_parameter("camera_fps", 25)
         self.declare_parameter("format", "v4l2")
         self.declare_parameter("enable_camera", True)
@@ -86,10 +90,12 @@ class VPStreamer(Node):
         
         self._contact_active = False
         self.latest_joint_vel = None
+        self._latest_joint_state: Dict[str, float] = {}
+        self._joint_state_lock = threading.Lock()
         self._motor_start_delay = 0.2   
         self._motor_ramp_time = 0.3    # seconds to full volume
         self._teleop_enabled_time = None
-        self.motor_gain = 0.0
+        self._motor_gain = 0.0
         self._enable_idx = 0
         self._disable_idx = 0
         self.enable_sound = load_wav_mono("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/teleoperation/sounds/enabled.wav")
@@ -112,8 +118,10 @@ class VPStreamer(Node):
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             self.cap.set(cv2.CAP_PROP_FPS, params["camera_fps"])
             
-            self.camera_timer = self.create_timer(camera_period, self._camera_cb)
-            self.publisher = self.create_publisher(Image, "/camera_raw", 10)
+            self._camera_period = camera_period
+            self.camera_publisher = self.create_publisher(Image, "/camera_raw", 10)
+            self._camera_thread = threading.Thread(target=self._camera_loop, name="vp_camera", daemon=True)
+            self._camera_thread.start()
             
             self.get_logger().info("Camera initialized")
 
@@ -159,6 +167,10 @@ class VPStreamer(Node):
             self.motor_audio = MotorSoundModel()
             self.streamer.configure_audio(sample_rate=48000)
             self.streamer.register_audio_callback(self._audio_callback)
+            self._audio_queue = queue.Queue(maxsize=8)
+            self._audio_chunk_samples = 960
+            self._audio_thread = threading.Thread(target=self._audio_loop, name="vp_audio", daemon=True)
+            self._audio_thread.start()
             self.get_logger().info("Vision Pro audio streaming enabled")
 
         self.streamer.start_webrtc()
@@ -174,9 +186,6 @@ class VPStreamer(Node):
         self.joint_sub = self.create_subscription(JointState, joint_topic, self._joint_state_cb, qos)
         self.get_logger().info(f"Listening for joint states on {joint_topic}")
         
-        self._latest_joint_state: Dict[str, float] = {}
-        self._joint_state_lock = threading.Lock()
-
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -352,7 +361,7 @@ class VPStreamer(Node):
                     self._latest_joint_state.clear()
                     self.get_logger().info("Cleared joint state buffer on reset.")
                     
-                time.sleep(0.6)  # brief pause to ensure stability after reset
+                time.sleep(0.5)  # brief pause to ensure stability after reset
                 
                 # Publish a tf so that ee_target_offset_mycobot_base_vis snaps to gripper_ee 
                 # (tf doesnt work only direct modification but left it anyways)
@@ -639,22 +648,34 @@ class VPStreamer(Node):
 
             
     def _camera_cb(self) -> None:
-        if self.streamer is None:
-            return
-
         ret, frame = self.cap.read()
         if not ret:
             return
         
+        # Rotate the image 90 degrees anti-clockwise
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
         img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-        self.publisher.publish(img_msg)
+        self.camera_publisher.publish(img_msg)
 
         # Send frame to Vision Pro
-        self.streamer.update_frame(frame)
+        if self.streamer is not None:
+            self.streamer.update_frame(frame)
         
         # # Optional local OpenCV preview
         # cv2.imshow("Webcam", frame)
         # cv2.waitKey(1)
+
+    def _camera_loop(self) -> None:
+        next_time = time.perf_counter()
+        while not self._stop_event.is_set():
+            self._camera_cb()
+            if self._camera_period > 0:
+                next_time += self._camera_period
+                sleep_time = next_time - time.perf_counter()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            else:
+                time.sleep(0.001)
 
     def _geom_linvel(self, geom_id: int) -> np.ndarray:
         """Return world-frame linear velocity of a geom (3,)."""
@@ -692,86 +713,119 @@ class VPStreamer(Node):
 
         return False
 
+    def _audio_loop(self) -> None:
+        while not self._stop_event.is_set():
+            if self._audio_queue.full():
+                time.sleep(0.001)
+                continue
+            num_samples = self._audio_chunk_samples
+            audio = self._build_audio_chunk(num_samples)
+            try:
+                self._audio_queue.put(audio, timeout=0.01)
+            except queue.Full:
+                continue
 
-        
-    def _audio_callback(self, audio_frame):
-
+    def _build_audio_chunk(self, num_samples: int) -> bytes:
         sample_rate = 48000
-        num_samples = audio_frame.samples
-        t = np.arange(num_samples) / sample_rate
-
         output = np.zeros(num_samples, dtype=np.float32)
-        
-        if not self._teleop_enabled:
-            self._motor_gain = 0.0
 
-        # ENABLE SOUND 
-        if self._enable_idx < len(self.enable_sound):
-            n = min(num_samples, len(self.enable_sound) - self._enable_idx)
-            output[:n] += self.enable_sound[self._enable_idx:self._enable_idx + n]
-            self._enable_idx += n
+        with self._audio_lock:
+            teleop_enabled = self._teleop_enabled
+            enable_idx = self._enable_idx
+            disable_idx = self._disable_idx
+            teleop_enabled_time = self._teleop_enabled_time
+            motor_gain = self._motor_gain
 
-        # DISABLE SOUND 
-        if self._disable_idx < len(self.disable_sound):
-            n = min(num_samples, len(self.disable_sound) - self._disable_idx)
-            output[:n] += self.disable_sound[self._disable_idx:self._disable_idx + n]
-            self._disable_idx += n
-                
+            if not teleop_enabled:
+                motor_gain = 0.0
 
-        # MOTOR SOUND (delayed + ramped)
-        if self._teleop_enabled and self.latest_joint_vel is not None:
+            if enable_idx < len(self.enable_sound):
+                n = min(num_samples, len(self.enable_sound) - enable_idx)
+                output[:n] += self.enable_sound[enable_idx:enable_idx + n]
+                enable_idx += n
+
+            if disable_idx < len(self.disable_sound):
+                n = min(num_samples, len(self.disable_sound) - disable_idx)
+                output[:n] += self.disable_sound[disable_idx:disable_idx + n]
+                disable_idx += n
+
+            self._enable_idx = enable_idx
+            self._disable_idx = disable_idx
+
+        with self._joint_state_lock:
+            joint_vel = None if self.latest_joint_vel is None else list(self.latest_joint_vel)
+
+        if teleop_enabled and joint_vel is not None:
             now = time.time()
-            dt = now - self._teleop_enabled_time if self._teleop_enabled_time else 0.0
+            dt = now - teleop_enabled_time if teleop_enabled_time else 0.0
 
             if dt > self._motor_start_delay:
                 ramp = 1.0 - np.exp(-3.0 * (dt - self._motor_start_delay))
-                self._motor_gain = np.clip(ramp, 0.0, 1.0)
+                motor_gain = float(np.clip(ramp, 0.0, 1.0))
             else:
-                self._motor_gain = 0.0
+                motor_gain = 0.0
 
-            speed = float(np.mean(np.abs(self.latest_joint_vel[:6])))
+            speed = float(np.mean(np.abs(joint_vel[:6])))
             motor = self.motor_audio.generate(speed, num_samples)
 
-            output += self._motor_gain * motor
+            output += motor_gain * motor
 
-            # if not hasattr(self, "_last_motor_log") or (self.get_clock().now().nanoseconds - getattr(self, "_last_motor_log", 0)) > 3e8:
-            #     self.get_logger().info(f"Motor sound generated at speed: {speed}")
-            #     self._last_motor_log = self.get_clock().now().nanoseconds
-
-
-        # ==============================
-        # 3. CONTACT SOUND (click/buzz)
-        # ==============================
-        # if self._contact_active:
-        #     freq = 1200.0
-        #     amp = 0.35
-        #     output += amp * np.sign(np.sin(2 * np.pi * freq * t))
-
+        with self._audio_lock:
+            self._motor_gain = motor_gain
 
         output = np.clip(output, -1.0, 1.0)
+        return (output * 32767).astype(np.int16).tobytes()
 
-        audio = (output * 32767).astype(np.int16).tobytes()
 
+        
+    def _audio_callback(self, audio_frame):
+        num_samples = audio_frame.samples
+        
+        # Generate audio ON DEMAND, clocked by WebRTC
+        audio = self._build_audio_chunk(num_samples)
+
+        # audio must be int16 bytes, length = samples * 2
         for plane in audio_frame.planes:
+            plane_size = plane.buffer_size
+
+            if len(audio) < plane_size:
+                audio = audio + b"\x00" * (plane_size - len(audio))
+            elif len(audio) > plane_size:
+                audio = audio[:plane_size]
+
             plane.update(audio)
 
         return audio_frame
 
+
     def _teleop_enabled_cb(self, msg: Bool):
         prev = self._teleop_enabled
-        self._teleop_enabled = msg.data
+        with self._audio_lock:
+            self._teleop_enabled = msg.data
 
         if self._teleop_enabled and not prev:
-            self._enable_idx = 0
-            self._disable_idx = len(self.disable_sound)  # stop disable
-            self._teleop_enabled_time = time.time()
-            self._motor_gain = 0.0
+            with self._audio_lock:
+                self._enable_idx = 0
+                self._disable_idx = len(self.disable_sound)  # stop disable
+                self._teleop_enabled_time = time.time()
+                self._motor_gain = 0.0
 
         elif not self._teleop_enabled and prev:
-            self._disable_idx = 0
-            self._enable_idx = len(self.enable_sound)    # stop enable
-            self._teleop_enabled_time = None
-            self._motor_gain = 0.0
+            with self._audio_lock:
+                self._disable_idx = 0
+                self._enable_idx = len(self.enable_sound)    # stop enable
+                self._teleop_enabled_time = None
+                self._motor_gain = 0.0
+
+    def destroy_node(self):
+        self._stop_event.set()
+        if getattr(self, "_camera_thread", None):
+            self._camera_thread.join(timeout=1.0)
+        if getattr(self, "_audio_thread", None):
+            self._audio_thread.join(timeout=1.0)
+        if getattr(self, "cap", None):
+            self.cap.release()
+        return super().destroy_node()
 
 
 def load_wav_mono(path):

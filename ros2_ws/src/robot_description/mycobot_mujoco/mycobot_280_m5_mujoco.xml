@@ -29,9 +29,9 @@
     <mesh name="gripper_right3" file="../meshes_mujoco/gripper_right3.obj" />
   </asset>
   <worldbody>
-    <body name="mycobot_base" pos="0 0 0" euler="1.5708 -1.5708 0 ">
+    <body name="mycobot_base" pos="0 0 -0.025" euler="1.5708 -1.5708 0 ">
       <geom mesh="mycobot_base" class="visual" />
-      <geom mesh="mycobot_base" class="collision" />
+      <!-- <geom mesh="mycobot_base" class="collision" /> -->
       <body name="joint0" pos="0 0.032 0.0" euler="-1.5708 0 0">
         <geom mesh="joint_1_mycobot" pos="0 0 0" quat="0.000796327 0 0 1" class="visual" />
         <body name="joint1" pos="0.0 0.002 0.132" euler="0 0 -1.5708">

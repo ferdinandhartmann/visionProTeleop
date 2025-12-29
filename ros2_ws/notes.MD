@@ -34,3 +34,9 @@ Plume WIFI:
 --- 192.168.10.113 ping statistics ---
 200 packets transmitted, 200 received, 0% packet loss, time 4148ms
 rtt min/avg/max/mdev = 3.713/64.901/348.065/77.993 ms, pipe 17
+
+
+JEMARO Room Wifi:
+--- 192.168.50.153 ping statistics ---
+200 packets transmitted, 200 received, 0% packet loss, time 4078ms
+rtt min/avg/max/mdev = 2.985/4.393/10.271/1.091 ms

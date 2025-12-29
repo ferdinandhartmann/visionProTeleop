@@ -10,12 +10,16 @@ from rclpy.node import Node
 from rclpy.parameter import ParameterValue
 from rcl_interfaces.msg import ParameterType
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool
 
 from pymycobot import MyCobot280
 from pymycobot.error import MyCobot280DataException
 
 
 LOCK_FILE = "/tmp/mycobot_lock"
+COLOR_ORANGE = (255, 128, 0)
+COLOR_GREEN = (0, 255, 0)
+COLOR_RED = (255, 0, 0)
 
 
 class JointStateToMyCobot(Node):
@@ -26,12 +30,11 @@ class JointStateToMyCobot(Node):
 
         self.declare_parameter("port", "/dev/ttyUSB0")
         self.declare_parameter("baud", 115200)
-        self.declare_parameter("joint_state_topic", "/joint_states_mycobot")
         self.declare_parameter("speed", 40)  # joint speed 1-100
         self.declare_parameter("gripper_speed", 75)  # gripper speed 1-100
         # Adaptive speed settings
         self.declare_parameter("adaptive_speed", False)
-        self.declare_parameter("adaptive_speed_low_speed", 20)
+        self.declare_parameter("adaptive_speed_low_speed", 60)
         self.declare_parameter("adaptive_speed_high_speed", 80)
         # 6 joint angles in degrees; explicitly declare as INTEGER_ARRAY
         self.declare_parameter(
@@ -42,11 +45,10 @@ class JointStateToMyCobot(Node):
             ),
         )
         # Speed used only for initial move on startup
-        self.declare_parameter("initial_move_speed", 15)
+        self.declare_parameter("initial_move_speed", 35)
 
         port = self.get_parameter("port").get_parameter_value().string_value
         baud = self.get_parameter("baud").get_parameter_value().integer_value
-        self.joint_state_topic = (self.get_parameter("joint_state_topic").get_parameter_value().string_value)
         self.speed = int(self.get_parameter("speed").value)
         self.gripper_speed = int(self.get_parameter("gripper_speed").value)
         self.adaptive_speed = bool(self.get_parameter("adaptive_speed").value)
@@ -59,45 +61,42 @@ class JointStateToMyCobot(Node):
 
         self.prev_angles_deg = None
         self.prev_gripper_percent = None
+        self._last_color = None
 
         # Connect to MyCobot
         self.mc = MyCobot280(port, baud)
-        time.sleep(0.1)
+        time.sleep(0.2)
         try:
             self.mc.set_fresh_mode(1)
         except Exception as e:
             self.get_logger().warn(f"Failed to set fresh mode: {e}")
+        self._set_status_color(COLOR_ORANGE, "startup")
 
         # If an initial pose is configured, move to it once on startup
         if self.initial_angles_deg:
             if len(self.initial_angles_deg) != 6:
                 self.get_logger().warn(
                     "Parameter 'initial_angles_deg' must contain exactly 6 values; "
-                    f"got {len(self.initial_angles_deg)}. Skipping initial move."
-                )
+                    f"got {len(self.initial_angles_deg)}. Skipping initial move.")
             else:
                 self.get_logger().info(
                     "Moving MyCobot to initial joint angles from parameters: "
-                    f"{self.initial_angles_deg} at speed {self.initial_move_speed}"
-                )
+                    f"{self.initial_angles_deg} at speed {self.initial_move_speed}")
+            try:
+                fd = self.acquire_lock()
                 try:
-                    fd = self.acquire_lock()
-                    try:
-                        try:
-                            self.mc.send_angles(
-                                self.initial_angles_deg,
-                                max(1, min(100, self.initial_move_speed)),
-                            )
-                        except MyCobot280DataException as e:
-                            self.get_logger().warn(
-                                f"send_angles error during initial move: {e}"
-                            )
-                    finally:
-                        self.release_lock(fd)
-                except Exception as e:
-                    self.get_logger().error(
-                        f"Failed to perform initial move to configured pose: {e}"
-                    )
+                    self.mc.send_angles(self.initial_angles_deg, self.initial_move_speed)
+                    # Move gripper to initial position if provided (7th value)
+                    if len(self.initial_angles_deg) >= 7:
+                        gripper_init = int(self.initial_angles_deg[6])
+                        time.sleep(0.5)  # allow arm to start moving
+                        self.mc.set_gripper_value(gripper_init, self.gripper_speed)
+                except MyCobot280DataException as e:
+                    self.get_logger().warn(f"send_angles error during initial move: {e}")
+                finally:
+                    self.release_lock(fd)
+            except Exception as e:
+                self.get_logger().error(f"Failed to perform initial move to configured pose: {e}")
 
         # Gripper joint limits from inverse_kinematics.cpp
         self.gripper_lower_limit = -0.74  # closed
@@ -106,14 +105,22 @@ class JointStateToMyCobot(Node):
         # Subscribe to joint states
         self.subscription = self.create_subscription(
             JointState,
-            self.joint_state_topic,
+            "/joint_states_mycobot",
             self.joint_state_callback,
+            10,
+        )
+        self.teleop_enabled_sub = self.create_subscription(
+            Bool,
+            "/teleop/teleop_enabled",
+            self._teleop_enabled_cb,
             10,
         )
 
         self.get_logger().info(
-            f"Subscribed to '{self.joint_state_topic}' and ready to drive MyCobot."
+            f"Subscribed to /joint_states_mycobot and ready to drive MyCobot."
         )
+        
+        self._set_status_color(COLOR_GREEN, "startup finished")
 
     # ----- Shared lock helpers (match teleop_control.py) -----
     def acquire_lock(self):
@@ -124,6 +131,21 @@ class JointStateToMyCobot(Node):
     def release_lock(self, fd):
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+    def _set_status_color(self, rgb, reason):
+        if self._last_color == rgb:
+            return
+        try:
+            self.mc.set_color(*rgb)
+            self._last_color = rgb
+        except Exception as e:
+            self.get_logger().warn(f"Failed to set status color ({reason}): {e}")
+
+    def _teleop_enabled_cb(self, msg: Bool):
+        if msg.data:
+            self._set_status_color(COLOR_RED, "teleop enabled")
+        else:
+            self._set_status_color(COLOR_GREEN, "teleop disabled")
 
     # ----- Core callback -----
     def joint_state_callback(self, msg: JointState):
@@ -144,11 +166,11 @@ class JointStateToMyCobot(Node):
 
         angles_changed = (
             self.prev_angles_deg is None or
-            any(abs(a - b) > 1e-2 for a, b in zip(angles_deg, self.prev_angles_deg))
+            any(abs(a - b) > 0.01 for a, b in zip(angles_deg, self.prev_angles_deg))
         )
         gripper_changed = (
             self.prev_gripper_percent is None or
-            abs(gripper_percent - self.prev_gripper_percent) > 1e-2
+            abs(gripper_percent - self.prev_gripper_percent) > 6.0
         )
 
         send_speed = self.speed
@@ -159,9 +181,9 @@ class JointStateToMyCobot(Node):
                 # Interpolate speed between adaptive_speed_low and adaptive_speed_high
                 angle_change_upper_bouond = 4.0  # degrees
                 angle_change_lower_bound = 2.0  # degrees
-                if max_delta <= angle_change_upper_bouond:
+                if max_delta <= angle_change_lower_bound:
                     send_speed = self.adaptive_speed_low
-                elif max_delta >= angle_change_lower_bound:
+                elif max_delta >= angle_change_upper_bouond:
                     send_speed = self.adaptive_speed_high
                 else:
                     # Linear interpolation between low and high speed
@@ -170,12 +192,11 @@ class JointStateToMyCobot(Node):
             self.mc.send_angles(angles_deg, send_speed, _async=True)
             self.prev_angles_deg = angles_deg.copy()
         if gripper_changed:
+            time.sleep(0.008)  # slight delay to avoid overloading
             self.mc.set_gripper_value(int(gripper_percent), self.gripper_speed)
             self.prev_gripper_percent = gripper_percent
-        if angles_changed or gripper_changed:
-            self.get_logger().info(
-                f"Sent gripper and/or joint values. Gripper: {gripper_percent} at speed {self.gripper_speed}, angle speed: {send_speed}"
-            )
+        # if angles_changed or gripper_changed:
+        #     self.get_logger().info(f"Sent gripper and/or joint values. Gripper: {gripper_percent} at speed {self.gripper_speed}, angle speed: {send_speed}")
 
 
 def main(args=None):
@@ -186,6 +207,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node._set_status_color(COLOR_ORANGE, "startup")
         node.destroy_node()
 
 
