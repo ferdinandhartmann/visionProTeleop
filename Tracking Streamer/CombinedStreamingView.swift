@@ -2195,12 +2195,21 @@ private func updatePointCloudEntity(
     entity.children.forEach { $0.removeFromParent() }
     
     // Precompute a low-poly sphere (icosahedron) to duplicate for each point
-    let t = (1.0 + sqrt(5.0)) / 2.0
+    // Use a precomputed golden ratio to keep this expression simple for the compiler
+    let t: Float = 1.618033988749895
     let baseVerts: [SIMD3<Float>] = [
         SIMD3<Float>(-1,  t, 0), SIMD3<Float>( 1,  t, 0), SIMD3<Float>(-1, -t, 0), SIMD3<Float>( 1, -t, 0),
         SIMD3<Float>(0, -1,  t), SIMD3<Float>(0,  1,  t), SIMD3<Float>(0, -1, -t), SIMD3<Float>(0,  1, -t),
         SIMD3<Float>( t, 0, -1), SIMD3<Float>( t, 0, 1), SIMD3<Float>(-t, 0, -1), SIMD3<Float>(-t, 0, 1)
     ].map { simd_normalize($0) }
+    // let baseVerts: [SIMD3<Float>] = {
+    //     var result: [SIMD3<Float>] = []
+    //     result.reserveCapacity(unnormBaseVerts.count)
+    //     for v in unnormBaseVerts {
+    //         result.append(simd_normalize(v))
+    //     }
+    //     return result
+    // }()
     let baseIndices: [UInt32] = [
         0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11,
         1,5,9, 5,11,4, 11,10,2, 10,7,6, 7,1,8,
@@ -2231,14 +2240,20 @@ private func updatePointCloudEntity(
         let count = Float(bucketPoints.count)
         let avg = data.colorSum / max(1, count)
         var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(red: CGFloat(avg.x), green: CGFloat(avg.y), blue: CGFloat(avg.z), alpha: 1.0))
+        let tintColor = UIColor(
+            red: CGFloat(avg.x),
+            green: CGFloat(avg.y),
+            blue: CGFloat(avg.z),
+            alpha: 1.0
+        )
+        material.color = .init(tint: tintColor)
         
         let child = ModelEntity(mesh: mesh, materials: [material])
         entity.addChild(child)
     }
     
     entity.isEnabled = true
-    dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: \"%.4f\", spriteSize)))")
+   dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: "%.4f", spriteSize)))")
 }
 
 /// Creates a "light beam" ray that extends from the head anchor towards -Z axis
@@ -2897,7 +2912,9 @@ private struct LifecycleModifiers: ViewModifier {
                     pointCloudEntity,
                     points: positions,
                     colors: colors,
-                    spriteSize: dataManager.pointCloudSpriteSize
+                    spriteSize: dataManager.pointCloudSpriteSize,
+                    attachToPosition: attachToPosition,
+                    attachToRotation: attachToRotation
                 )
             }
         }
