@@ -319,6 +319,7 @@ class VPStreamer(Node):
                 rclpy.time.Time(),
                 timeout=Duration(seconds=0.1),
             )
+            self._apply_world_z_flip(transform)
         except (LookupException, ConnectivityException, ExtrapolationException) as exc:
             self._periodic_log("pc_tf", 2.0, f"Point cloud TF lookup failed: {exc}", level="warn")
             return
@@ -353,6 +354,7 @@ class VPStreamer(Node):
 
         pos_arr = np.asarray(positions, dtype=np.float32)
         col_arr = np.asarray(colors, dtype=np.uint8)
+        self.get_logger().info(f"First few pointcloud positions: {pos_arr[:5]}")
         self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=min(self._pointcloud_max_rate_hz, 10.0))
         self._last_pointcloud_time = now
 
@@ -563,6 +565,31 @@ class VPStreamer(Node):
             else:
                 self.get_logger().info(message)
             self._last_log_times[key] = now
+
+
+    def _apply_world_z_flip(self, transform: TransformStamped) -> None:
+        """Premultiply a 180-degree rotation about the world Z axis."""
+        translation = transform.transform.translation
+        translation.x = -translation.x
+        translation.y = -translation.y
+
+        rot = transform.transform.rotation
+        rot.x, rot.y, rot.z, rot.w = self._quat_multiply(
+            (0.0, 0.0, 1.0, 0.0),
+            (rot.x, rot.y, rot.z, rot.w),
+        )
+
+
+    @staticmethod
+    def _quat_multiply(q1, q2):
+        x1, y1, z1, w1 = q1
+        x2, y2, z2, w2 = q2
+        return (
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        )
 
 
     def _clear_target_mocap(self) -> None:
