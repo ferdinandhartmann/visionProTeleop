@@ -22,7 +22,7 @@ class DummyPointCloudPublisher(Node):
 
         self.declare_parameter("frame_id", "camera_lens")
         self.declare_parameter("topic", "/rgb_map/dummy_cloud")
-        self.declare_parameter("rate_hz", 1.0)
+        self.declare_parameter("rate_hz", 10.0)
         self.declare_parameter("grid_size", 24)
         self.declare_parameter("grid_spacing", 0.02)
 

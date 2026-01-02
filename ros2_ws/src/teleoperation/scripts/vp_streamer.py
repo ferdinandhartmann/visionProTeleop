@@ -113,9 +113,13 @@ class VPStreamer(Node):
         self.pointcloud_topic = params["pointcloud_topic"]
         
         self._last_pointcloud_time = 0.0
-        self._pointcloud_max_rate_hz = 15.0
+        self._pointcloud_max_rate_hz = 10.0
         self._pointcloud_max_points = 20000
         self._tf_target_frame = "mycobot_base"
+
+        # TF listener must exist before any callbacks try to use it
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         
         self.bridge = CvBridge()
         if self.enable_camera:
@@ -202,9 +206,6 @@ class VPStreamer(Node):
             pc_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
             self.pointcloud_sub = self.create_subscription(PointCloud2, self.pointcloud_topic, self._pointcloud_cb, pc_qos)
             self.get_logger().info(f"Point cloud streaming enabled from {self.pointcloud_topic}")
-        
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.ee_fk_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame"
@@ -316,7 +317,7 @@ class VPStreamer(Node):
             transform = self.tf_buffer.lookup_transform(
                 self._tf_target_frame,
                 msg.header.frame_id,
-                rclpy.time.Time(),
+                rclpy.time.Time(seconds=0),
                 timeout=Duration(seconds=0.1),
             )
             self._apply_world_z_flip(transform)
@@ -354,8 +355,8 @@ class VPStreamer(Node):
 
         pos_arr = np.asarray(positions, dtype=np.float32)
         col_arr = np.asarray(colors, dtype=np.uint8)
-        self.get_logger().info(f"First few pointcloud positions: {pos_arr[:5]}")
-        self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=min(self._pointcloud_max_rate_hz, 10.0))
+        # self.get_logger().info(f"First few pointcloud positions: {pos_arr[:5]}")
+        self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=self._pointcloud_max_rate_hz)
         self._last_pointcloud_time = now
 
 

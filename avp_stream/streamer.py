@@ -3605,11 +3605,13 @@ class VisionProStreamer:
             Desired streaming rate (default 10 Hz, clamped to 1–30 Hz).
         """
         if positions.size == 0 or colors.size == 0:
+            self._log("[POINTCLOUD] Warning: Empty positions or colors array, skipping point cloud update", force=True)
             return
         count = positions.shape[0]
         if count == 0:
+            self._log("[POINTCLOUD] Warning: No points in positions array, skipping point cloud update", force=True)
             return
-
+        
         # Clamp rate to a sane range
         self._pointcloud_hz = float(min(30.0, max(1.0, rate_hz)))
 
@@ -3625,12 +3627,12 @@ class VisionProStreamer:
         pos = pos[:n]
         col = col[:n]
 
-        # Lightweight downsample to keep payloads small
-        if n > 12000:
-            stride = int(np.ceil(n / 12000))
-            pos = pos[::stride]
-            col = col[::stride]
-            n = pos.shape[0]
+        # # Lightweight downsample to keep payloads small
+        # if n > 12000:
+        #     stride = int(np.ceil(n / 12000))
+        #     pos = pos[::stride]
+        #     col = col[::stride]
+        #     n = pos.shape[0]
 
         header = struct.pack("<I", n)
         payload = header + pos.tobytes() + col.tobytes()
@@ -3731,51 +3733,75 @@ class VisionProStreamer:
         self._pointcloud_running = True
 
         def _loop():
+            self._log(f"[POINTCLOUD] Point-cloud streaming thread started (hz={self._pointcloud_hz:.2f})", force=True)
             target_period = 1.0 / max(1.0, float(self._pointcloud_hz))
             last_send = 0.0
-            last_log = 0.0
-            while self._pointcloud_running:
-                now = time.time()
-                if now - last_send < target_period:
-                    time.sleep(0.001)
-                    continue
-                if not self._webrtc_point_ready or self._webrtc_point_channel is None:
-                    time.sleep(0.05)
-                    continue
-                # Skip if channel is no longer open (race with teardown)
-                if getattr(self._webrtc_point_channel, "readyState", "") != "open":
-                    self._pointcloud_running = False
-                    break
-                # Drop frame if channel is backed up
-                try:
-                    if getattr(self._webrtc_point_channel, "bufferedAmount", 0) > 1_000_000:
+            last_stats_log = 0.0
+            try:
+                while self._pointcloud_running:
+                    now = time.time()
+                    if now - last_send < target_period:
+                        time.sleep(min(target_period - (now - last_send), 0.01))
                         continue
-                except Exception:
-                    pass
-                payload = None
-                with self._pointcloud_lock:
-                    if self._pointcloud_dirty:
-                        payload = self._pointcloud_payload
-                        self._pointcloud_dirty = False
-                if payload:
+
+                    channel = self._webrtc_point_channel if self._webrtc_point_ready else None
+                    if channel is None:
+                        time.sleep(0.05)
+                        continue
+
+                    if getattr(channel, "readyState", "") != "open":
+                        self._log("[POINTCLOUD] Channel closed; stopping point-cloud loop", force=True)
+                        break
+
+                    if getattr(channel, "bufferedAmount", 0) > 1_000_000:
+                        time.sleep(0.01)
+                        continue
+
+                    payload = None
+                    with self._pointcloud_lock:
+                        if self._pointcloud_dirty:
+                            payload = self._pointcloud_payload
+                            self._pointcloud_dirty = False
+
+                    if not payload:
+                        time.sleep(0.01)
+                        continue
+
                     try:
-                        self._webrtc_point_channel.send(payload)
+                        if self._webrtc_loop is not None:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self._async_datachannel_send(channel, payload),
+                                self._webrtc_loop,
+                            )
+                            future.result()
+                        else:
+                            channel.send(payload)
                         last_send = now
-                        if now - last_log > 1.0:
-                            last_log = now
-                            points_sent = (len(payload) - 4) // (12 + 3)
-                            self._log(f"[POINTCLOUD] Sent {points_sent} pts (buffer={getattr(self._webrtc_point_channel, 'bufferedAmount', 0)})", force=True)
+
+                        if now - last_stats_log >= 1.0:
+                            point_count = struct.unpack_from("<I", payload, 0)[0] if len(payload) >= 4 else 0
+                            buffer_amt = getattr(channel, "bufferedAmount", 0)
+                            self._log(
+                                f"[POINTCLOUD] Sent {point_count} pts ({len(payload)/1024:.1f} KB), buffer={buffer_amt}",
+                                force=True,
+                            )
+                            last_stats_log = now
+
                     except Exception as exc:
                         self._log(f"[WEBRTC] Failed to send point cloud: {exc}", force=True)
-                        # Stop streaming loop if transport is gone to avoid InvalidStateError spam
-                        self._pointcloud_running = False
-                        self._webrtc_point_ready = False
-                        self._webrtc_point_channel = None
+                        if self.verbose:
+                            traceback.print_exc()
                         break
-            self._log("[WEBRTC] Point-cloud streaming thread exited", force=True)
+            finally:
+                self._pointcloud_running = False
+                self._log("[WEBRTC] Point-cloud streaming thread exited", force=True)
 
         self._pointcloud_thread = Thread(target=_loop, name="pointcloud_stream", daemon=True)
         self._pointcloud_thread.start()
+
+    async def _async_datachannel_send(self, channel, payload):
+        """Send datachannel payload inside the WebRTC event loop."""
+        channel.send(payload)
 
     def _stop_pointcloud_streaming(self):
         """Stop the point cloud streaming thread."""
