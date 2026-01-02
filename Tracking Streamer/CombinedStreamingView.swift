@@ -2153,66 +2153,63 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
         return
     }
     
-    // Build a small octahedron per point so the cloud stays visible from any view angle.
-    let spriteSize: Float = 0.01
-    var vertices: [SIMD3<Float>] = []
-    var indices: [UInt32] = []
-    vertices.reserveCapacity(points.count * 6)
-    indices.reserveCapacity(points.count * 24)
+    // Bucket points by approximate color and build one mesh per bucket for better performance and tinting.
+    let spriteSize: Float = 0.0035
+    let bucketSteps: Float = 4.0  // 4x4x4 buckets = 64 groups
     
-    for (idx, position) in points.enumerated() {
-        let baseIndex = UInt32(vertices.count)
-        
-        // Octahedron vertices (axis-aligned)
-        vertices.append(position + SIMD3<Float>( spriteSize, 0, 0))  // +X
-        vertices.append(position + SIMD3<Float>(-spriteSize, 0, 0))  // -X
-        vertices.append(position + SIMD3<Float>(0,  spriteSize, 0))  // +Y
-        vertices.append(position + SIMD3<Float>(0, -spriteSize, 0))  // -Y
-        vertices.append(position + SIMD3<Float>(0, 0,  spriteSize))  // +Z (top)
-        vertices.append(position + SIMD3<Float>(0, 0, -spriteSize))  // -Z (bottom)
-        
-        // Top pyramid (faces meeting at +Z)
-        indices.append(contentsOf: [
-            baseIndex, baseIndex + 2, baseIndex + 4,
-            baseIndex + 2, baseIndex + 1, baseIndex + 4,
-            baseIndex + 1, baseIndex + 3, baseIndex + 4,
-            baseIndex + 3, baseIndex, baseIndex + 4
-        ])
-        
-        // Bottom pyramid (faces meeting at -Z)
-        indices.append(contentsOf: [
-            baseIndex + 2, baseIndex, baseIndex + 5,
-            baseIndex + 1, baseIndex + 2, baseIndex + 5,
-            baseIndex + 3, baseIndex + 1, baseIndex + 5,
-            baseIndex, baseIndex + 3, baseIndex + 5
-        ])
+    var buckets: [Int: [SIMD3<Float>]] = [:]
+    func bucketIndex(for color: SIMD3<Float>) -> Int {
+        // Incoming colors are 0-1 floats; convert to 0-255 and bucket
+        let c = color * 255
+        let step = 256.0 / bucketSteps
+        let r = Int(max(0, min(255, c.x)) / step)
+        let g = Int(max(0, min(255, c.y)) / step)
+        let b = Int(max(0, min(255, c.z)) / step)
+        return (r << 8) | (g << 4) | b
     }
     
-    var descriptor = MeshDescriptor()
-    descriptor.positions = .init(vertices)
-    descriptor.primitives = .triangles(indices)
-    
-    if let mesh = try? MeshResource.generate(from: [descriptor]) {
-        let averageColorRaw = colors.reduce(SIMD3<Float>(0, 0, 0), +) / Float(colors.count)
-        let averageColor = SIMD3<Float>(
-            max(0, min(1, averageColorRaw.x / 255)),
-            max(0, min(1, averageColorRaw.y / 255)),
-            max(0, min(1, averageColorRaw.z / 255))
-        )
-        var material = SimpleMaterial(color: UIColor(
-            red: CGFloat(averageColor.x),
-            green: CGFloat(averageColor.y),
-            blue: CGFloat(averageColor.z),
-            alpha: 1.0
-        ), roughness: 1.0, isMetallic: false)
-        material.isDoubleSided = true
-        entity.model = ModelComponent(mesh: mesh, materials: [material])
-        entity.isEnabled = true
-        dlog("🌫️ [PointCloud] Updated mesh with \(points.count) points")
-    } else {
-        entity.isEnabled = false
-        dlog("⚠️ [PointCloud] Failed to build mesh for \(points.count) points")
+    for i in 0..<points.count {
+        let idx = bucketIndex(for: colors[i])
+        buckets[idx, default: []].append(points[i])
     }
+    
+    // Clear old children
+    entity.children.forEach { $0.removeFromParent() }
+    
+    for (bucket, bucketPoints) in buckets {
+        if bucketPoints.isEmpty { continue }
+        var vertices: [SIMD3<Float>] = []
+        var indices: [UInt32] = []
+        vertices.reserveCapacity(bucketPoints.count * 4)
+        indices.reserveCapacity(bucketPoints.count * 6)
+        
+        for position in bucketPoints {
+            let base = UInt32(vertices.count)
+            vertices.append(position + SIMD3<Float>( spriteSize,  spriteSize, 0))
+            vertices.append(position + SIMD3<Float>(-spriteSize,  spriteSize, 0))
+            vertices.append(position + SIMD3<Float>(-spriteSize, -spriteSize, 0))
+            vertices.append(position + SIMD3<Float>( spriteSize, -spriteSize, 0))
+            indices.append(contentsOf: [base, base + 1, base + 2, base, base + 2, base + 3])
+        }
+        
+        var descriptor = MeshDescriptor()
+        descriptor.positions = .init(vertices)
+        descriptor.primitives = .triangles(indices)
+        guard let mesh = try? MeshResource.generate(from: [descriptor]) else { continue }
+        
+        // Convert bucket id back to tint (0-1 range)
+        let r = Float((bucket >> 8) & 0xF) / (bucketSteps - 1)
+        let g = Float((bucket >> 4) & 0xF) / (bucketSteps - 1)
+        let b = Float(bucket & 0xF) / (bucketSteps - 1)
+        var material = UnlitMaterial()
+        material.color = .init(tint: UIColor(red: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1.0))
+        
+        let child = ModelEntity(mesh: mesh, materials: [material])
+        entity.addChild(child)
+    }
+    
+    entity.isEnabled = true
+    dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points")
 }
 
 /// Creates a "light beam" ray that extends from the head anchor towards -Z axis

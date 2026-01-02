@@ -72,7 +72,7 @@ class VPStreamer(Node):
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
         self.declare_parameter("enable_pointcloud", True)
-        self.declare_parameter("pointcloud_topic", "/rgb_map/cloud")
+        self.declare_parameter("pointcloud_topic", "/rgb_map/dummy_cloud")
         
         # Resolve the default MuJoCo scene from the robot_description package.
         robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")

@@ -3625,6 +3625,13 @@ class VisionProStreamer:
         pos = pos[:n]
         col = col[:n]
 
+        # Lightweight downsample to keep payloads small
+        if n > 12000:
+            stride = int(np.ceil(n / 12000))
+            pos = pos[::stride]
+            col = col[::stride]
+            n = pos.shape[0]
+
         header = struct.pack("<I", n)
         payload = header + pos.tobytes() + col.tobytes()
 
