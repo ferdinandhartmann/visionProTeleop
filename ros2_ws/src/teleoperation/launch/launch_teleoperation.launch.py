@@ -163,6 +163,28 @@ def generate_launch_description():
         ],
     )
 
+    depth_to_cloud_node = Node(
+        package="teleoperation",
+        executable="depth_to_cloud_node",
+        name="depth_to_cloud",
+        output="screen",
+        parameters=[
+            {"depth_topic": "/camera/depth/image_raw"},
+            {"rgb_topic": "/camera/color/image_raw"},
+            {"info_topic": "/camera/camera_info"},
+            {"output_topic": "/camera/depth/points"},
+            {"target_frame": "mycobot_base"},
+            {"downsample_step": 5},
+            {"max_range_m": 3.0},
+            {"publish_rate_hz": 5.0},
+            {"publish_single_frame": True},
+            {"single_frame_topic": "/rgb_map/cloud_frame"},
+            {"cropped_rgb_topic": "/rgb_map/cropped_rgb"},
+            {"accumulate": True},
+            {"max_points": 200000},
+        ],
+    )
+
 
     nodes = [
         vp_streamer_node,
@@ -182,6 +204,7 @@ def generate_launch_description():
         inverse_kinematics_node,
         
         rviz2_node,
+        depth_to_cloud_node,
                         
         joint_state_to_mycobot_node,
 

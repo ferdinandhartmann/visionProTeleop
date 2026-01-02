@@ -16,7 +16,7 @@ import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, CameraInfo
 from std_msgs.msg import Bool
 import cv2
 from cv_bridge import CvBridge
@@ -72,6 +72,8 @@ class VPStreamer(Node):
         self.declare_parameter("format", "v4l2")
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
+        self.declare_parameter("use_mujoco_camera", False)
+        self.declare_parameter("mujoco_camera_name", "depth_cam")
         self.declare_parameter("enable_pointcloud_overlay", False)
         self.declare_parameter("pointcloud_topic", "/camera/depth/points")
         self.declare_parameter("pointcloud_publish_hz", 1.0)
@@ -112,10 +114,17 @@ class VPStreamer(Node):
 
         self.enable_audio = params["enable_audio"]
         self.enable_camera = params["enable_camera"]
+        self.use_mujoco_camera = params["use_mujoco_camera"]
+        self.mujoco_camera_name = params["mujoco_camera_name"]
         
+        self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
+        self.data = mujoco.MjData(self.model)
+        self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
         
         self.bridge = CvBridge()
-        if self.enable_camera:
+        if self.enable_camera and self.use_mujoco_camera:
+            self._setup_mujoco_camera(params)
+        elif self.enable_camera:
             self.cap = cv2.VideoCapture(params["camera_device"])
             if not self.cap.isOpened():
                 raise RuntimeError(f"Could not open camera {params['camera_device']}")
@@ -134,11 +143,6 @@ class VPStreamer(Node):
             
             self.get_logger().info("Camera initialized")
 
-
-        self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
-        self.data = mujoco.MjData(self.model)
-        self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
-        
 
         self.streamer = VisionProStreamer(ip=params["visionpro_ip"], record=False)
         self.viewer_handle = None
@@ -256,6 +260,8 @@ class VPStreamer(Node):
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
+        use_mujoco_camera = self.get_parameter("use_mujoco_camera").value
+        mujoco_camera_name = self.get_parameter("mujoco_camera_name").value
         enable_pointcloud_overlay = self.get_parameter("enable_pointcloud_overlay").value
         pointcloud_topic = self.get_parameter("pointcloud_topic").value
         pointcloud_publish_hz = self.get_parameter("pointcloud_publish_hz").value
@@ -277,6 +283,8 @@ class VPStreamer(Node):
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
+            "use_mujoco_camera": use_mujoco_camera,
+            "mujoco_camera_name": mujoco_camera_name,
             "enable_pointcloud_overlay": enable_pointcloud_overlay,
             "pointcloud_topic": pointcloud_topic,
             "pointcloud_publish_hz": pointcloud_publish_hz,
@@ -284,6 +292,38 @@ class VPStreamer(Node):
             "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
             "ee_target_on_reset_gripper": ee_target_on_reset_gripper,
         }
+
+    def _setup_mujoco_camera(self, params: Dict[str, object]) -> None:
+        width, height = map(int, params["camera_resolution"].split('x'))
+        self.mj_width = width
+        self.mj_height = height
+        self.mj_rgb_pub = self.create_publisher(Image, "/camera/color/image_raw", 10)
+        self.mj_depth_pub = self.create_publisher(Image, "/camera/depth/image_raw", 10)
+        self.mj_info_pub = self.create_publisher(CameraInfo, "/camera/camera_info", 10)
+
+        self.mj_gl = mujoco.GLContext(self.mj_width, self.mj_height)
+        self.mj_gl.make_current()
+        self.mj_scene = mujoco.MjvScene(self.model, maxgeom=10000)
+        self.mj_vopt = mujoco.MjvOption()
+        self.mj_cam = mujoco.MjvCamera()
+        self.mj_pert = mujoco.MjvPerturb()
+        self.mj_con = mujoco.MjrContext(self.model, mujoco.mjtFontScale.mjFONTSCALE_150)
+
+        cam_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, self.mujoco_camera_name)
+        if cam_id < 0:
+            raise RuntimeError(f"Camera '{self.mujoco_camera_name}' not found in MuJoCo model.")
+        self._mujoco_cam_id = cam_id
+        self.mj_cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        self.mj_cam.fixedcamid = cam_id
+
+        self.mj_viewport = mujoco.MjrRect(0, 0, self.mj_width, self.mj_height)
+        self.mj_rgb_buf = np.zeros((self.mj_height, self.mj_width, 3), dtype=np.uint8)
+        self.mj_depth_buf = np.zeros((self.mj_height, self.mj_width), dtype=np.float32)
+
+        self._camera_period = 1.0 / params["camera_fps"] if params["camera_fps"] > 0 else 0.0
+        self._camera_thread = threading.Thread(target=self._camera_loop, name="vp_camera", daemon=True)
+        self._camera_thread.start()
+        self.get_logger().info(f"MuJoCo camera '{self.mujoco_camera_name}' initialized at {self.mj_width}x{self.mj_height}")
 
 
     def _build_joint_mapping(self, mujoco) -> Dict[str, int]:
@@ -765,11 +805,75 @@ class VPStreamer(Node):
         # # Optional local OpenCV preview
         # cv2.imshow("Webcam", frame)
         # cv2.waitKey(1)
+    
+    def _mujoco_camera_cb(self) -> None:
+        # Advance simulation and render the named MuJoCo camera
+        mujoco.mj_step(self.model, self.data)
+
+        # Ensure GL context is current in this thread
+        self.mj_gl.make_current()
+
+        mujoco.mjv_updateScene(
+            self.model,
+            self.data,
+            self.mj_vopt,
+            self.mj_pert,
+            self.mj_cam,
+            mujoco.mjtCatBit.mjCAT_ALL,
+            self.mj_scene
+        )
+
+        mujoco.mjr_render(self.mj_viewport, self.mj_scene, self.mj_con)
+        mujoco.mjr_readPixels(self.mj_rgb_buf, self.mj_depth_buf, self.mj_viewport, self.mj_con)
+
+        rgb = np.flipud(self.mj_rgb_buf)
+        depth = np.flipud(self.mj_depth_buf)
+
+        # Convert depth to meters using znear/zfar
+        znear = float(self.model.vis.map.znear)
+        zfar = float(self.model.vis.map.zfar)
+        depth_m = znear / (1.0 - depth * (1.0 - znear / zfar))
+
+        # Convert to BGR for OpenCV / Vision Pro
+        rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        stamp = self.get_clock().now().to_msg()
+
+        rgb_msg = self.bridge.cv2_to_imgmsg(rgb_bgr, encoding="bgr8")
+        rgb_msg.header.stamp = stamp
+        rgb_msg.header.frame_id = "camera"
+        self.mj_rgb_pub.publish(rgb_msg)
+
+        depth_msg = self.bridge.cv2_to_imgmsg(depth_m.astype(np.float32), encoding="32FC1")
+        depth_msg.header = rgb_msg.header
+        self.mj_depth_pub.publish(depth_msg)
+
+        info = CameraInfo()
+        info.header = rgb_msg.header
+        info.width = self.mj_width
+        info.height = self.mj_height
+        try:
+            fovy_rad = math.radians(self.model.cam_fovy[self._mujoco_cam_id])
+            fx = 0.5 * self.mj_width / math.tan(fovy_rad / 2.0)
+            fy = fx
+        except Exception:
+            fx = fy = 554.0  # fallback
+        cx = self.mj_width / 2.0
+        cy = self.mj_height / 2.0
+        info.k = [fx, 0.0, cx,
+                  0.0, fy, cy,
+                  0.0, 0.0, 1.0]
+        self.mj_info_pub.publish(info)
+
+        if self.streamer is not None:
+            self.streamer.update_frame(rgb_bgr)
 
     def _camera_loop(self) -> None:
         next_time = time.perf_counter()
         while not self._stop_event.is_set():
-            self._camera_cb()
+            if self.use_mujoco_camera:
+                self._mujoco_camera_cb()
+            else:
+                self._camera_cb()
             if self._camera_period > 0:
                 next_time += self._camera_period
                 sleep_time = next_time - time.perf_counter()
