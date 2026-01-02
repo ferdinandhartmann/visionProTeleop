@@ -10,6 +10,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import fractions 
 import math
+import struct
 import cv2
 import os
 import shutil
@@ -949,10 +950,18 @@ class VisionProStreamer:
         self._webrtc_loop = None  # Event loop for WebRTC thread
         self._webrtc_thread = None # Thread object for WebRTC event loop
         self._control_channel = None  # Control channel for commands from VisionOS
+        self._webrtc_point_channel = None  # WebRTC data channel for point clouds
+        self._webrtc_point_ready = False
         self._benchmark_epoch = time.perf_counter()
         self._benchmark_condition = Condition()
         self._benchmark_events = {}
         self._reset_callbacks: List[Callable[[Any, Any], None]] = []
+        self._pointcloud_payload = None
+        self._pointcloud_lock = Lock()
+        self._pointcloud_thread = None
+        self._pointcloud_running = False
+        self._pointcloud_hz = 10.0
+        self._pointcloud_dirty = False
         
         # Video/Audio configuration (set by configure_video/configure_audio)
         self._video_config: Optional[Dict[str, Any]] = None
@@ -1406,6 +1415,30 @@ class VisionProStreamer:
         def _on_message(message):
             # Handle benchmark echoes from VisionPro
             self._handle_sim_benchmark_message(message)
+
+    def _register_webrtc_point_channel(self, channel):
+        """Register the WebRTC data channel for point cloud streaming."""
+        self._webrtc_point_channel = channel
+        self._log(f"[WEBRTC] Registering point-cloud channel (state={channel.readyState})", force=True)
+
+        @channel.on("open")
+        def _on_open():
+            self._log("[WEBRTC] Point-cloud data channel opened", force=True)
+            self._webrtc_point_ready = True
+            self._start_pointcloud_streaming()
+
+        @channel.on("close")
+        def _on_close():
+            self._log("[WEBRTC] Point-cloud data channel closed", force=True)
+            self._webrtc_point_ready = False
+            self._webrtc_point_channel = None
+            self._stop_pointcloud_streaming()
+
+        @channel.on("message")
+        def _on_message(message):
+            # Point cloud channel is send-only from Python → VisionOS today.
+            # Future bidirectional messages can be handled here.
+            self._log("[WEBRTC] Unexpected point-cloud message from VisionOS (ignored)", force=True)
     
     def _register_webrtc_control_channel(self, channel):
         """Register the WebRTC data channel for control commands."""
@@ -1979,6 +2012,8 @@ class VisionProStreamer:
                 self._register_webrtc_sim_channel(channel)
             elif channel.label == "control":
                 self._register_webrtc_control_channel(channel)
+            elif channel.label == "point-cloud":
+                self._register_webrtc_point_channel(channel)
         
         # Send local ICE candidates via signaling
         @pc.on("icecandidate")
@@ -3555,6 +3590,46 @@ class VisionProStreamer:
                     print(f"  {name}: pos=[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}], quat=[{quat[0]:.4f}, {quat[1]:.4f}, {quat[2]:.4f}, {quat[3]:.4f}]")
         
         return body_dict
+
+    def update_pointcloud(self, positions: np.ndarray, colors: np.ndarray, rate_hz: float = 10.0):
+        """Store the latest point cloud to be pushed over WebRTC.
+
+        Parameters
+        ----------
+        positions : np.ndarray
+            Nx3 float32 array in meters (already transformed to mycobot_base).
+        colors : np.ndarray
+            Nx3 uint8 or float32 array of RGB values.
+        rate_hz : float, optional
+            Desired streaming rate (default 10 Hz, clamped to 1–30 Hz).
+        """
+        if positions.size == 0 or colors.size == 0:
+            return
+        count = positions.shape[0]
+        if count == 0:
+            return
+
+        # Clamp rate to a sane range
+        self._pointcloud_hz = float(min(30.0, max(1.0, rate_hz)))
+
+        # Ensure dtype/shape
+        pos = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+        col = np.asarray(colors)
+        if col.dtype != np.uint8:
+            col = np.clip(col, 0.0, 255.0).astype(np.uint8)
+        col = col.reshape(-1, 3)
+
+        # Truncate to smallest length to avoid mismatch
+        n = min(pos.shape[0], col.shape[0])
+        pos = pos[:n]
+        col = col[:n]
+
+        header = struct.pack("<I", n)
+        payload = header + pos.tobytes() + col.tobytes()
+
+        with self._pointcloud_lock:
+            self._pointcloud_payload = payload
+            self._pointcloud_dirty = True
     
     def _get_isaac_poses_from_stage(self) -> Dict[str, Dict[str, Any]]:
         """Get poses from USD stage using PhysX runtime data (Isaac Lab only)."""
@@ -3633,6 +3708,58 @@ class VisionProStreamer:
         else:
             # Streaming will start when the WebRTC channel opens
             self._log("[SIM] Waiting for WebRTC sim-poses channel to open...", force=True)
+
+    def _start_pointcloud_streaming(self):
+        """Start background thread that pushes the latest point cloud."""
+        if self._pointcloud_running or not self._webrtc_point_ready:
+            return
+        if self._pointcloud_thread and self._pointcloud_thread.is_alive():
+            return
+        self._pointcloud_running = True
+
+        def _loop():
+            target_period = 1.0 / max(1.0, float(self._pointcloud_hz))
+            last_send = 0.0
+            while self._pointcloud_running:
+                now = time.time()
+                if now - last_send < target_period:
+                    time.sleep(0.001)
+                    continue
+                if not self._webrtc_point_ready or self._webrtc_point_channel is None:
+                    time.sleep(0.05)
+                    continue
+                # Drop frame if channel is backed up
+                try:
+                    if getattr(self._webrtc_point_channel, "bufferedAmount", 0) > 1_000_000:
+                        continue
+                except Exception:
+                    pass
+                payload = None
+                with self._pointcloud_lock:
+                    if self._pointcloud_dirty:
+                        payload = self._pointcloud_payload
+                        self._pointcloud_dirty = False
+                if payload:
+                    try:
+                        self._webrtc_point_channel.send(payload)
+                        last_send = now
+                    except Exception as exc:
+                        self._log(f"[WEBRTC] Failed to send point cloud: {exc}", force=True)
+                        time.sleep(0.05)
+                        continue
+            self._log("[WEBRTC] Point-cloud streaming thread exited", force=True)
+
+        self._pointcloud_thread = Thread(target=_loop, name="pointcloud_stream", daemon=True)
+        self._pointcloud_thread.start()
+
+    def _stop_pointcloud_streaming(self):
+        """Stop the point cloud streaming thread."""
+        if not self._pointcloud_running:
+            return
+        self._pointcloud_running = False
+        if self._pointcloud_thread:
+            self._pointcloud_thread.join(timeout=2.0)
+        self._pointcloud_thread = None
     
     def _start_pose_streaming_webrtc(self):
         """Start the actual pose streaming loop via WebRTC.
@@ -4697,6 +4824,9 @@ class VisionProStreamer:
                         elif channel.label == "control":
                             streamer_instance._log("[WEBRTC] Remote control data channel detected")
                             streamer_instance._register_webrtc_control_channel(channel)
+                        elif channel.label == "point-cloud":
+                            streamer_instance._log("[WEBRTC] Remote point-cloud data channel detected")
+                            streamer_instance._register_webrtc_point_channel(channel)
 
                 # Create sim-poses data channel if simulation is configured
                 if streamer_instance._sim_config is not None:
@@ -4709,6 +4839,15 @@ class VisionProStreamer:
                     )
                     streamer_instance._register_webrtc_sim_channel(sim_channel)
                     streamer_instance._log("[WEBRTC] Created sim-poses data channel")
+
+                # Point cloud channel (unreliable, drop if busy)
+                point_channel = pc.createDataChannel(
+                    "point-cloud",
+                    ordered=False,
+                    maxRetransmits=0,
+                )
+                streamer_instance._register_webrtc_point_channel(point_channel)
+                streamer_instance._log("[WEBRTC] Created point-cloud data channel")
 
                 # Always provide a control channel for reset/commands (ordered, reliable)
                 control_channel = pc.createDataChannel(
