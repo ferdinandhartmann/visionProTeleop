@@ -7,13 +7,15 @@
 	<!-- <option iterations="100" tolerance="1e-10"/> -->
 
   <statistic center="0.3 0 0.35" extent="0.8" meansize="0.05" />
+  
   <visual>
-    <headlight diffuse="0.5 0.5 0.5" ambient="0.15 0.15 0.15" specular="0.2 0.2 0.2" />
+    <headlight diffuse="0.5 0.5 0.5" ambient="0.25 0.25 0.25" specular="0.2 0.2 0.2" />
     <global azimuth="120" elevation="-25" offwidth="2048" offheight="2048" />
   </visual>
+
   <asset>
     <texture name="grid" type="2d" builtin="checker" rgb1=".18 .24 .30" rgb2=".12 .16 .20" width="1024" height="1024" mark="edge" markrgb=".8 .8 .8" />
-    <material name="grid" texture="grid" texrepeat="2 2" texuniform="true" />
+    <material name="grid" texture="grid" texrepeat="10 10" texuniform="true" />
     <texture name="table_tex" type="2d" builtin="flat" rgb1="0.43 0.33 0.25" width="256" height="256" />
     <material name="table_mat" texture="table_tex" rgba="1 1 1 1" />
    
@@ -75,14 +77,14 @@
 		</body>
 
 
-    <light name="sun_key" pos="0 0 2.0" dir="-0.3 0.2 -1" directional="true" diffuse="1.0 1.0 1.0" specular="0.3 0.3 0.3" castshadow="true" />
-    <light name="fill" pos="1.5 -1.0 1.2" dir="-1 1 -0.5" directional="true" diffuse="0.35 0.35 0.35" specular="0 0 0" castshadow="false" />
-    
+    <light name="sun_key" pos="-0.4 0 1.2" dir="0.35 0 -1" directional="false" diffuse="0.5 0.5 0.5" specular="0.25 0.25 0.25" castshadow="true" />
+    <light name="fill" pos="0 0 2.5" dir="0 0 -0.5" directional="true" diffuse="0.6 0.6 0.6" specular="0 0 0" castshadow="false" />
+
     <geom name="floor" size="2 2 0.02" type="plane" material="grid" contype="1" conaffinity="1" />
 
-    <body name="table" pos="0 0 0">
+    <!-- <body name="table" pos="0 0 0">
       <geom type="box" size="0.2 0.2 0.025" pos="-0.1 0 -0.025" material="table_mat" contype="1" conaffinity="1" friction="1.0 0.005 0.0001" rgba="0.7 0.7 0.7 1" />
-    </body>
+    </body> -->
     
     <body name="cube1" pos="-0.2 0 0.4" euler="0 30 0">
       <joint type="free" />
