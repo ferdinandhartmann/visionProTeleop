@@ -2153,25 +2153,38 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
         return
     }
     
-    let spriteSize: Float = 0.002
+    // Build a small octahedron per point so the cloud stays visible from any view angle.
+    let spriteSize: Float = 0.01
     var vertices: [SIMD3<Float>] = []
     var indices: [UInt32] = []
-    vertices.reserveCapacity(points.count * 4)
-    indices.reserveCapacity(points.count * 6)
+    vertices.reserveCapacity(points.count * 6)
+    indices.reserveCapacity(points.count * 24)
     
     for (idx, position) in points.enumerated() {
         let baseIndex = UInt32(vertices.count)
         
-        // Simple billboarded quad aligned with world axes
-        vertices.append(position + SIMD3<Float>( spriteSize,  spriteSize, 0))
-        vertices.append(position + SIMD3<Float>(-spriteSize,  spriteSize, 0))
-        vertices.append(position + SIMD3<Float>(-spriteSize, -spriteSize, 0))
-        vertices.append(position + SIMD3<Float>( spriteSize, -spriteSize, 0))
+        // Octahedron vertices (axis-aligned)
+        vertices.append(position + SIMD3<Float>( spriteSize, 0, 0))  // +X
+        vertices.append(position + SIMD3<Float>(-spriteSize, 0, 0))  // -X
+        vertices.append(position + SIMD3<Float>(0,  spriteSize, 0))  // +Y
+        vertices.append(position + SIMD3<Float>(0, -spriteSize, 0))  // -Y
+        vertices.append(position + SIMD3<Float>(0, 0,  spriteSize))  // +Z (top)
+        vertices.append(position + SIMD3<Float>(0, 0, -spriteSize))  // -Z (bottom)
         
-        // Two triangles per quad
+        // Top pyramid (faces meeting at +Z)
         indices.append(contentsOf: [
-            baseIndex, baseIndex + 1, baseIndex + 2,
-            baseIndex, baseIndex + 2, baseIndex + 3
+            baseIndex, baseIndex + 2, baseIndex + 4,
+            baseIndex + 2, baseIndex + 1, baseIndex + 4,
+            baseIndex + 1, baseIndex + 3, baseIndex + 4,
+            baseIndex + 3, baseIndex, baseIndex + 4
+        ])
+        
+        // Bottom pyramid (faces meeting at -Z)
+        indices.append(contentsOf: [
+            baseIndex + 2, baseIndex, baseIndex + 5,
+            baseIndex + 1, baseIndex + 2, baseIndex + 5,
+            baseIndex + 3, baseIndex + 1, baseIndex + 5,
+            baseIndex, baseIndex + 3, baseIndex + 5
         ])
     }
     
@@ -2180,11 +2193,14 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
     descriptor.primitives = .triangles(indices)
     
     if let mesh = try? MeshResource.generate(from: [descriptor]) {
-        // Use the average incoming color to tint the unlit material (per-vertex colors
-        // are not available on this platform version).
-        let averageColor = colors.isEmpty ? SIMD3<Float>(1, 1, 1) : colors.reduce(SIMD3<Float>(0, 0, 0), +) / Float(colors.count)
-        var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(red: CGFloat(averageColor.x), green: CGFloat(averageColor.y), blue: CGFloat(averageColor.z), alpha: 1.0))
+        let averageColor = colors.reduce(SIMD3<Float>(0, 0, 0), +) / Float(colors.count)
+        var material = SimpleMaterial(color: UIColor(
+            red: CGFloat(averageColor.x),
+            green: CGFloat(averageColor.y),
+            blue: CGFloat(averageColor.z),
+            alpha: 1.0
+        ), roughness: 1.0, isMetallic: false)
+        material.isDoubleSided = true
         entity.model = ModelComponent(mesh: mesh, materials: [material])
         entity.isEnabled = true
     } else {
