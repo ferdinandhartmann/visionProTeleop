@@ -7,13 +7,15 @@ import threading
 from pathlib import Path
 import queue
 from typing import Dict, List, Optional
+import struct
 
 from ament_index_python.packages import get_package_share_directory
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import JointState
+from rclpy.time import Duration
+from sensor_msgs.msg import JointState, PointCloud2
 from std_msgs.msg import Bool
 import cv2
 from cv_bridge import CvBridge
@@ -32,6 +34,8 @@ from tf2_ros import LookupException, ConnectivityException, ExtrapolationExcepti
 from teleoperation.msg import TeleopTarget
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
+from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
+from sensor_msgs_py import point_cloud2
 
     # import avp_stream, inspect
     # print("USING avp_stream from:", avp_stream.__file__, flush=True)
@@ -67,6 +71,8 @@ class VPStreamer(Node):
         self.declare_parameter("format", "v4l2")
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
+        self.declare_parameter("enable_pointcloud", True)
+        self.declare_parameter("pointcloud_topic", "/rgb_map/cloud")
         
         # Resolve the default MuJoCo scene from the robot_description package.
         robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
@@ -103,7 +109,13 @@ class VPStreamer(Node):
 
         self.enable_audio = params["enable_audio"]
         self.enable_camera = params["enable_camera"]
+        self.enable_pointcloud = params["enable_pointcloud"]
+        self.pointcloud_topic = params["pointcloud_topic"]
         
+        self._last_pointcloud_time = 0.0
+        self._pointcloud_max_rate_hz = 15.0
+        self._pointcloud_max_points = 20000
+        self._tf_target_frame = "mycobot_base"
         
         self.bridge = CvBridge()
         if self.enable_camera:
@@ -185,6 +197,11 @@ class VPStreamer(Node):
         joint_topic = params["joint_state_topic"]
         self.joint_sub = self.create_subscription(JointState, joint_topic, self._joint_state_cb, qos)
         self.get_logger().info(f"Listening for joint states on {joint_topic}")
+
+        if self.enable_pointcloud:
+            pc_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+            self.pointcloud_sub = self.create_subscription(PointCloud2, self.pointcloud_topic, self._pointcloud_cb, pc_qos)
+            self.get_logger().info(f"Point cloud streaming enabled from {self.pointcloud_topic}")
         
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -231,6 +248,8 @@ class VPStreamer(Node):
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
+        enable_pointcloud = self.get_parameter("enable_pointcloud").value
+        pointcloud_topic = self.get_parameter("pointcloud_topic").value
         ee_target_on_reset_position = list(self.get_parameter("ee_target_on_reset_position").get_parameter_value().double_array_value)
         ee_target_on_reset_orientation_xyzw = list(self.get_parameter("ee_target_on_reset_orientation_xyzw").get_parameter_value().double_array_value)
         ee_target_on_reset_gripper = int(self.get_parameter("ee_target_on_reset_gripper").get_parameter_value().integer_value)
@@ -249,6 +268,8 @@ class VPStreamer(Node):
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
+            "enable_pointcloud": enable_pointcloud,
+            "pointcloud_topic": pointcloud_topic,
             "ee_target_on_reset_position": ee_target_on_reset_position,
             "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
             "ee_target_on_reset_gripper": ee_target_on_reset_gripper,
@@ -282,6 +303,58 @@ class VPStreamer(Node):
                 self._latest_joint_state[name] = position
                 
             self.latest_joint_vel = list(msg.velocity)
+
+    def _pointcloud_cb(self, msg: PointCloud2) -> None:
+        if not self.enable_pointcloud or self.streamer is None:
+            return
+
+        now = time.time()
+        if now - self._last_pointcloud_time < 1.0 / self._pointcloud_max_rate_hz:
+            return
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self._tf_target_frame,
+                msg.header.frame_id,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.1),
+            )
+        except (LookupException, ConnectivityException, ExtrapolationException) as exc:
+            self._periodic_log("pc_tf", 2.0, f"Point cloud TF lookup failed: {exc}", level="warn")
+            return
+
+        try:
+            transformed = do_transform_cloud(msg, transform)
+        except Exception as exc:  # noqa: BLE001
+            self._periodic_log("pc_transform", 2.0, f"Point cloud transform failed: {exc}", level="warn")
+            return
+
+        points_iter = point_cloud2.read_points(
+            transformed, field_names=("x", "y", "z", "rgb"), skip_nans=True
+        )
+
+        positions = []
+        colors = []
+        for idx, (x, y, z, rgb) in enumerate(points_iter):
+            if idx >= self._pointcloud_max_points:
+                break
+            positions.append((float(x), float(y), float(z)))
+            try:
+                rgb_uint = struct.unpack("<I", struct.pack("<f", float(rgb)))[0]
+            except struct.error:
+                rgb_uint = 0
+            r = (rgb_uint >> 16) & 0xFF
+            g = (rgb_uint >> 8) & 0xFF
+            b = rgb_uint & 0xFF
+            colors.append((r, g, b))
+
+        if not positions:
+            return
+
+        pos_arr = np.asarray(positions, dtype=np.float32)
+        col_arr = np.asarray(colors, dtype=np.uint8)
+        self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=min(self._pointcloud_max_rate_hz, 10.0))
+        self._last_pointcloud_time = now
 
 
     def _apply_joint_state(self) -> None:

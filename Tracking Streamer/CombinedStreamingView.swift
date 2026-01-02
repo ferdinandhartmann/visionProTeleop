@@ -221,6 +221,7 @@ struct CombinedStreamingView: View {
     @State private var attachToRotation: simd_quatf? = nil
     @State private var mujocoFinalTransforms: [String: simd_float4x4] = [:]
     @State private var mujocoPoseUpdateTrigger: UUID = UUID()
+    @State private var pointCloudEntity: ModelEntity? = nil
     @State private var mujocoUsdzURL: String? = nil
     @State private var cachedSortedBodyNames: [String] = []  // Cached sorted body names for consistent iteration
     
@@ -1224,6 +1225,12 @@ struct CombinedStreamingView: View {
         mujocoRoot.name = "mujocoRoot"
         content.add(mujocoRoot)
         
+        let pointCloudEntity = ModelEntity()
+        pointCloudEntity.name = "pointCloudEntity"
+        pointCloudEntity.isEnabled = false
+        pointCloudEntity.setParent(mujocoRoot)
+        self.pointCloudEntity = pointCloudEntity
+        
         // === HEAD BEAM SETUP ===
         let headBeamAnchor = AnchorEntity(.head)
         headBeamAnchor.name = "headBeamAnchor"
@@ -2138,6 +2145,30 @@ private func createPreviewPlane() -> Entity {
     return previewEntity
 }
 
+private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float>], colors: [SIMD3<Float>]) {
+    guard let entity = entity else { return }
+    guard !points.isEmpty, points.count == colors.count else {
+        entity.isEnabled = false
+        return
+    }
+    
+    var descriptor = MeshDescriptor()
+    descriptor.positions = .init(points)
+    descriptor.primitives = .points(descriptor.positions.count)
+    
+    let vertexColors = colors.map { SIMD4<Float>($0.x, $0.y, $0.z, 1.0) }
+    descriptor.colors = .init(vertexColors)
+    
+    if let mesh = try? MeshResource.generate(from: descriptor) {
+        var material = UnlitMaterial()
+        material.color = .init(tint: .white)
+        entity.model = ModelComponent(mesh: mesh, materials: [material])
+        entity.isEnabled = true
+    } else {
+        dlog("⚠️ [PointCloud] Failed to build mesh for \(points.count) points")
+    }
+}
+
 /// Creates a "light beam" ray that extends from the head anchor towards -Z axis
 private func createHeadBeam() -> Entity {
     let beamEntity = Entity()
@@ -2784,6 +2815,12 @@ private struct LifecycleModifiers: ViewModifier {
             if !hasSimPoses {
                 hasSimPoses = true
                 tryAutoMinimize()
+            }
+        }
+        
+        videoStreamManager.onPointCloudReceived = { positions, colors in
+            Task { @MainActor in
+                updatePointCloudEntity(pointCloudEntity, points: positions, colors: colors)
             }
         }
         
