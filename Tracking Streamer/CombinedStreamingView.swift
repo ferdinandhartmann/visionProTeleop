@@ -2146,37 +2146,44 @@ private func createPreviewPlane() -> Entity {
     return previewEntity
 }
 
-private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float>], colors: [SIMD3<Float>]) {
+private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float>], colors: [SIMD3<Float>], spriteSize: Float) {
     guard let entity = entity else { return }
     guard !points.isEmpty, points.count == colors.count else {
         entity.isEnabled = false
         return
     }
     
-    // Bucket points by approximate color and build one mesh per bucket for better performance and tinting.
-    let spriteSize: Float = 0.0035
+    // Bucket points by color (0-1 range) and build one mesh per bucket for better performance and tinting.
     let bucketSteps: Float = 4.0  // 4x4x4 buckets = 64 groups
     
-    var buckets: [Int: [SIMD3<Float>]] = [:]
+    struct Bucket {
+        var positions: [SIMD3<Float>] = []
+        var colorSum: SIMD3<Float> = .zero
+    }
+    
+    var buckets: [Int: Bucket] = [:]
     func bucketIndex(for color: SIMD3<Float>) -> Int {
-        // Incoming colors are 0-1 floats; convert to 0-255 and bucket
-        let c = color * 255
+        // Incoming colors are 0-1 floats; bucket in that range
+        let c = max(SIMD3<Float>(repeating: 0), min(SIMD3<Float>(repeating: 1), color))
         let step = 256.0 / bucketSteps
-        let r = Int(max(0, min(255, c.x)) / step)
-        let g = Int(max(0, min(255, c.y)) / step)
-        let b = Int(max(0, min(255, c.z)) / step)
+        let r = Int((c.x * 255) / step)
+        let g = Int((c.y * 255) / step)
+        let b = Int((c.z * 255) / step)
         return (r << 8) | (g << 4) | b
     }
     
     for i in 0..<points.count {
         let idx = bucketIndex(for: colors[i])
-        buckets[idx, default: []].append(points[i])
+        if buckets[idx] == nil { buckets[idx] = Bucket() }
+        buckets[idx]?.positions.append(points[i])
+        buckets[idx]?.colorSum += colors[i]
     }
     
     // Clear old children
     entity.children.forEach { $0.removeFromParent() }
     
-    for (bucket, bucketPoints) in buckets {
+    for (bucket, data) in buckets {
+        let bucketPoints = data.positions
         if bucketPoints.isEmpty { continue }
         var vertices: [SIMD3<Float>] = []
         var indices: [UInt32] = []
@@ -2197,19 +2204,18 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
         descriptor.primitives = .triangles(indices)
         guard let mesh = try? MeshResource.generate(from: [descriptor]) else { continue }
         
-        // Convert bucket id back to tint (0-1 range)
-        let r = Float((bucket >> 8) & 0xF) / (bucketSteps - 1)
-        let g = Float((bucket >> 4) & 0xF) / (bucketSteps - 1)
-        let b = Float(bucket & 0xF) / (bucketSteps - 1)
+        // Average tint for this bucket
+        let count = Float(bucketPoints.count)
+        let avg = data.colorSum / max(1, count)
         var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(red: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1.0))
+        material.color = .init(tint: UIColor(red: CGFloat(avg.x), green: CGFloat(avg.y), blue: CGFloat(avg.z), alpha: 1.0))
         
         let child = ModelEntity(mesh: mesh, materials: [material])
         entity.addChild(child)
     }
     
     entity.isEnabled = true
-    dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points")
+    dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: \"%.4f\", spriteSize)))")
 }
 
 /// Creates a "light beam" ray that extends from the head anchor towards -Z axis
@@ -2864,7 +2870,12 @@ private struct LifecycleModifiers: ViewModifier {
         
         videoStreamManager.onPointCloudReceived = { positions, colors in
             Task { @MainActor in
-                updatePointCloudEntity(pointCloudEntity, points: positions, colors: colors)
+                updatePointCloudEntity(
+                    pointCloudEntity,
+                    points: positions,
+                    colors: colors,
+                    spriteSize: dataManager.pointCloudSpriteSize
+                )
             }
         }
         

@@ -320,6 +320,7 @@ class DataManager: ObservableObject {
     @Published var simEnabled: Bool = false    // Whether simulation is enabled
     @Published var controlChannelReady: Bool = false  // Whether control data channel is open
     @Published var crossNetworkRoomCode: String? = nil  // Room code for cross-network mode (nil = local mode)
+    @Published var pointCloudSpriteSize: Float = 0.0035  // Size of rendered point sprites (meters)
     
     // USDZ scene loaded via WebRTC (cross-network mode)
     @Published var loadedUsdzPath: String? = nil  // Path to the loaded USDZ file
