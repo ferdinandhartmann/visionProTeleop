@@ -20,9 +20,9 @@ class DummyPointCloudPublisher(Node):
     def __init__(self) -> None:
         super().__init__("dummy_pointcloud_publisher")
 
-        self.declare_parameter("frame_id", "camera")
+        self.declare_parameter("frame_id", "camera_lens")
         self.declare_parameter("topic", "/rgb_map/dummy_cloud")
-        self.declare_parameter("rate_hz", 2.0)
+        self.declare_parameter("rate_hz", 1.0)
         self.declare_parameter("grid_size", 24)
         self.declare_parameter("grid_spacing", 0.02)
 

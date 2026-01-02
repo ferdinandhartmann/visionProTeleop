@@ -4,12 +4,12 @@
 
 vp_transform_publisher:
   ros__parameters:
-    visionpro_ip: "192.168.11.99"
+    visionpro_ip: "192.168.10.113"
     pinch_threshold: 0.02   # just for markers for rviz
 
 vp_streamer:
   ros__parameters:
-    visionpro_ip: "192.168.11.99"
+    visionpro_ip: "192.168.10.113"
     port: 50051                           # gRPC port for USDZ transfer
     joint_state_topic: "/joint_states_mycobot"
     attach_to: [0.0, 0.3, 0.65, -55.0]    # y-axis goes from viewer straight to the distance
@@ -29,7 +29,7 @@ vp_streamer:
 
 camera_streamer:
   ros__parameters:
-    visionpro_ip: "192.168.11.99"
+    visionpro_ip: "192.168.10.113"
     resolution:  "320x240"  # "1280x720"
     camera_input: "/dev/video4" # Robot camera
     # camera_input: "/dev/video0" # Laptop camera

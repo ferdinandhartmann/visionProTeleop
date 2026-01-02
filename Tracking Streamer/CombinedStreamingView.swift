@@ -221,6 +221,7 @@ struct CombinedStreamingView: View {
     @State private var attachToRotation: simd_quatf? = nil
     @State private var mujocoFinalTransforms: [String: simd_float4x4] = [:]
     @State private var mujocoPoseUpdateTrigger: UUID = UUID()
+    @State private var pointCloudEntity: ModelEntity? = nil
     @State private var mujocoUsdzURL: String? = nil
     @State private var cachedSortedBodyNames: [String] = []  // Cached sorted body names for consistent iteration
     
@@ -307,6 +308,7 @@ struct CombinedStreamingView: View {
                 mujocoFinalTransforms: $mujocoFinalTransforms,
                 mujocoPoseUpdateTrigger: $mujocoPoseUpdateTrigger,
                 mujocoBodyEntities: $mujocoBodyEntities,
+                pointCloudEntity: $pointCloudEntity,
                 computeMuJoCoFinalTransformsFromWebRTC: computeMuJoCoFinalTransformsFromWebRTC,
                 computeMuJoCoFinalTransforms: computeMuJoCoFinalTransforms,
                 tryAutoMinimize: tryAutoMinimize
@@ -1224,6 +1226,12 @@ struct CombinedStreamingView: View {
         mujocoRoot.name = "mujocoRoot"
         content.add(mujocoRoot)
         
+        let pointCloudEntity = ModelEntity()
+        pointCloudEntity.name = "pointCloudEntity"
+        pointCloudEntity.isEnabled = false
+        pointCloudEntity.setParent(mujocoRoot)
+        self.pointCloudEntity = pointCloudEntity
+        
         // === HEAD BEAM SETUP ===
         let headBeamAnchor = AnchorEntity(.head)
         headBeamAnchor.name = "headBeamAnchor"
@@ -2138,6 +2146,116 @@ private func createPreviewPlane() -> Entity {
     return previewEntity
 }
 
+private func updatePointCloudEntity(
+    _ entity: ModelEntity?,
+    points: [SIMD3<Float>],
+    colors: [SIMD3<Float>],
+    spriteSize: Float,
+    attachToPosition: SIMD3<Float>?,
+    attachToRotation: simd_quatf?
+) {
+    guard let entity = entity else { return }
+    guard !points.isEmpty, points.count == colors.count else {
+        entity.isEnabled = false
+        return
+    }
+    
+    // Bucket points by color (0-1 range) and build one mesh per bucket for better performance and tinting.
+    let bucketSteps: Float = 4.0  // 4x4x4 buckets = 64 groups
+    let axisCorrection = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+    
+    struct Bucket { var positions: [SIMD3<Float>] = []; var colorSum: SIMD3<Float> = .zero }
+    
+    var buckets: [Int: Bucket] = [:]
+    func bucketIndex(for color: SIMD3<Float>) -> Int {
+        // Incoming colors are 0-1 floats; bucket in that range
+        let c = max(SIMD3<Float>(repeating: 0), min(SIMD3<Float>(repeating: 1), color))
+        let step = 256.0 / bucketSteps
+        let r = Int((c.x * 255) / step)
+        let g = Int((c.y * 255) / step)
+        let b = Int((c.z * 255) / step)
+        return (r << 8) | (g << 4) | b
+    }
+    
+    for i in 0..<points.count {
+        // Apply attach_to and axis correction to match MuJoCo transforms in RealityKit
+        var p = points[i]
+        if let attachPos = attachToPosition, let attachRot = attachToRotation {
+            p = attachRot.act(p) + attachPos
+        }
+        p = axisCorrection.act(p)
+        
+        let idx = bucketIndex(for: colors[i])
+        if buckets[idx] == nil { buckets[idx] = Bucket() }
+        buckets[idx]?.positions.append(p)
+        buckets[idx]?.colorSum += colors[i]
+    }
+    
+    // Clear old children
+    entity.children.forEach { $0.removeFromParent() }
+    
+    // Precompute a low-poly sphere (icosahedron) to duplicate for each point
+    // Use a precomputed golden ratio to keep this expression simple for the compiler
+    let t: Float = 1.618033988749895
+    let baseVerts: [SIMD3<Float>] = [
+        SIMD3<Float>(-1,  t, 0), SIMD3<Float>( 1,  t, 0), SIMD3<Float>(-1, -t, 0), SIMD3<Float>( 1, -t, 0),
+        SIMD3<Float>(0, -1,  t), SIMD3<Float>(0,  1,  t), SIMD3<Float>(0, -1, -t), SIMD3<Float>(0,  1, -t),
+        SIMD3<Float>( t, 0, -1), SIMD3<Float>( t, 0, 1), SIMD3<Float>(-t, 0, -1), SIMD3<Float>(-t, 0, 1)
+    ].map { simd_normalize($0) }
+    // let baseVerts: [SIMD3<Float>] = {
+    //     var result: [SIMD3<Float>] = []
+    //     result.reserveCapacity(unnormBaseVerts.count)
+    //     for v in unnormBaseVerts {
+    //         result.append(simd_normalize(v))
+    //     }
+    //     return result
+    // }()
+    let baseIndices: [UInt32] = [
+        0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11,
+        1,5,9, 5,11,4, 11,10,2, 10,7,6, 7,1,8,
+        3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9,
+        4,9,5, 2,4,11, 6,2,10, 8,6,7, 9,8,1
+    ]
+    
+    for (bucket, data) in buckets {
+        let bucketPoints = data.positions
+        if bucketPoints.isEmpty { continue }
+        var vertices: [SIMD3<Float>] = []
+        var indices: [UInt32] = []
+        vertices.reserveCapacity(bucketPoints.count * baseVerts.count)
+        indices.reserveCapacity(bucketPoints.count * baseIndices.count)
+        
+        for position in bucketPoints {
+            let startIndex = UInt32(vertices.count)
+            vertices.append(contentsOf: baseVerts.map { position + $0 * spriteSize })
+            indices.append(contentsOf: baseIndices.map { $0 + startIndex })
+        }
+        
+        var descriptor = MeshDescriptor()
+        descriptor.positions = .init(vertices)
+        descriptor.primitives = .triangles(indices)
+        guard let mesh = try? MeshResource.generate(from: [descriptor]) else { continue }
+        
+        // Average tint for this bucket
+        let count = Float(bucketPoints.count)
+        let avg = data.colorSum / max(1, count)
+        var material = UnlitMaterial()
+        let tintColor = UIColor(
+            red: CGFloat(avg.x),
+            green: CGFloat(avg.y),
+            blue: CGFloat(avg.z),
+            alpha: 1.0
+        )
+        material.color = .init(tint: tintColor)
+        
+        let child = ModelEntity(mesh: mesh, materials: [material])
+        entity.addChild(child)
+    }
+    
+    entity.isEnabled = true
+   dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: "%.4f", spriteSize)))")
+}
+
 /// Creates a "light beam" ray that extends from the head anchor towards -Z axis
 private func createHeadBeam() -> Entity {
     let beamEntity = Entity()
@@ -2712,6 +2830,7 @@ private struct LifecycleModifiers: ViewModifier {
     @Binding var mujocoFinalTransforms: [String: simd_float4x4]
     @Binding var mujocoPoseUpdateTrigger: UUID
     @Binding var mujocoBodyEntities: [String: ModelEntity]
+    @Binding var pointCloudEntity: ModelEntity?
     
     var computeMuJoCoFinalTransformsFromWebRTC: ([String: [Float]]) -> [String: simd_float4x4]
     var computeMuJoCoFinalTransforms: ([String: MujocoAr_BodyPose]) -> [String: simd_float4x4]
@@ -2784,6 +2903,19 @@ private struct LifecycleModifiers: ViewModifier {
             if !hasSimPoses {
                 hasSimPoses = true
                 tryAutoMinimize()
+            }
+        }
+        
+        videoStreamManager.onPointCloudReceived = { positions, colors in
+            Task { @MainActor in
+                updatePointCloudEntity(
+                    pointCloudEntity,
+                    points: positions,
+                    colors: colors,
+                    spriteSize: dataManager.pointCloudSpriteSize,
+                    attachToPosition: attachToPosition,
+                    attachToRotation: attachToRotation
+                )
             }
         }
         
