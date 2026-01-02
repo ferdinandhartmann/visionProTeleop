@@ -153,13 +153,6 @@ def generate_launch_description():
         run_sim_node,
 
         model_launch_arg,
-
-        Node(
-            package="teleoperation",
-            executable="dummy_pointcloud_publisher.py",
-            name="dummy_pointcloud_publisher",
-            output="screen",
-        ),
         
         robot_state_publisher_node,
 
