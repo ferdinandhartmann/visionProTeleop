@@ -3735,6 +3735,10 @@ class VisionProStreamer:
                 if not self._webrtc_point_ready or self._webrtc_point_channel is None:
                     time.sleep(0.05)
                     continue
+                # Skip if channel is no longer open (race with teardown)
+                if getattr(self._webrtc_point_channel, "readyState", "") != "open":
+                    self._pointcloud_running = False
+                    break
                 # Drop frame if channel is backed up
                 try:
                     if getattr(self._webrtc_point_channel, "bufferedAmount", 0) > 1_000_000:
@@ -3756,8 +3760,11 @@ class VisionProStreamer:
                             self._log(f"[POINTCLOUD] Sent {points_sent} pts (buffer={getattr(self._webrtc_point_channel, 'bufferedAmount', 0)})", force=True)
                     except Exception as exc:
                         self._log(f"[WEBRTC] Failed to send point cloud: {exc}", force=True)
-                        time.sleep(0.05)
-                        continue
+                        # Stop streaming loop if transport is gone to avoid InvalidStateError spam
+                        self._pointcloud_running = False
+                        self._webrtc_point_ready = False
+                        self._webrtc_point_channel = None
+                        break
             self._log("[WEBRTC] Point-cloud streaming thread exited", force=True)
 
         self._pointcloud_thread = Thread(target=_loop, name="pointcloud_stream", daemon=True)
