@@ -67,6 +67,7 @@ install(PROGRAMS
   scripts/vp_transform_publisher.py
   scripts/vp_streamer.py
   scripts/sam_client.py
+    scripts/run_sim.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
