@@ -967,6 +967,8 @@ class VisionProStreamer:
         self._mujoco_bodies: Dict[str, int] = {}
         self._mujoco_channel = None
         self._mujoco_stub = None
+        self._latest_mujoco_usd_path: Optional[str] = None  # Unpacked USD stage for composition
+        self._latest_mujoco_usdz_path: Optional[str] = None  # Packaged USDZ path
         self._pose_stream_running = False
         self._pose_stream_thread = None
         self._pose_stream_lock = Lock()
@@ -3918,7 +3920,7 @@ class VisionProStreamer:
             # MuJoCo: convert XML to USDZ
             return self._load_and_send_mujoco_scene(attach_to, grpc_port)
     
-    def _load_and_send_scene_webrtc(self, attach_to) -> bool:
+    def _load_and_send_scene_webrtc(self, attach_to, usdz_override_path: Optional[str] = None, force_reload_override: Optional[bool] = None) -> bool:
         """Send USDZ scene via WebRTC data channel for cross-network mode.
         
         Uses a dedicated data channel to transfer the USDZ file in chunks.
@@ -3932,7 +3934,10 @@ class VisionProStreamer:
         is_isaac = self._sim_config.get("type") == "isaac"
         
         # Get or generate the USDZ file path (using existing caching logic)
-        if is_isaac:
+        if usdz_override_path is not None:
+            usdz_path = usdz_override_path
+            force_reload = force_reload_override if force_reload_override is not None else True
+        elif is_isaac:
             # Isaac Lab: export to cached USDZ
             if self._isaac_stage is None or self._isaac_config is None:
                 self._log("[USDZ-WEBRTC] Error: No Isaac stage configured", force=True)
@@ -3975,7 +3980,8 @@ class VisionProStreamer:
             if force_reload or not os.path.exists(usdz_path):
                 self._log("[USDZ-WEBRTC] Converting MuJoCo XML to USDZ...", force=True)
                 try:
-                    usdz_path = self._convert_to_usdz(xml_path, output_path=usdz_path)
+                    cached_usd_path = os.path.join(cache_dir, f"mujoco_scene_{xml_hash}.usd")
+                    usdz_path = self._convert_to_usdz(xml_path, output_path=usdz_path, usd_output_path=cached_usd_path)
                     self._log(f"[USDZ-WEBRTC] Converted: {usdz_path}", force=True)
                 except Exception as e:
                     self._log(f"[USDZ-WEBRTC] Local conversion failed: {e}, trying external...", force=True)
@@ -3992,6 +3998,10 @@ class VisionProStreamer:
                     except Exception as e2:
                         self._log(f"[USDZ-WEBRTC] Error converting MuJoCo: {e2}", force=True)
                         return False
+        
+        # Record latest MuJoCo USDZ if applicable (for downstream composition helpers)
+        if not is_isaac and usdz_override_path is None:
+            self._latest_mujoco_usdz_path = usdz_path
         
         # Read USDZ file
         if not os.path.exists(usdz_path):
@@ -4105,6 +4115,13 @@ class VisionProStreamer:
         else:
             self._log("[USDZ-WEBRTC] Warning: No acknowledgment received (timeout)", force=True)
             return True  # Still return True as data was sent
+    
+    def send_usdz_file_webrtc(self, usdz_path: str, attach_to: Optional[List[float]] = None, force_reload: bool = True) -> bool:
+        """Send a user-provided USDZ file over the WebRTC data channel.
+        
+        This is useful for composite scenes (e.g., MuJoCo + live point cloud overlays).
+        """
+        return self._load_and_send_scene_webrtc(attach_to, usdz_override_path=usdz_path, force_reload_override=force_reload)
     
     def _register_webrtc_usdz_channel(self, channel):
         """Register the USDZ transfer data channel and its handlers."""
@@ -4273,20 +4290,25 @@ class VisionProStreamer:
             cache_dir = os.path.join(tempfile.gettempdir(), "mujoco_usdz_cache")
             os.makedirs(cache_dir, exist_ok=True)
             cached_usdz_path = os.path.join(cache_dir, f"mujoco_scene_{xml_hash}.usdz")
+            cached_usd_path = os.path.join(cache_dir, f"mujoco_scene_{xml_hash}.usd")
             
             if os.path.exists(cached_usdz_path):
                 self._log(f"[USDZ] Cache hit! Using cached USDZ (key={xml_hash[:8]}...)", force=True)
+                self._latest_mujoco_usd_path = cached_usd_path if os.path.exists(cached_usd_path) else None
+                self._latest_mujoco_usdz_path = cached_usdz_path
                 return self._send_usdz_data(cached_usdz_path, attach_to, grpc_port)
             
             self._log(f"[USDZ] Cache miss (key={xml_hash[:8]}...), converting...", force=True)
             usdz_path = cached_usdz_path
+            usd_path = cached_usd_path
         else:
             # Fallback to old behavior if hashing failed or force_reload
             usdz_path = xml_path.replace('.xml', '.usdz')
+            usd_path = xml_path.replace('.xml', '_usd')
         
         # Convert XML to USDZ
         try:
-            usdz_path = self._convert_to_usdz(xml_path, output_path=usdz_path)
+            usdz_path = self._convert_to_usdz(xml_path, output_path=usdz_path, usd_output_path=usd_path)
             self._log(f"[USDZ] Converted and cached: {usdz_path}")
         except Exception as e:
             self._log(f"[USDZ] Warning: Local conversion failed: {e}")
@@ -4302,15 +4324,20 @@ class VisionProStreamer:
                 self._log(f"[USDZ] Error: External conversion also failed: {e2}", force=True)
                 return False
         
+        # Track latest paths for downstream composition
+        self._latest_mujoco_usd_path = usd_path if os.path.exists(usd_path) else None
+        self._latest_mujoco_usdz_path = usdz_path
+        
         # Send USDZ to VisionPro
         return self._send_usdz_data(usdz_path, attach_to, grpc_port)
     
-    def _convert_to_usdz(self, xml_path: str, output_path: Optional[str] = None) -> str:
+    def _convert_to_usdz(self, xml_path: str, output_path: Optional[str] = None, usd_output_path: Optional[str] = None) -> str:
         """Convert MuJoCo XML to USDZ file (requires mujoco_usd_converter).
         
         Args:
             xml_path: Path to the MuJoCo XML file
             output_path: Optional path for USDZ output. If None, saves next to XML.
+            usd_output_path: Optional path for intermediate USD file (useful for composition).
         """
         try:
             import mujoco_usd_converter
@@ -4320,7 +4347,7 @@ class VisionProStreamer:
             raise ImportError("USDZ conversion requires mujoco_usd_converter. Try: pip install mujoco-usd-converter")
         
         converter = mujoco_usd_converter.Converter()
-        usd_output_path = xml_path.replace('.xml', '_usd')
+        usd_output_path = usd_output_path or xml_path.replace('.xml', '_usd')
         usdz_output_path = output_path if output_path else xml_path.replace('.xml', '.usdz')
         
         asset = converter.convert(xml_path, usd_output_path)
@@ -4330,7 +4357,42 @@ class VisionProStreamer:
         UsdUtils.CreateNewUsdzPackage(asset.path, usdz_output_path)
         self._log(f"[USDZ] File created: {usdz_output_path}")
         
+        # Record latest paths for downstream composition (e.g., point cloud overlays)
+        self._latest_mujoco_usd_path = usd_output_path if os.path.exists(usd_output_path) else None
+        self._latest_mujoco_usdz_path = usdz_output_path
+        
         return usdz_output_path
+    
+    def get_mujoco_usd_paths(self) -> Tuple[Optional[str], Optional[str]]:
+        """Return the most recent MuJoCo USD (unpacked) and USDZ paths, converting if needed."""
+        usd_path = self._latest_mujoco_usd_path
+        usdz_path = self._latest_mujoco_usdz_path
+        
+        if usd_path and os.path.exists(usd_path) and usdz_path and os.path.exists(usdz_path):
+            return usd_path, usdz_path
+        
+        # Attempt to regenerate cached assets if missing
+        if self._sim_config and "xml_path" in self._sim_config:
+            try:
+                import hashlib
+                import tempfile
+                xml_path = self._sim_config["xml_path"]
+                with open(xml_path, "rb") as f:
+                    xml_hash = hashlib.sha256(f.read()).hexdigest()[:16]
+                cache_dir = os.path.join(tempfile.gettempdir(), "mujoco_usdz_cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                usd_path = os.path.join(cache_dir, f"mujoco_scene_{xml_hash}.usd")
+                usdz_path = os.path.join(cache_dir, f"mujoco_scene_{xml_hash}.usdz")
+                if not (os.path.exists(usd_path) and os.path.exists(usdz_path)):
+                    self._log("[USDZ] Cached USD/USDZ missing; regenerating for composition...", force=True)
+                    self._convert_to_usdz(xml_path, output_path=usdz_path, usd_output_path=usd_path)
+                self._latest_mujoco_usd_path = usd_path if os.path.exists(usd_path) else None
+                self._latest_mujoco_usdz_path = usdz_path if os.path.exists(usdz_path) else None
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"[USDZ] Failed to regenerate MuJoCo USD assets: {exc}", force=True)
+                return None, None
+        
+        return self._latest_mujoco_usd_path, self._latest_mujoco_usdz_path
     
     def _send_usdz_data(self, usdz_path: str, attach_to: Optional[List[float]], grpc_port: int) -> bool:
         """Send USDZ file data to VisionPro via gRPC."""
