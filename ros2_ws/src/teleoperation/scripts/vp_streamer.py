@@ -7,17 +7,21 @@ import threading
 from pathlib import Path
 import queue
 from typing import Dict, List, Optional
+import tempfile
+import struct
+import shutil
 
 from ament_index_python.packages import get_package_share_directory
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, CameraInfo
 from std_msgs.msg import Bool
 import cv2
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, PointCloud2
+import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
 import mujoco
 
@@ -26,6 +30,7 @@ import soundfile as sf
 import time
 
 from avp_stream import VisionProStreamer
+from pxr import Usd, UsdGeom, Gf, UsdUtils
 
 from tf2_ros import Buffer, TransformListener
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
@@ -67,6 +72,11 @@ class VPStreamer(Node):
         self.declare_parameter("format", "v4l2")
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
+        self.declare_parameter("use_mujoco_camera", False)
+        self.declare_parameter("mujoco_camera_name", "depth_cam")
+        self.declare_parameter("enable_pointcloud_overlay", False)
+        self.declare_parameter("pointcloud_topic", "/camera/depth/points")
+        self.declare_parameter("pointcloud_publish_hz", 1.0)
         
         # Resolve the default MuJoCo scene from the robot_description package.
         robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
@@ -84,6 +94,7 @@ class VPStreamer(Node):
         self.declare_parameter("ee_target_on_reset_gripper", 100)
 
         params = self._load_params()
+        self._attach_to_param = params["attach_to"]
         
         self._teleop_enabled = False
         self._teleop_enabled_sub = self.create_subscription(Bool, '/teleop/teleop_enabled', self._teleop_enabled_cb, 10)
@@ -103,10 +114,17 @@ class VPStreamer(Node):
 
         self.enable_audio = params["enable_audio"]
         self.enable_camera = params["enable_camera"]
+        self.use_mujoco_camera = params["use_mujoco_camera"]
+        self.mujoco_camera_name = params["mujoco_camera_name"]
         
+        self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
+        self.data = mujoco.MjData(self.model)
+        self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
         
         self.bridge = CvBridge()
-        if self.enable_camera:
+        if self.enable_camera and self.use_mujoco_camera:
+            self._setup_mujoco_camera(params)
+        elif self.enable_camera:
             self.cap = cv2.VideoCapture(params["camera_device"])
             if not self.cap.isOpened():
                 raise RuntimeError(f"Could not open camera {params['camera_device']}")
@@ -125,11 +143,6 @@ class VPStreamer(Node):
             
             self.get_logger().info("Camera initialized")
 
-
-        self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
-        self.data = mujoco.MjData(self.model)
-        self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
-        
 
         self.streamer = VisionProStreamer(ip=params["visionpro_ip"], record=False)
         self.viewer_handle = None
@@ -180,6 +193,22 @@ class VPStreamer(Node):
         if params["viewer"] != "None":
             update_period = 1.0 / params["update_simulation_hz"] if params["update_simulation_hz"] > 0 else 0.016
             self.timer = self.create_timer(update_period, self._update_scene)
+        
+        # Point cloud overlay setup (composes live RGB point clouds into a USD layer)
+        self._pointcloud_enabled = params["enable_pointcloud_overlay"] and params["viewer"] == "ar"
+        self._pointcloud_interval = 1.0 / params["pointcloud_publish_hz"] if params["pointcloud_publish_hz"] > 0 else 0.0
+        self._last_pointcloud_sent = 0.0
+        self._pointcloud_cache_dir = Path(tempfile.gettempdir()) / "visionpro_pointcloud_overlay"
+        self._pointcloud_cache_dir.mkdir(parents=True, exist_ok=True)
+        if self._pointcloud_enabled:
+            qos_pc = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+            self.pointcloud_sub = self.create_subscription(
+                PointCloud2,
+                params["pointcloud_topic"],
+                self._pointcloud_cb,
+                qos_pc,
+            )
+            self.get_logger().info(f"Point cloud overlay enabled from {params['pointcloud_topic']}")
                 
         qos = QoSProfile(depth=5, reliability=QoSReliabilityPolicy.RELIABLE)
         joint_topic = params["joint_state_topic"]
@@ -231,6 +260,11 @@ class VPStreamer(Node):
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
+        use_mujoco_camera = self.get_parameter("use_mujoco_camera").value
+        mujoco_camera_name = self.get_parameter("mujoco_camera_name").value
+        enable_pointcloud_overlay = self.get_parameter("enable_pointcloud_overlay").value
+        pointcloud_topic = self.get_parameter("pointcloud_topic").value
+        pointcloud_publish_hz = self.get_parameter("pointcloud_publish_hz").value
         ee_target_on_reset_position = list(self.get_parameter("ee_target_on_reset_position").get_parameter_value().double_array_value)
         ee_target_on_reset_orientation_xyzw = list(self.get_parameter("ee_target_on_reset_orientation_xyzw").get_parameter_value().double_array_value)
         ee_target_on_reset_gripper = int(self.get_parameter("ee_target_on_reset_gripper").get_parameter_value().integer_value)
@@ -249,10 +283,47 @@ class VPStreamer(Node):
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
+            "use_mujoco_camera": use_mujoco_camera,
+            "mujoco_camera_name": mujoco_camera_name,
+            "enable_pointcloud_overlay": enable_pointcloud_overlay,
+            "pointcloud_topic": pointcloud_topic,
+            "pointcloud_publish_hz": pointcloud_publish_hz,
             "ee_target_on_reset_position": ee_target_on_reset_position,
             "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
             "ee_target_on_reset_gripper": ee_target_on_reset_gripper,
         }
+
+    def _setup_mujoco_camera(self, params: Dict[str, object]) -> None:
+        width, height = map(int, params["camera_resolution"].split('x'))
+        self.mj_width = width
+        self.mj_height = height
+        self.mj_rgb_pub = self.create_publisher(Image, "/camera/color/image_raw", 10)
+        self.mj_depth_pub = self.create_publisher(Image, "/camera/depth/image_raw", 10)
+        self.mj_info_pub = self.create_publisher(CameraInfo, "/camera/camera_info", 10)
+
+        self.mj_gl = mujoco.GLContext(self.mj_width, self.mj_height)
+        self.mj_gl.make_current()
+        self.mj_scene = mujoco.MjvScene(self.model, maxgeom=10000)
+        self.mj_vopt = mujoco.MjvOption()
+        self.mj_cam = mujoco.MjvCamera()
+        self.mj_pert = mujoco.MjvPerturb()
+        self.mj_con = mujoco.MjrContext(self.model, mujoco.mjtFontScale.mjFONTSCALE_150)
+
+        cam_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, self.mujoco_camera_name)
+        if cam_id < 0:
+            raise RuntimeError(f"Camera '{self.mujoco_camera_name}' not found in MuJoCo model.")
+        self._mujoco_cam_id = cam_id
+        self.mj_cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        self.mj_cam.fixedcamid = cam_id
+
+        self.mj_viewport = mujoco.MjrRect(0, 0, self.mj_width, self.mj_height)
+        self.mj_rgb_buf = np.zeros((self.mj_height, self.mj_width, 3), dtype=np.uint8)
+        self.mj_depth_buf = np.zeros((self.mj_height, self.mj_width), dtype=np.float32)
+
+        self._camera_period = 1.0 / params["camera_fps"] if params["camera_fps"] > 0 else 0.0
+        self._camera_thread = threading.Thread(target=self._camera_loop, name="vp_camera", daemon=True)
+        self._camera_thread.start()
+        self.get_logger().info(f"MuJoCo camera '{self.mujoco_camera_name}' initialized at {self.mj_width}x{self.mj_height}")
 
 
     def _build_joint_mapping(self, mujoco) -> Dict[str, int]:
@@ -282,6 +353,76 @@ class VPStreamer(Node):
                 self._latest_joint_state[name] = position
                 
             self.latest_joint_vel = list(msg.velocity)
+
+    def _pointcloud_cb(self, msg: PointCloud2) -> None:
+        """Convert the accumulated RGB point cloud into USD and stream it via WebRTC."""
+        if not self._pointcloud_enabled:
+            return
+
+        now = time.time()
+        if self._pointcloud_interval > 0 and (now - self._last_pointcloud_sent) < self._pointcloud_interval:
+            return
+        self._last_pointcloud_sent = now
+
+        try:
+            pc_usd = self._write_pointcloud_usd(msg)
+            composed_usdz = self._compose_pointcloud_with_mujoco(pc_usd)
+            if composed_usdz:
+                self.streamer.send_usdz_file_webrtc(str(composed_usdz), attach_to=self._attach_to_param, force_reload=True)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"Point cloud overlay update failed: {exc}")
+
+    def _write_pointcloud_usd(self, msg: PointCloud2) -> Path:
+        """Build a USD layer containing the current RGB point cloud."""
+        points: List[Gf.Vec3f] = []
+        colors: List[Gf.Vec3f] = []
+        for x, y, z, rgb in pc2.read_points(msg, field_names=("x", "y", "z", "rgb"), skip_nans=True):
+            if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(z):
+                continue
+            rgb_uint = struct.unpack("I", struct.pack("f", rgb))[0]
+            r = ((rgb_uint >> 16) & 0xFF) / 255.0
+            g = ((rgb_uint >> 8) & 0xFF) / 255.0
+            b = (rgb_uint & 0xFF) / 255.0
+            points.append(Gf.Vec3f(float(x), float(y), float(z)))
+            colors.append(Gf.Vec3f(float(r), float(g), float(b)))
+
+        if not points:
+            raise RuntimeError("Point cloud contained no valid points")
+
+        pc_usd_path = self._pointcloud_cache_dir / "rgb_pointcloud.usda"
+        stage = Usd.Stage.CreateNew(str(pc_usd_path))
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+
+        pc_prim = UsdGeom.Points.Define(stage, "/World/RGBPointCloud")
+        pc_prim.CreatePointsAttr(points)
+        pc_prim.CreateDisplayColorAttr(colors)
+        pc_prim.CreateWidthsAttr([0.003] * len(points))
+        stage.Save()
+        return pc_usd_path
+
+    def _compose_pointcloud_with_mujoco(self, pointcloud_usd: Path) -> Optional[Path]:
+        """Compose the MuJoCo USD with the live point cloud USD and package as USDZ."""
+        base_usd, _ = self.streamer.get_mujoco_usd_paths()
+        if not base_usd or not Path(base_usd).exists():
+            self.get_logger().warn("MuJoCo USD not available for point cloud composition yet.")
+            return None
+
+        base_copy = self._pointcloud_cache_dir / Path(base_usd).name
+        pc_copy = self._pointcloud_cache_dir / pointcloud_usd.name
+        shutil.copy(base_usd, base_copy)
+        shutil.copy(pointcloud_usd, pc_copy)
+
+        composed_layer = self._pointcloud_cache_dir / "composed_scene.usda"
+        stage = Usd.Stage.CreateNew(str(composed_layer))
+        stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/World").GetPrim())
+        stage.GetRootLayer().subLayerPaths = [base_copy.name, pc_copy.name]
+        stage.Save()
+
+        composed_usdz = self._pointcloud_cache_dir / "composed_pointcloud.usdz"
+        UsdUtils.CreateNewUsdzPackage(str(composed_layer), str(composed_usdz))
+        return composed_usdz
 
 
     def _apply_joint_state(self) -> None:
@@ -664,11 +805,75 @@ class VPStreamer(Node):
         # # Optional local OpenCV preview
         # cv2.imshow("Webcam", frame)
         # cv2.waitKey(1)
+    
+    def _mujoco_camera_cb(self) -> None:
+        # Advance simulation and render the named MuJoCo camera
+        mujoco.mj_step(self.model, self.data)
+
+        # Ensure GL context is current in this thread
+        self.mj_gl.make_current()
+
+        mujoco.mjv_updateScene(
+            self.model,
+            self.data,
+            self.mj_vopt,
+            self.mj_pert,
+            self.mj_cam,
+            mujoco.mjtCatBit.mjCAT_ALL,
+            self.mj_scene
+        )
+
+        mujoco.mjr_render(self.mj_viewport, self.mj_scene, self.mj_con)
+        mujoco.mjr_readPixels(self.mj_rgb_buf, self.mj_depth_buf, self.mj_viewport, self.mj_con)
+
+        rgb = np.flipud(self.mj_rgb_buf)
+        depth = np.flipud(self.mj_depth_buf)
+
+        # Convert depth to meters using znear/zfar
+        znear = float(self.model.vis.map.znear)
+        zfar = float(self.model.vis.map.zfar)
+        depth_m = znear / (1.0 - depth * (1.0 - znear / zfar))
+
+        # Convert to BGR for OpenCV / Vision Pro
+        rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        stamp = self.get_clock().now().to_msg()
+
+        rgb_msg = self.bridge.cv2_to_imgmsg(rgb_bgr, encoding="bgr8")
+        rgb_msg.header.stamp = stamp
+        rgb_msg.header.frame_id = "camera"
+        self.mj_rgb_pub.publish(rgb_msg)
+
+        depth_msg = self.bridge.cv2_to_imgmsg(depth_m.astype(np.float32), encoding="32FC1")
+        depth_msg.header = rgb_msg.header
+        self.mj_depth_pub.publish(depth_msg)
+
+        info = CameraInfo()
+        info.header = rgb_msg.header
+        info.width = self.mj_width
+        info.height = self.mj_height
+        try:
+            fovy_rad = math.radians(self.model.cam_fovy[self._mujoco_cam_id])
+            fx = 0.5 * self.mj_width / math.tan(fovy_rad / 2.0)
+            fy = fx
+        except Exception:
+            fx = fy = 554.0  # fallback
+        cx = self.mj_width / 2.0
+        cy = self.mj_height / 2.0
+        info.k = [fx, 0.0, cx,
+                  0.0, fy, cy,
+                  0.0, 0.0, 1.0]
+        self.mj_info_pub.publish(info)
+
+        if self.streamer is not None:
+            self.streamer.update_frame(rgb_bgr)
 
     def _camera_loop(self) -> None:
         next_time = time.perf_counter()
         while not self._stop_event.is_set():
-            self._camera_cb()
+            if self.use_mujoco_camera:
+                self._mujoco_camera_cb()
+            else:
+                self._camera_cb()
             if self._camera_period > 0:
                 next_time += self._camera_period
                 sleep_time = next_time - time.perf_counter()
