@@ -2155,14 +2155,11 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
     
     let spriteSize: Float = 0.002
     var vertices: [SIMD3<Float>] = []
-    var vertexColors: [SIMD4<Float>] = []
     var indices: [UInt32] = []
     vertices.reserveCapacity(points.count * 4)
-    vertexColors.reserveCapacity(points.count * 4)
     indices.reserveCapacity(points.count * 6)
     
     for (idx, position) in points.enumerated() {
-        let color = colors[idx]
         let baseIndex = UInt32(vertices.count)
         
         // Simple billboarded quad aligned with world axes
@@ -2170,9 +2167,6 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
         vertices.append(position + SIMD3<Float>(-spriteSize,  spriteSize, 0))
         vertices.append(position + SIMD3<Float>(-spriteSize, -spriteSize, 0))
         vertices.append(position + SIMD3<Float>( spriteSize, -spriteSize, 0))
-        
-        let rgba = SIMD4<Float>(color.x, color.y, color.z, 1.0)
-        vertexColors.append(contentsOf: Array(repeating: rgba, count: 4))
         
         // Two triangles per quad
         indices.append(contentsOf: [
@@ -2184,11 +2178,13 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
     var descriptor = MeshDescriptor()
     descriptor.positions = .init(vertices)
     descriptor.primitives = .triangles(indices)
-    descriptor.colors = .init(vertexColors)
     
-    if let mesh = try? MeshResource.generate(from: descriptor) {
+    if let mesh = try? MeshResource.generate(from: [descriptor]) {
+        // Use the average incoming color to tint the unlit material (per-vertex colors
+        // are not available on this platform version).
+        let averageColor = colors.isEmpty ? SIMD3<Float>(1, 1, 1) : colors.reduce(SIMD3<Float>(0, 0, 0), +) / Float(colors.count)
         var material = UnlitMaterial()
-        material.color = .init(tint: .white)
+        material.color = .init(tint: UIColor(red: CGFloat(averageColor.x), green: CGFloat(averageColor.y), blue: CGFloat(averageColor.z), alpha: 1.0))
         entity.model = ModelComponent(mesh: mesh, materials: [material])
         entity.isEnabled = true
     } else {
