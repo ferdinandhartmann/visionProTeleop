@@ -2146,7 +2146,14 @@ private func createPreviewPlane() -> Entity {
     return previewEntity
 }
 
-private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float>], colors: [SIMD3<Float>], spriteSize: Float) {
+private func updatePointCloudEntity(
+    _ entity: ModelEntity?,
+    points: [SIMD3<Float>],
+    colors: [SIMD3<Float>],
+    spriteSize: Float,
+    attachToPosition: SIMD3<Float>?,
+    attachToRotation: simd_quatf?
+) {
     guard let entity = entity else { return }
     guard !points.isEmpty, points.count == colors.count else {
         entity.isEnabled = false
@@ -2155,11 +2162,9 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
     
     // Bucket points by color (0-1 range) and build one mesh per bucket for better performance and tinting.
     let bucketSteps: Float = 4.0  // 4x4x4 buckets = 64 groups
+    let axisCorrection = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
     
-    struct Bucket {
-        var positions: [SIMD3<Float>] = []
-        var colorSum: SIMD3<Float> = .zero
-    }
+    struct Bucket { var positions: [SIMD3<Float>] = []; var colorSum: SIMD3<Float> = .zero }
     
     var buckets: [Int: Bucket] = [:]
     func bucketIndex(for color: SIMD3<Float>) -> Int {
@@ -2173,30 +2178,48 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
     }
     
     for i in 0..<points.count {
+        // Apply attach_to and axis correction to match MuJoCo transforms in RealityKit
+        var p = points[i]
+        if let attachPos = attachToPosition, let attachRot = attachToRotation {
+            p = attachRot.act(p) + attachPos
+        }
+        p = axisCorrection.act(p)
+        
         let idx = bucketIndex(for: colors[i])
         if buckets[idx] == nil { buckets[idx] = Bucket() }
-        buckets[idx]?.positions.append(points[i])
+        buckets[idx]?.positions.append(p)
         buckets[idx]?.colorSum += colors[i]
     }
     
     // Clear old children
     entity.children.forEach { $0.removeFromParent() }
     
+    // Precompute a low-poly sphere (icosahedron) to duplicate for each point
+    let t = (1.0 + sqrt(5.0)) / 2.0
+    let baseVerts: [SIMD3<Float>] = [
+        SIMD3<Float>(-1,  t, 0), SIMD3<Float>( 1,  t, 0), SIMD3<Float>(-1, -t, 0), SIMD3<Float>( 1, -t, 0),
+        SIMD3<Float>(0, -1,  t), SIMD3<Float>(0,  1,  t), SIMD3<Float>(0, -1, -t), SIMD3<Float>(0,  1, -t),
+        SIMD3<Float>( t, 0, -1), SIMD3<Float>( t, 0, 1), SIMD3<Float>(-t, 0, -1), SIMD3<Float>(-t, 0, 1)
+    ].map { simd_normalize($0) }
+    let baseIndices: [UInt32] = [
+        0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11,
+        1,5,9, 5,11,4, 11,10,2, 10,7,6, 7,1,8,
+        3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9,
+        4,9,5, 2,4,11, 6,2,10, 8,6,7, 9,8,1
+    ]
+    
     for (bucket, data) in buckets {
         let bucketPoints = data.positions
         if bucketPoints.isEmpty { continue }
         var vertices: [SIMD3<Float>] = []
         var indices: [UInt32] = []
-        vertices.reserveCapacity(bucketPoints.count * 4)
-        indices.reserveCapacity(bucketPoints.count * 6)
+        vertices.reserveCapacity(bucketPoints.count * baseVerts.count)
+        indices.reserveCapacity(bucketPoints.count * baseIndices.count)
         
         for position in bucketPoints {
-            let base = UInt32(vertices.count)
-            vertices.append(position + SIMD3<Float>( spriteSize,  spriteSize, 0))
-            vertices.append(position + SIMD3<Float>(-spriteSize,  spriteSize, 0))
-            vertices.append(position + SIMD3<Float>(-spriteSize, -spriteSize, 0))
-            vertices.append(position + SIMD3<Float>( spriteSize, -spriteSize, 0))
-            indices.append(contentsOf: [base, base + 1, base + 2, base, base + 2, base + 3])
+            let startIndex = UInt32(vertices.count)
+            vertices.append(contentsOf: baseVerts.map { position + $0 * spriteSize })
+            indices.append(contentsOf: baseIndices.map { $0 + startIndex })
         }
         
         var descriptor = MeshDescriptor()
