@@ -14,6 +14,7 @@ from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState
+from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool
 import cv2
 from cv_bridge import CvBridge
@@ -24,6 +25,8 @@ import mujoco
 import soundfile as sf
 
 import time
+import os
+import tempfile
 
 from avp_stream import VisionProStreamer
 
@@ -32,6 +35,7 @@ from tf2_ros import LookupException, ConnectivityException, ExtrapolationExcepti
 from teleoperation.msg import TeleopTarget
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
+from pxr import Gf, Usd, UsdGeom, UsdUtils, Vt
 
     # import avp_stream, inspect
     # print("USING avp_stream from:", avp_stream.__file__, flush=True)
@@ -67,6 +71,7 @@ class VPStreamer(Node):
         self.declare_parameter("format", "v4l2")
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
+        self.declare_parameter("dummy_cloud_topic", "/rgb_map/dummy_cloud")
         
         # Resolve the default MuJoCo scene from the robot_description package.
         robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
@@ -84,6 +89,8 @@ class VPStreamer(Node):
         self.declare_parameter("ee_target_on_reset_gripper", 100)
 
         params = self._load_params()
+        self._grpc_port = params["port"]
+        self._attach_to = params["attach_to"]
         
         self._teleop_enabled = False
         self._teleop_enabled_sub = self.create_subscription(Bool, '/teleop/teleop_enabled', self._teleop_enabled_cb, 10)
@@ -175,6 +182,10 @@ class VPStreamer(Node):
 
         self.streamer.start_webrtc()
         self.get_logger().info("Streaming MuJoCo scene to Vision Pro")
+        self._pointcloud_sub = None
+        self._base_scene_usdz_path = None
+        self._last_usd_send_time = 0.0
+        self._setup_live_pointcloud(params)
 
         self.get_logger().info(f"viewer: {params['viewer']}")
         if params["viewer"] != "None":
@@ -215,6 +226,86 @@ class VPStreamer(Node):
         
         self.get_logger().info("VPStreamer initialized and listening for reset events.")
         
+    def _setup_live_pointcloud(self, params: Dict[str, object]) -> None:
+        try:
+            self._base_scene_usdz_path = self.streamer._convert_to_usdz(params["xml_path"])
+        except Exception as exc:
+            self.get_logger().warn(f"Could not convert MuJoCo scene to USDZ for sublayering: {exc}")
+            return
+
+        qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+        self._pointcloud_sub = self.create_subscription(
+            PointCloud2,
+            params["dummy_cloud_topic"],
+            self._pointcloud_cb,
+            qos,
+        )
+        self.get_logger().info(f"Subscribed to dummy RGB cloud on {params['dummy_cloud_topic']}")
+
+    def _pointcloud_cb(self, msg: PointCloud2) -> None:
+        if self._base_scene_usdz_path is None:
+            return
+        now = time.time()
+        if now - self._last_usd_send_time < 0.9:
+            return
+
+        point_stage = self._write_pointcloud_stage(msg)
+        if not point_stage:
+            return
+        combined_usdz = self._compose_main_stage(point_stage, self._base_scene_usdz_path)
+        if not combined_usdz:
+            return
+
+        if self.streamer._send_usdz_data(combined_usdz, self._attach_to, self._grpc_port):
+            self._last_usd_send_time = now
+
+    def _write_pointcloud_stage(self, msg: PointCloud2) -> Optional[str]:
+        if msg.point_step < 16 or msg.width == 0:
+            return None
+
+        expected_bytes = msg.point_step * msg.width * msg.height
+        if len(msg.data) < expected_bytes:
+            return None
+
+        cloud = np.frombuffer(msg.data, dtype=np.float32).reshape((-1, msg.point_step // 4))
+        cloud = cloud[:, :4]
+        cloud = cloud[:20000]
+
+        positions = [Gf.Vec3f(float(x), float(y), float(z)) for x, y, z in cloud[:, :3]]
+        rgb_uint = cloud[:, 3].view(np.uint32)
+        colors = [
+            Gf.Vec3f(
+                ((val >> 16) & 0xFF) / 255.0,
+                ((val >> 8) & 0xFF) / 255.0,
+                (val & 0xFF) / 255.0,
+            )
+            for val in rgb_uint
+        ]
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        points_prim = UsdGeom.Points.Define(stage, "/World/DummyCloud")
+        points_prim.CreatePointsAttr(positions)
+        points_prim.CreateWidthsAttr(Vt.FloatArray(len(positions), 0.005))
+        points_prim.CreateDisplayColorAttr(colors)
+
+        out_path = os.path.join(tempfile.gettempdir(), "dummy_cloud.usd")
+        stage.GetRootLayer().Export(out_path)
+        return out_path
+
+    def _compose_main_stage(self, cloud_stage_path: str, scene_usdz_path: str) -> Optional[str]:
+        stage = Usd.Stage.CreateInMemory()
+        root_layer = stage.GetRootLayer()
+        root_layer.subLayerPaths.append(scene_usdz_path)
+        root_layer.subLayerPaths.append(cloud_stage_path)
+
+        main_usd_path = os.path.join(tempfile.gettempdir(), "combined_scene.usd")
+        root_layer.Export(main_usd_path)
+
+        main_usdz_path = os.path.join(tempfile.gettempdir(), "combined_scene.usdz")
+        UsdUtils.CreateNewUsdzPackage(main_usd_path, main_usdz_path)
+        return main_usdz_path
+        
 
     def _load_params(self) -> Dict[str, object]:
         viewer = self.get_parameter("viewer").get_parameter_value().string_value
@@ -231,6 +322,7 @@ class VPStreamer(Node):
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
+        dummy_cloud_topic = self.get_parameter("dummy_cloud_topic").value
         ee_target_on_reset_position = list(self.get_parameter("ee_target_on_reset_position").get_parameter_value().double_array_value)
         ee_target_on_reset_orientation_xyzw = list(self.get_parameter("ee_target_on_reset_orientation_xyzw").get_parameter_value().double_array_value)
         ee_target_on_reset_gripper = int(self.get_parameter("ee_target_on_reset_gripper").get_parameter_value().integer_value)
@@ -249,6 +341,7 @@ class VPStreamer(Node):
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
+            "dummy_cloud_topic": dummy_cloud_topic,
             "ee_target_on_reset_position": ee_target_on_reset_position,
             "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
             "ee_target_on_reset_gripper": ee_target_on_reset_gripper,

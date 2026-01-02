@@ -82,6 +82,7 @@ install(PROGRAMS
   scripts/camera_streamer.py
   scripts/joint_state_to_mycobot.py
   scripts/keyboard_ee_teleop.py
+  scripts/dummy_pointcloud_publisher.py
   scripts/vp_transform_publisher.py
   scripts/vp_streamer.py
   scripts/sam_client.py
