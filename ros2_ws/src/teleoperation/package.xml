@@ -12,6 +12,8 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
+  <depend>message_filters</depend>
+
   <build_depend>rclcpp</build_depend>
   <build_depend>tf2</build_depend>
   <build_depend>tf2_ros</build_depend>
@@ -24,6 +26,7 @@
   <build_depend>cv_bridge</build_depend>
   <build_depend>tf_transformations</build_depend>
   <build_depend>rosidl_default_generators</build_depend>
+  <build_depend>opencv</build_depend>
 
   <exec_depend>rclcpp</exec_depend>
   <exec_depend>tf2</exec_depend>
@@ -41,6 +44,10 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>opencv</exec_depend>
+  <exec_depend>octomap_server</exec_depend>
+  <exec_depend>octomap_msgs</exec_depend>
+
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

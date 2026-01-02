@@ -6,7 +6,7 @@ import mujoco
 import numpy as np
 import cv2
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, JointState
 from cv_bridge import CvBridge
 
 import threading
@@ -30,7 +30,8 @@ class MujocoCameraNode(Node):
         initial_angles_deg = [0, 30, -90, 0, 0, 45]
         initial_angles_rad = np.deg2rad(initial_angles_deg)
 
-        joint_names = [
+        # Joint names to publish in `JointState` (first 6 robot joints)
+        self.joint_names = [
             "joint1",
             "joint2",
             "joint3",
@@ -39,20 +40,25 @@ class MujocoCameraNode(Node):
             "joint6",
         ]
 
-        for name, angle in zip(joint_names, initial_angles_rad):
-            jnt_id = mujoco.mj_name2id(
-                self.model, mujoco.mjtObj.mjOBJ_JOINT, name
-            )
+        # Resolve joint ids and qpos addresses once and set initial qpos
+        self.jnt_ids = []
+        self.qpos_addrs = []
+        for name, angle in zip(self.joint_names, initial_angles_rad):
+            jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             if jnt_id < 0:
                 raise RuntimeError(f"Joint '{name}' not found")
-
             qpos_adr = self.model.jnt_qposadr[jnt_id]
             self.data.qpos[qpos_adr] = angle
+            self.jnt_ids.append(jnt_id)
+            self.qpos_addrs.append(qpos_adr)
             
             
         self.ctrl = np.zeros(self.model.nu)
         self.ctrl[0:6] = initial_angles_rad
         self.data.ctrl[:] = self.ctrl
+
+        # Publisher for joint states
+        self.joint_pub = self.create_publisher(JointState, '/joint_states', 10)
 
         # Forward the state so everything is consistent
         mujoco.mj_forward(self.model, self.data)
@@ -139,7 +145,7 @@ class MujocoCameraNode(Node):
         # Publish RGB
         rgb_msg = self.bridge.cv2_to_imgmsg(rgb, encoding='rgb8')
         rgb_msg.header.stamp = self.get_clock().now().to_msg()
-        rgb_msg.header.frame_id = 'camera_link'
+        rgb_msg.header.frame_id = 'camera_lens'
         self.rgb_pub.publish(rgb_msg)
 
         # Publish depth (32FC1 meters)
@@ -156,6 +162,13 @@ class MujocoCameraNode(Node):
                 0.0, 554.0, self.height/2,
                 0.0, 0.0, 1.0]
         self.info_pub.publish(info)
+
+        # Publish JointState for the robot joints
+        js = JointState()
+        js.header = rgb_msg.header
+        js.name = list(self.joint_names)
+        js.position = [float(self.data.qpos[adr]) for adr in self.qpos_addrs]
+        self.joint_pub.publish(js)
 
 
     def start_slider_panel(self):
@@ -199,15 +212,15 @@ class MujocoCameraNode(Node):
     def set_ctrl(self, index, value):
         self.ctrl[index] = float(value)
 
-
-
 def main():
     rclpy.init()
-    node = MujocoCameraNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
-
+    try:
+        node = MujocoCameraNode()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
 
 if __name__ == '__main__':
     main()
