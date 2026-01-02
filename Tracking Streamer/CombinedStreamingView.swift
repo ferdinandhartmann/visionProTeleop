@@ -2193,7 +2193,12 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
     descriptor.primitives = .triangles(indices)
     
     if let mesh = try? MeshResource.generate(from: [descriptor]) {
-        let averageColor = colors.reduce(SIMD3<Float>(0, 0, 0), +) / Float(colors.count)
+        let averageColorRaw = colors.reduce(SIMD3<Float>(0, 0, 0), +) / Float(colors.count)
+        let averageColor = SIMD3<Float>(
+            max(0, min(1, averageColorRaw.x / 255)),
+            max(0, min(1, averageColorRaw.y / 255)),
+            max(0, min(1, averageColorRaw.z / 255))
+        )
         var material = SimpleMaterial(color: UIColor(
             red: CGFloat(averageColor.x),
             green: CGFloat(averageColor.y),
@@ -2203,6 +2208,7 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
         material.isDoubleSided = true
         entity.model = ModelComponent(mesh: mesh, materials: [material])
         entity.isEnabled = true
+        dlog("🌫️ [PointCloud] Updated mesh with \(points.count) points")
     } else {
         entity.isEnabled = false
         dlog("⚠️ [PointCloud] Failed to build mesh for \(points.count) points")

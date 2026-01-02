@@ -962,6 +962,7 @@ class VisionProStreamer:
         self._pointcloud_running = False
         self._pointcloud_hz = 10.0
         self._pointcloud_dirty = False
+        self._pointcloud_last_log = 0.0
         
         # Video/Audio configuration (set by configure_video/configure_audio)
         self._video_config: Optional[Dict[str, Any]] = None
@@ -3630,6 +3631,11 @@ class VisionProStreamer:
         with self._pointcloud_lock:
             self._pointcloud_payload = payload
             self._pointcloud_dirty = True
+        
+        now = time.time()
+        if now - self._pointcloud_last_log > 1.0:
+            self._pointcloud_last_log = now
+            self._log(f\"[POINTCLOUD] Queued {n} pts @ ~{self._pointcloud_hz:.1f} Hz (payload {len(payload)/1024:.1f} KB)\", force=True)
     
     def _get_isaac_poses_from_stage(self) -> Dict[str, Dict[str, Any]]:
         """Get poses from USD stage using PhysX runtime data (Isaac Lab only)."""
@@ -3720,6 +3726,7 @@ class VisionProStreamer:
         def _loop():
             target_period = 1.0 / max(1.0, float(self._pointcloud_hz))
             last_send = 0.0
+            last_log = 0.0
             while self._pointcloud_running:
                 now = time.time()
                 if now - last_send < target_period:
@@ -3743,6 +3750,10 @@ class VisionProStreamer:
                     try:
                         self._webrtc_point_channel.send(payload)
                         last_send = now
+                        if now - last_log > 1.0:
+                            last_log = now
+                            points_sent = (len(payload) - 4) // (12 + 3)
+                            self._log(f"[POINTCLOUD] Sent {points_sent} pts (buffer={getattr(self._webrtc_point_channel, 'bufferedAmount', 0)})", force=True)
                     except Exception as exc:
                         self._log(f"[WEBRTC] Failed to send point cloud: {exc}", force=True)
                         time.sleep(0.05)
