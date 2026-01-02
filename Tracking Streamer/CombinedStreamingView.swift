@@ -308,6 +308,7 @@ struct CombinedStreamingView: View {
                 mujocoFinalTransforms: $mujocoFinalTransforms,
                 mujocoPoseUpdateTrigger: $mujocoPoseUpdateTrigger,
                 mujocoBodyEntities: $mujocoBodyEntities,
+                pointCloudEntity: $pointCloudEntity,
                 computeMuJoCoFinalTransformsFromWebRTC: computeMuJoCoFinalTransformsFromWebRTC,
                 computeMuJoCoFinalTransforms: computeMuJoCoFinalTransforms,
                 tryAutoMinimize: tryAutoMinimize
@@ -2152,11 +2153,37 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
         return
     }
     
-    var descriptor = MeshDescriptor()
-    descriptor.positions = .init(points)
-    descriptor.primitives = .points(descriptor.positions.count)
+    let spriteSize: Float = 0.002
+    var vertices: [SIMD3<Float>] = []
+    var vertexColors: [SIMD4<Float>] = []
+    var indices: [UInt32] = []
+    vertices.reserveCapacity(points.count * 4)
+    vertexColors.reserveCapacity(points.count * 4)
+    indices.reserveCapacity(points.count * 6)
     
-    let vertexColors = colors.map { SIMD4<Float>($0.x, $0.y, $0.z, 1.0) }
+    for (idx, position) in points.enumerated() {
+        let color = colors[idx]
+        let baseIndex = UInt32(vertices.count)
+        
+        // Simple billboarded quad aligned with world axes
+        vertices.append(position + SIMD3<Float>( spriteSize,  spriteSize, 0))
+        vertices.append(position + SIMD3<Float>(-spriteSize,  spriteSize, 0))
+        vertices.append(position + SIMD3<Float>(-spriteSize, -spriteSize, 0))
+        vertices.append(position + SIMD3<Float>( spriteSize, -spriteSize, 0))
+        
+        let rgba = SIMD4<Float>(color.x, color.y, color.z, 1.0)
+        vertexColors.append(contentsOf: Array(repeating: rgba, count: 4))
+        
+        // Two triangles per quad
+        indices.append(contentsOf: [
+            baseIndex, baseIndex + 1, baseIndex + 2,
+            baseIndex, baseIndex + 2, baseIndex + 3
+        ])
+    }
+    
+    var descriptor = MeshDescriptor()
+    descriptor.positions = .init(vertices)
+    descriptor.primitives = .triangles(indices)
     descriptor.colors = .init(vertexColors)
     
     if let mesh = try? MeshResource.generate(from: descriptor) {
@@ -2165,6 +2192,7 @@ private func updatePointCloudEntity(_ entity: ModelEntity?, points: [SIMD3<Float
         entity.model = ModelComponent(mesh: mesh, materials: [material])
         entity.isEnabled = true
     } else {
+        entity.isEnabled = false
         dlog("⚠️ [PointCloud] Failed to build mesh for \(points.count) points")
     }
 }
@@ -2743,6 +2771,7 @@ private struct LifecycleModifiers: ViewModifier {
     @Binding var mujocoFinalTransforms: [String: simd_float4x4]
     @Binding var mujocoPoseUpdateTrigger: UUID
     @Binding var mujocoBodyEntities: [String: ModelEntity]
+    @Binding var pointCloudEntity: ModelEntity?
     
     var computeMuJoCoFinalTransformsFromWebRTC: ([String: [Float]]) -> [String: simd_float4x4]
     var computeMuJoCoFinalTransforms: ([String: MujocoAr_BodyPose]) -> [String: simd_float4x4]
