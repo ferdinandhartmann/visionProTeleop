@@ -32,7 +32,7 @@ class DummyPointCloudPublisher(Node):
         self._grid_size: int = int(self.get_parameter("grid_size").get_parameter_value().integer_value)
         self._grid_spacing: float = self.get_parameter("grid_spacing").get_parameter_value().double_value
 
-        qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+        qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE)
         self._pub = self.create_publisher(PointCloud2, self._topic, qos)
 
         period = 1.0 / self._rate_hz if self._rate_hz > 0.0 else 0.5
@@ -104,7 +104,6 @@ def main(args=None) -> None:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
 
 
 if __name__ == "__main__":

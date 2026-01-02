@@ -162,14 +162,23 @@ def generate_launch_description():
             {"enable_audio": True},
         ],
     )
+    
+    dummy_pointcloud_publisher_node = Node(
+        package="teleoperation",
+        executable="dummy_pointcloud_publisher.py",
+        name="dummy_pointcloud_publisher",
+        output="screen",
+    )
 
 
     nodes = [
+        dummy_pointcloud_publisher_node, 
+        
         vp_streamer_node,
 
         model_launch_arg,
-        serial_port_arg,
-        baud_rate_arg,
+        # serial_port_arg,
+        # baud_rate_arg,
         
         robot_state_publisher_node,
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
@@ -183,7 +192,7 @@ def generate_launch_description():
         
         rviz2_node,
                         
-        joint_state_to_mycobot_node,
+        # joint_state_to_mycobot_node,
 
     ]
 

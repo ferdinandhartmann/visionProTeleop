@@ -87,6 +87,7 @@ install(PROGRAMS
   scripts/vp_streamer.py
   scripts/sam_client.py
   scripts/run_sim.py
+  scripts/dummy_pointcloud_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
