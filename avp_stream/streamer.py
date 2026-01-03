@@ -3613,7 +3613,7 @@ class VisionProStreamer:
             return
         
         # Clamp rate to a sane range
-        self._pointcloud_hz = float(min(30.0, max(1.0, rate_hz)))
+        self._pointcloud_hz = rate_hz
 
         # Ensure dtype/shape
         pos = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
@@ -3644,7 +3644,7 @@ class VisionProStreamer:
         now = time.time()
         if now - self._pointcloud_last_log > 1.0:
             self._pointcloud_last_log = now
-            self._log(f"[POINTCLOUD] Queued {n} pts @ ~{self._pointcloud_hz:.1f} Hz (payload {len(payload)/1024:.1f} KB)", force=True)
+            self._log(f"[POINTCLOUD] Queued {n} pts (payload {len(payload)/1024:.1f} KB)", force=True)
     
     def _get_isaac_poses_from_stage(self) -> Dict[str, Dict[str, Any]]:
         """Get poses from USD stage using PhysX runtime data (Isaac Lab only)."""

@@ -113,8 +113,8 @@ class VPStreamer(Node):
         self.pointcloud_topic = params["pointcloud_topic"]
         
         self._last_pointcloud_time = 0.0
-        self._pointcloud_max_rate_hz = 2.0
-        self._pointcloud_max_points = 20000
+        self._pointcloud_rate_hz_internal = 30.0
+        self._pointcloud_max_points = 200000
         self._tf_target_frame = "mycobot_base"
 
         # TF listener must exist before any callbacks try to use it
@@ -310,7 +310,7 @@ class VPStreamer(Node):
             return
 
         now = time.time()
-        if now - self._last_pointcloud_time < 1.0 / self._pointcloud_max_rate_hz:
+        if now - self._last_pointcloud_time < 1.0 / self._pointcloud_rate_hz_internal:
             return
         
         if not self.tf_buffer.can_transform(
@@ -365,7 +365,7 @@ class VPStreamer(Node):
         pos_arr = np.asarray(positions, dtype=np.float32)
         col_arr = np.asarray(colors, dtype=np.uint8)
         # self.get_logger().info(f"First few pointcloud positions: {pos_arr[:5]}")
-        self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=self._pointcloud_max_rate_hz)
+        self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=self._pointcloud_rate_hz_internal)
         self._last_pointcloud_time = now
 
 

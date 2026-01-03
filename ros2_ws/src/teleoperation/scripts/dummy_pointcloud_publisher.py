@@ -12,7 +12,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
-
+import colorsys
 
 class DummyPointCloudPublisher(Node):
     """Publish a simple colored grid as PointCloud2 (x, y, z, rgb fields)."""
@@ -24,7 +24,7 @@ class DummyPointCloudPublisher(Node):
         self.declare_parameter("topic", "/rgb_map/dummy_cloud")
         self.declare_parameter("rate_hz", 2.0)
         self.declare_parameter("grid_size", 20)
-        self.declare_parameter("grid_spacing", 0.05)
+        self.declare_parameter("grid_spacing", 0.01)
 
         self._frame_id: str = self.get_parameter("frame_id").get_parameter_value().string_value
         self._topic: str = self.get_parameter("topic").get_parameter_value().string_value
@@ -51,9 +51,17 @@ class DummyPointCloudPublisher(Node):
                 z = 0.5 + 0.05 * math.sin((ix + iy) * 0.2)
                 points.append((x, y, z))
 
-                r = int(128 + 120 * math.sin(ix * 0.3)) & 0xFF
-                g = int(128 + 120 * math.sin(iy * 0.3)) & 0xFF
-                b = int(128 + 120 * math.sin((ix + iy) * 0.15)) & 0xFF
+
+                h = (ix * 0.05 + iy * 0.05) % 1.0
+                s = 0.8
+                v = 0.9  # never dark
+
+                r_f, g_f, b_f = colorsys.hsv_to_rgb(h, s, v)
+
+                r = int(r_f * 255)
+                g = int(g_f * 255)
+                b = int(b_f * 255)
+
                 rgb_uint = (r << 16) | (g << 8) | b
                 rgb_float = struct.unpack("f", struct.pack("I", rgb_uint))[0]
                 rgb_floats.append(rgb_float)
