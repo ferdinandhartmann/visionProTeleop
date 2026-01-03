@@ -513,7 +513,24 @@ struct StatusOverlay: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    
+
+                    // Controller lock button (lock minimized controller bar to world space)
+                    Button {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                            dataManager.statusFixedToWorld.toggle()
+                        }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(dataManager.statusFixedToWorld ? Color.purple.opacity(0.8) : Color.gray.opacity(0.6))
+                                .frame(width: 60, height: 60)
+                            Image(systemName: dataManager.statusFixedToWorld ? "lock.fill" : "lock.open.fill")
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
                     // Recording button
                     Button {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
