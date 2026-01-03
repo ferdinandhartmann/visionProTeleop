@@ -11,6 +11,15 @@ import GRPCNIOTransportHTTP2
 import GRPCProtobuf
 import simd
 
+struct PointCloudPayload {
+    let positions: [SIMD3<Float>]
+    let colors: [SIMD3<Float>]
+    let spriteSize: Float
+    let attachToPosition: SIMD3<Float>?
+    let attachToRotation: simd_quatf?
+    let signature: UInt64
+}
+
 @MainActor
 final class CombinedStreamingUpdateCache: ObservableObject {
     var fixedMarkerTransforms: [Int: Transform] = [:]
@@ -23,6 +32,9 @@ final class CombinedStreamingUpdateCache: ObservableObject {
     var cachedRightJointMaterial: RealityKit.Material? = nil
     var cachedLeftBoneMaterial: RealityKit.Material? = nil
     var cachedRightBoneMaterial: RealityKit.Material? = nil
+    var pointCloudUpdateInFlight: Bool = false
+    var pendingPointCloudPayload: PointCloudPayload? = nil
+    var lastPointCloudSignature: UInt64? = nil
 }
 
 // MARK: - Marker Label View (SwiftUI attachment for real-time text updates)
@@ -296,6 +308,7 @@ struct CombinedStreamingView: View {
                 mujocoManager: mujocoManager,
                 recordingManager: recordingManager,
                 imageData: imageData,
+                updateCache: updateCache,
                 hasAutoMinimized: $hasAutoMinimized,
                 userInteracted: $userInteracted,
                 hasFrames: $hasFrames,
@@ -320,6 +333,7 @@ struct CombinedStreamingView: View {
                 mujocoManager: mujocoManager,
                 recordingManager: recordingManager,
                 imageData: imageData,
+                updateCache: updateCache,
                 hasFrames: $hasFrames,
                 hasAudio: $hasAudio,
                 hasSimPoses: $hasSimPoses,
@@ -2146,6 +2160,108 @@ private func createPreviewPlane() -> Entity {
     return previewEntity
 }
 
+@MainActor
+private func enqueuePointCloudUpdate(
+    cache: CombinedStreamingUpdateCache,
+    entityProvider: () -> ModelEntity?,
+    positions: [SIMD3<Float>],
+    colors: [SIMD3<Float>],
+    spriteSize: Float,
+    attachToPosition: SIMD3<Float>?,
+    attachToRotation: simd_quatf?
+) {
+    guard !positions.isEmpty, positions.count == colors.count else {
+        return
+    }
+    let signature = computePointCloudSignature(
+        positions: positions,
+        colors: colors
+    )
+    if cache.lastPointCloudSignature == signature {
+        return
+    }
+    let payload = PointCloudPayload(
+        positions: positions,
+        colors: colors,
+        spriteSize: spriteSize,
+        attachToPosition: attachToPosition,
+        attachToRotation: attachToRotation,
+        signature: signature
+    )
+    if cache.pointCloudUpdateInFlight {
+        cache.pendingPointCloudPayload = payload
+        return
+    }
+    cache.pointCloudUpdateInFlight = true
+    processPointCloudPayload(
+        cache: cache,
+        entityProvider: entityProvider,
+        payload: payload
+    )
+}
+
+@MainActor
+private func processPointCloudPayload(
+    cache: CombinedStreamingUpdateCache,
+    entityProvider: () -> ModelEntity?,
+    payload: PointCloudPayload
+) {
+    guard let entity = entityProvider() else {
+        cache.pendingPointCloudPayload = payload
+        cache.pointCloudUpdateInFlight = false
+        return
+    }
+    updatePointCloudEntity(
+        entity,
+        points: payload.positions,
+        colors: payload.colors,
+        spriteSize: payload.spriteSize,
+        attachToPosition: payload.attachToPosition,
+        attachToRotation: payload.attachToRotation
+    )
+    cache.lastPointCloudSignature = payload.signature
+    if let pending = cache.pendingPointCloudPayload {
+        cache.pendingPointCloudPayload = nil
+        processPointCloudPayload(
+            cache: cache,
+            entityProvider: entityProvider,
+            payload: pending
+        )
+    } else {
+        cache.pointCloudUpdateInFlight = false
+    }
+}
+
+private func computePointCloudSignature(
+    positions: [SIMD3<Float>],
+    colors: [SIMD3<Float>]
+) -> UInt64 {
+    var hasher = Hasher()
+    hasher.combine(positions.count)
+    hasher.combine(colors.count)
+    if !positions.isEmpty {
+        let samples = min(positions.count, 16)
+        let step = max(1, positions.count / samples)
+        var idx = 0
+        var taken = 0
+        while idx < positions.count && taken < samples {
+            let p = positions[idx]
+            hasher.combine(p.x.bitPattern)
+            hasher.combine(p.y.bitPattern)
+            hasher.combine(p.z.bitPattern)
+            let colorIdx = min(idx, colors.count - 1)
+            let c = colors[colorIdx]
+            hasher.combine(c.x.bitPattern)
+            hasher.combine(c.y.bitPattern)
+            hasher.combine(c.z.bitPattern)
+            idx += step
+            taken += 1
+        }
+    }
+    return UInt64(bitPattern: Int64(hasher.finalize()))
+}
+
+@MainActor
 private func updatePointCloudEntity(
     _ entity: ModelEntity?,
     points: [SIMD3<Float>],
@@ -2159,6 +2275,9 @@ private func updatePointCloudEntity(
         entity.isEnabled = false
         return
     }
+
+    // Build new geometry off-screen to avoid visible overlap
+    let stagingEntity = Entity()
     
     // Bucket points by color (0-1 range) and build one mesh per bucket for better performance and tinting.
     let bucketSteps: Float = 4.0  // 4x4x4 buckets = 64 groups
@@ -2191,8 +2310,8 @@ private func updatePointCloudEntity(
         buckets[idx]?.colorSum += colors[i]
     }
     
-    // Clear old children
-    entity.children.forEach { $0.removeFromParent() }
+    var stagingChildren: [ModelEntity] = []
+    stagingChildren.reserveCapacity(buckets.count)
     
     // Precompute a low-poly sphere (icosahedron) to duplicate for each point
     // Use a precomputed golden ratio to keep this expression simple for the compiler
@@ -2249,11 +2368,23 @@ private func updatePointCloudEntity(
         material.color = .init(tint: tintColor)
         
         let child = ModelEntity(mesh: mesh, materials: [material])
+        stagingChildren.append(child)
+    }
+
+    guard !stagingChildren.isEmpty else {
+        dlog("⚠️ [PointCloud] No geometry generated for \(points.count) points")
+        return
+    }
+
+    stagingChildren.forEach { stagingEntity.addChild($0) }
+    entity.isEnabled = false
+    entity.children.forEach { $0.removeFromParent() }
+    stagingEntity.children.forEach { child in
+        child.removeFromParent()
         entity.addChild(child)
     }
-    
     entity.isEnabled = true
-   dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: "%.4f", spriteSize)))")
+    dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: "%.4f", spriteSize)))")
 }
 
 /// Creates a "light beam" ray that extends from the head anchor towards -Z axis
@@ -2818,6 +2949,7 @@ private struct LifecycleModifiers: ViewModifier {
     @ObservedObject var mujocoManager: CombinedMuJoCoManager
     @ObservedObject var recordingManager: RecordingManager
     @ObservedObject var imageData: ImageData
+    var updateCache: CombinedStreamingUpdateCache
     @Binding var hasAutoMinimized: Bool
     @Binding var userInteracted: Bool
     @Binding var hasFrames: Bool
@@ -2908,14 +3040,16 @@ private struct LifecycleModifiers: ViewModifier {
         
         videoStreamManager.onPointCloudReceived = { positions, colors in
             Task { @MainActor in
-                updatePointCloudEntity(
-                    pointCloudEntity,
-                    points: positions,
+                enqueuePointCloudUpdate(
+                    cache: self.updateCache,
+                    entityProvider: { self.pointCloudEntity },
+                    positions: positions,
                     colors: colors,
                     spriteSize: dataManager.pointCloudSpriteSize,
                     attachToPosition: attachToPosition,
                     attachToRotation: attachToRotation
                 )
+                // dlog("🌫️ [CombinedStreamingView] Point cloud received with \(positions.count) points")
             }
         }
         
@@ -3013,6 +3147,7 @@ private struct StateChangeModifiers: ViewModifier {
     @ObservedObject var mujocoManager: CombinedMuJoCoManager
     @ObservedObject var recordingManager: RecordingManager
     @ObservedObject var imageData: ImageData
+    var updateCache: CombinedStreamingUpdateCache
     @Binding var hasFrames: Bool
     @Binding var hasAudio: Bool
     @Binding var hasSimPoses: Bool
@@ -3203,6 +3338,9 @@ private struct StateChangeModifiers: ViewModifier {
         mujocoUsdzURL = nil
         attachToPosition = nil
         attachToRotation = nil
+        updateCache.pointCloudUpdateInFlight = false
+        updateCache.pendingPointCloudPayload = nil
+        updateCache.lastPointCloudSignature = nil
     }
     
     private func handleVideoPlaneFixedChange(isFixed: Bool) {
