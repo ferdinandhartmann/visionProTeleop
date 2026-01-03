@@ -2201,15 +2201,6 @@ private func enqueuePointCloudUpdate(
 }
 
 @MainActor
-private func clearPointCloudEntity(_ entity: ModelEntity?) {
-    guard let entity = entity else { return }
-    entity.isEnabled = false
-    while let child = entity.children.first {
-        child.removeFromParent()
-    }
-}
-
-@MainActor
 private func processPointCloudPayload(
     cache: CombinedStreamingUpdateCache,
     entityProvider: () -> ModelEntity?,
@@ -2281,12 +2272,13 @@ private func updatePointCloudEntity(
 ) {
     guard let entity = entity else { return }
     guard !points.isEmpty, points.count == colors.count else {
-        clearPointCloudEntity(entity)
+        entity.isEnabled = false
         return
     }
 
-    // Build new geometry off-screen to avoid visible overlap
-    let stagingEntity = Entity()
+    // Hide and clear the previous cloud immediately so stale geometry never overlaps the new one
+    entity.isEnabled = false
+    entity.children.forEach { $0.removeFromParent() }
     
     // Bucket points by color (0-1 range) and build one mesh per bucket for better performance and tinting.
     let bucketSteps: Float = 4.0  // 4x4x4 buckets = 64 groups
@@ -2319,8 +2311,8 @@ private func updatePointCloudEntity(
         buckets[idx]?.colorSum += colors[i]
     }
     
-    var stagingChildren: [ModelEntity] = []
-    stagingChildren.reserveCapacity(buckets.count)
+    var pendingChildren: [ModelEntity] = []
+    pendingChildren.reserveCapacity(buckets.count)
     
     // Precompute a low-poly sphere (icosahedron) to duplicate for each point
     // Use a precomputed golden ratio to keep this expression simple for the compiler
@@ -2377,20 +2369,15 @@ private func updatePointCloudEntity(
         material.color = .init(tint: tintColor)
         
         let child = ModelEntity(mesh: mesh, materials: [material])
-        stagingChildren.append(child)
+        pendingChildren.append(child)
     }
 
-    guard !stagingChildren.isEmpty else {
+    guard !pendingChildren.isEmpty else {
         dlog("⚠️ [PointCloud] No geometry generated for \(points.count) points")
         return
     }
 
-    stagingChildren.forEach { stagingEntity.addChild($0) }
-    clearPointCloudEntity(entity)
-    stagingEntity.children.forEach { child in
-        child.removeFromParent()
-        entity.addChild(child)
-    }
+    pendingChildren.forEach { entity.addChild($0) }
     entity.isEnabled = true
     dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: "%.4f", spriteSize)))")
 }
@@ -3349,7 +3336,6 @@ private struct StateChangeModifiers: ViewModifier {
         updateCache.pointCloudUpdateInFlight = false
         updateCache.pendingPointCloudPayload = nil
         updateCache.lastPointCloudSignature = nil
-        clearPointCloudEntity(pointCloudEntity)
     }
     
     private func handleVideoPlaneFixedChange(isFixed: Bool) {
