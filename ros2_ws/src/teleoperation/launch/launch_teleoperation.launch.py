@@ -172,7 +172,6 @@ def generate_launch_description():
 
 
     nodes = [
-        dummy_pointcloud_publisher_node, 
         
         vp_streamer_node,
 
@@ -189,6 +188,8 @@ def generate_launch_description():
 
         teleop_control_cpp_node,
         inverse_kinematics_node,
+
+        dummy_pointcloud_publisher_node, 
         
         rviz2_node,
                         

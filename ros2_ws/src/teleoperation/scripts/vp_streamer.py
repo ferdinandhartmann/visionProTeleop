@@ -113,7 +113,7 @@ class VPStreamer(Node):
         self.pointcloud_topic = params["pointcloud_topic"]
         
         self._last_pointcloud_time = 0.0
-        self._pointcloud_max_rate_hz = 10.0
+        self._pointcloud_max_rate_hz = 2.0
         self._pointcloud_max_points = 20000
         self._tf_target_frame = "mycobot_base"
 
@@ -311,6 +311,15 @@ class VPStreamer(Node):
 
         now = time.time()
         if now - self._last_pointcloud_time < 1.0 / self._pointcloud_max_rate_hz:
+            return
+        
+        if not self.tf_buffer.can_transform(
+                self._tf_target_frame,
+                msg.header.frame_id,
+                rclpy.time.Time(seconds=0),
+                timeout=Duration(seconds=0.0),
+            ):
+            self._periodic_log("pc_tf_check", 2.0, f"Point cloud TF not available from {msg.header.frame_id} to {self._tf_target_frame}")
             return
 
         try:

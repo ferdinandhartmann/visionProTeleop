@@ -155,7 +155,6 @@
     </collision>
   </link>
 
-  <!-- Camera lens frame: small visual/collision sphere and fixed joint from camera -->
   <link name="camera_lens">
   </link>
 
