@@ -219,6 +219,7 @@ struct CombinedStreamingView: View {
     @State private var stereoMaterialEntity: Entity? = nil
     @State private var fixedWorldTransform: Transform? = nil
     @State private var statusFixedWorldTransform: Transform? = nil
+    @State private var lastStatusFixedToWorld: Bool = false
     @State private var uvcFrame: UIImage? = nil  // UVC camera frame
     
     // MuJoCo state
@@ -640,11 +641,17 @@ struct CombinedStreamingView: View {
             
             // === STATUS UPDATE ===
             let statusFixed = dataManager.statusFixedToWorld
+            let statusFixedChanged = statusFixed != lastStatusFixedToWorld
             let statusHeadAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity
             
             if let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor {
+                        if statusFixedChanged {
+                            // Capture the current world transform before switching anchors to prevent jumps
+                            let worldMatrix = statusContainer.transformMatrix(relativeTo: nil)
+                            statusFixedWorldTransform = Transform(matrix: worldMatrix)
+                        }
                         if statusContainer.parent !== worldAnchor {
                             statusContainer.setParent(worldAnchor, preservingWorldTransform: true)
                         }
@@ -671,6 +678,7 @@ struct CombinedStreamingView: View {
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
             }
+            lastStatusFixedToWorld = statusFixed
             
             if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
                 if statusFixed {
@@ -3361,18 +3369,20 @@ private struct StateChangeModifiers: ViewModifier {
     
     private func handleStatusFixedChange(isFixed: Bool) {
         if isFixed {
-            let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
-            let targetTranslation = SIMD3<Float>(
-                isMinimized ? dataManager.statusMinimizedXPosition : 0.0,
-                isMinimized ? dataManager.statusMinimizedYPosition : -0.1,
-                -1.0
-            )
-            
-            var offsetTransform = Transform()
-            offsetTransform.translation = targetTranslation
-            
-            let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
-            statusFixedWorldTransform = Transform(matrix: worldMatrix)
+            if statusFixedWorldTransform == nil {
+                let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+                let targetTranslation = SIMD3<Float>(
+                    isMinimized ? dataManager.statusMinimizedXPosition : 0.0,
+                    isMinimized ? dataManager.statusMinimizedYPosition : -0.1,
+                    -1.0
+                )
+                
+                var offsetTransform = Transform()
+                offsetTransform.translation = targetTranslation
+                
+                let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+                statusFixedWorldTransform = Transform(matrix: worldMatrix)
+            }
         } else {
             statusFixedWorldTransform = nil
         }

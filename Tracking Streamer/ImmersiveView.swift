@@ -26,6 +26,7 @@ struct ImmersiveView: View {
     @State private var stereoMaterialEntity: Entity? = nil  // Store reference to RealityKit stereo material entity
     @State private var fixedWorldTransform: Transform? = nil  // Preserve world transform when locked
     @State private var statusFixedWorldTransform: Transform? = nil  // Preserve status transform when locked
+    @State private var lastStatusFixedToWorld: Bool = false  // Track toggle edges for status anchoring
     
     var body: some View {
         RealityView { content, attachments in
@@ -187,11 +188,17 @@ struct ImmersiveView: View {
             
             // Update status container position based on minimized state (do this BEFORE early return)
             let statusFixed = dataManager.statusFixedToWorld
+            let statusFixedChanged = statusFixed != lastStatusFixedToWorld
             let statusHeadAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity
             
             if let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor {
+                        if statusFixedChanged {
+                            // Capture the current world transform before switching anchors to prevent jumps
+                            let worldMatrix = statusContainer.transformMatrix(relativeTo: nil)
+                            statusFixedWorldTransform = Transform(matrix: worldMatrix)
+                        }
                         if statusContainer.parent !== worldAnchor {
                             statusContainer.setParent(worldAnchor, preservingWorldTransform: true)
                         }
@@ -222,6 +229,7 @@ struct ImmersiveView: View {
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
             }
+            lastStatusFixedToWorld = statusFixed
             
             if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
                 if statusFixed {
@@ -517,17 +525,19 @@ struct ImmersiveView: View {
         }
         .onChange(of: dataManager.statusFixedToWorld) { _, isFixed in
             if isFixed {
-                let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
-                let targetTranslation = SIMD3<Float>(
-                    isMinimized ? dataManager.statusMinimizedXPosition : 0.0,
-                    isMinimized ? dataManager.statusMinimizedYPosition : 0.0,
-                    -1.0
-                )
-                var offsetTransform = Transform()
-                offsetTransform.translation = targetTranslation
-                
-                let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
-                statusFixedWorldTransform = Transform(matrix: worldMatrix)
+                if statusFixedWorldTransform == nil {
+                    let headWorldMatrix = DataManager.shared.latestHandTrackingData.Head
+                    let targetTranslation = SIMD3<Float>(
+                        isMinimized ? dataManager.statusMinimizedXPosition : 0.0,
+                        isMinimized ? dataManager.statusMinimizedYPosition : 0.0,
+                        -1.0
+                    )
+                    var offsetTransform = Transform()
+                    offsetTransform.translation = targetTranslation
+                    
+                    let worldMatrix = simd_mul(headWorldMatrix, offsetTransform.matrix)
+                    statusFixedWorldTransform = Transform(matrix: worldMatrix)
+                }
             } else {
                 statusFixedWorldTransform = nil
             }
