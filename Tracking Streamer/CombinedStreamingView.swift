@@ -2201,6 +2201,15 @@ private func enqueuePointCloudUpdate(
 }
 
 @MainActor
+private func clearPointCloudEntity(_ entity: ModelEntity?) {
+    guard let entity = entity else { return }
+    entity.isEnabled = false
+    while let child = entity.children.first {
+        child.removeFromParent()
+    }
+}
+
+@MainActor
 private func processPointCloudPayload(
     cache: CombinedStreamingUpdateCache,
     entityProvider: () -> ModelEntity?,
@@ -2272,7 +2281,7 @@ private func updatePointCloudEntity(
 ) {
     guard let entity = entity else { return }
     guard !points.isEmpty, points.count == colors.count else {
-        entity.isEnabled = false
+        clearPointCloudEntity(entity)
         return
     }
 
@@ -2377,8 +2386,7 @@ private func updatePointCloudEntity(
     }
 
     stagingChildren.forEach { stagingEntity.addChild($0) }
-    entity.isEnabled = false
-    entity.children.forEach { $0.removeFromParent() }
+    clearPointCloudEntity(entity)
     stagingEntity.children.forEach { child in
         child.removeFromParent()
         entity.addChild(child)
@@ -3341,6 +3349,7 @@ private struct StateChangeModifiers: ViewModifier {
         updateCache.pointCloudUpdateInFlight = false
         updateCache.pendingPointCloudPayload = nil
         updateCache.lastPointCloudSignature = nil
+        clearPointCloudEntity(pointCloudEntity)
     }
     
     private func handleVideoPlaneFixedChange(isFixed: Bool) {
