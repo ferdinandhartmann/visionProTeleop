@@ -30,6 +30,14 @@ vp_streamer:
     ee_target_on_reset_orientation_xyzw: [-0.002, 0.500, -0.004, 0.866]
     ee_target_on_reset_gripper: 100
 
+rgb_pointcloud_downsampler:
+  ros__parameters:
+    input_topic: "/camera/camera/depth/color/points"
+    output_topic: "/points_downsampled"
+    target_frame: "camera_lens"
+    publish_rate_hz: 6.0
+    downsample_factor: 70
+
 camera_streamer:
   ros__parameters:
     visionpro_ip: "192.168.10.113"
@@ -38,7 +46,6 @@ camera_streamer:
     # camera_input: "/dev/video0" # Laptop camera
     format: "v4l2" # on linux "v4l2", on windows "dshow", on mac "avfoundation"
     fps: 25
-    camera_mode: "both" # robot, realsense, both
 
 teleop_control_cpp:
   ros__parameters:

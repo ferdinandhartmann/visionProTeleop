@@ -121,13 +121,7 @@ def generate_launch_description():
         name="rgb_pointcloud_downsampler",
         output="screen",
         parameters=[
-            {
-                "input_topic": "/camera/camera/depth/color/points",
-                "output_topic": "/points_downsampled",
-                "target_frame": "camera_link",
-                "publish_rate_hz": 10.0,
-                "downsample_factor": 70,
-            }
+            teleop_config,
         ],
         condition=IfCondition(use_realsense),
     )
@@ -141,6 +135,20 @@ def generate_launch_description():
             "0", "0", "0",  # rotation roll pitch yaw (radians)
             "map",
             "vp_base_origin"
+        ],
+        output="screen"
+    )
+    
+    static_transform_camera_lens_realsense = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="static_transform_camera_lens_realsense",
+        arguments=[
+            "0", "0", "0.2",  # translation x y z
+            "0", "0", "0",  # rotation roll pitch yaw (radians)
+            # "camera_lens",
+            "mycobot_base",
+            "camera_link"
         ],
         output="screen"
     )
@@ -204,6 +212,7 @@ def generate_launch_description():
             {"viewer": "ar"}, # Options: "None", "ar", "mujoco"
             {"enable_camera": True},
             {"enable_audio": False},
+            {"camera_mode": "both"} # robot, realsense, both
         ],
     )
     
@@ -223,8 +232,10 @@ def generate_launch_description():
 
         vp_streamer_node,
 
+        static_transform_camera_lens_realsense,
         realsense_launch,
         downsample_node,
+        # dummy_pointcloud_publisher_node, 
 
         robot_state_publisher_node,
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
@@ -235,8 +246,6 @@ def generate_launch_description():
 
         teleop_control_cpp_node,
         inverse_kinematics_node,
-
-        dummy_pointcloud_publisher_node, 
         
         rviz2_node,
                         
