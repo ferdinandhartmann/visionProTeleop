@@ -68,17 +68,18 @@ private:
     }
     if (!msg) return;
 
-    sensor_msgs::msg::PointCloud2 cloud;
-    if (do_tf_) {
-      if (!transformIfNeeded(*msg, cloud)) return;
-    } else {
-      cloud = *msg; // one copy per publish tick (inevitable because we output a new msg anyway)
-    }
 
-    auto out = downsampleStride(cloud);
-    if (!out) return;
-    pub_->publish(*out);
+    if (do_tf_) {
+        sensor_msgs::msg::PointCloud2 transformed;
+        if (!transformIfNeeded(*msg, transformed)) return;
+        auto out = downsampleStride(transformed);
+        if (out) pub_->publish(*out);
+    } else {
+        auto out = downsampleStride(*msg);          // ✅ no full copy
+        if (out) pub_->publish(*out);
+    }
   }
+
 
   bool transformIfNeeded(const sensor_msgs::msg::PointCloud2 & in,
                          sensor_msgs::msg::PointCloud2 & out)

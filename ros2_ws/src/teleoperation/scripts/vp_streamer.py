@@ -798,22 +798,37 @@ class VPStreamer(Node):
 
         # --- Publish robot camera ---
         if self._use_robot_camera and robot_frame is not None:
-            img_msg_robot = self.bridge.cv2_to_imgmsg(robot_frame, encoding="bgr8")
-            self.camera_publisher_robot.publish(img_msg_robot)
+            try:
+                if rclpy.ok() and getattr(self, "camera_publisher_robot", None) is not None:
+                    img_msg_robot = self.bridge.cv2_to_imgmsg(robot_frame, encoding="bgr8")
+                    self.camera_publisher_robot.publish(img_msg_robot)
+            except Exception as exc:  # noqa: BLE001
+                self._periodic_log("camera_pub_robot", 1.0, f"Failed to publish robot camera image: {exc}", level="warn")
 
         # --- Publish realsense camera ---
         if self._use_realsense and realsense_frame is not None:
-            img_msg_realsense = self.bridge.cv2_to_imgmsg(realsense_frame, encoding="bgr8")
-            self.camera_publisher_realsense.publish(img_msg_realsense)
+            try:
+                if rclpy.ok() and getattr(self, "camera_publisher_realsense", None) is not None:
+                    img_msg_realsense = self.bridge.cv2_to_imgmsg(realsense_frame, encoding="bgr8")
+                    self.camera_publisher_realsense.publish(img_msg_realsense)
+            except Exception as exc:  # noqa: BLE001
+                self._periodic_log("camera_pub_rs", 1.0, f"Failed to publish RealSense camera image: {exc}", level="warn")
 
         # --- Publish combined ---
         if self.camera_mode == "both" and frame is not None:
-            img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-            self.camera_publisher_combined.publish(img_msg)
+            try:
+                if rclpy.ok() and getattr(self, "camera_publisher_combined", None) is not None:
+                    img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+                    self.camera_publisher_combined.publish(img_msg)
+            except Exception as exc:  # noqa: BLE001
+                self._periodic_log("camera_pub_combined", 1.0, f"Failed to publish combined camera image: {exc}", level="warn")
 
         # --- Stream to Vision Pro ---
         if self.streamer is not None and frame is not None:
-            self.streamer.update_frame(frame)
+            try:
+                self.streamer.update_frame(frame)
+            except Exception as exc:  # noqa: BLE001
+                self._periodic_log("streamer_update_frame", 1.0, f"Failed to update streamer frame: {exc}", level="warn")
         
         # # Optional local OpenCV preview
         # cv2.imshow("Webcam", frame)
@@ -894,7 +909,10 @@ class VPStreamer(Node):
     def _camera_loop(self) -> None:
         next_time = time.perf_counter()
         while not self._stop_event.is_set():
-            self._camera_cb()
+            try:
+                self._camera_cb()
+            except Exception as exc:  # noqa: BLE001
+                self._periodic_log("camera_thread", 1.0, f"Camera thread exception: {exc}", level="warn")
             if self._camera_period > 0:
                 next_time += self._camera_period
                 sleep_time = next_time - time.perf_counter()

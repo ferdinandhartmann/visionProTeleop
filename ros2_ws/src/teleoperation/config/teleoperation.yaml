@@ -30,6 +30,7 @@ vp_streamer:
     ee_target_on_reset_position: [0.109, -0.063, 0.314]
     ee_target_on_reset_orientation_xyzw: [-0.002, 0.500, -0.004, 0.866]
     ee_target_on_reset_gripper: 100
+    # To adjust point size in vison pro app: chnage "spriteSize" in .../Tracking Streamer/🥽AppModel.swift
 
 rgb_pointcloud_downsampler:
   ros__parameters:
