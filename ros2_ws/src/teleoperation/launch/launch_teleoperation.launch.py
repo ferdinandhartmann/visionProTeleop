@@ -1,11 +1,12 @@
-from launch import LaunchDescription
-from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
 import os
-import sys
-from launch.actions import DeclareLaunchArgument
-import launch
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
+from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
     
@@ -36,6 +37,13 @@ def generate_launch_description():
         default_value='115200',
         description='Baud rate to use'
     )
+
+    use_realsense_arg = DeclareLaunchArgument(
+        "use_realsense",
+        default_value="true",
+        description="Enable Intel RealSense RGB-D camera and downsampled point cloud",
+    )
+    use_realsense = LaunchConfiguration("use_realsense")
     
     robot_description = ParameterValue(Command(['xacro ', LaunchConfiguration('model')]),
                                        value_type=str)
@@ -86,6 +94,42 @@ def generate_launch_description():
         parameters=[
             teleop_config,
         ],
+    )
+
+    realsense_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("realsense2_camera"),
+                "launch",
+                "rs_launch.py",
+            )
+        ),
+        launch_arguments={
+            "enable_depth": "true",
+            "enable_color": "true",
+            "depth_module.depth_profile": "1280x720x30",
+            "rgb_camera.color_profile": "640x480x30",
+            "align_depth.enable": "true",
+            "pointcloud.enable": "true",
+        }.items(),
+        condition=IfCondition(use_realsense),
+    )
+
+    downsample_node = Node(
+        package="teleoperation",
+        executable="rgb_pointcloud_downsampler_node",
+        name="rgb_pointcloud_downsampler",
+        output="screen",
+        parameters=[
+            {
+                "input_topic": "/camera/camera/depth/color/points",
+                "output_topic": "/points_downsampled",
+                "target_frame": "camera_link",
+                "publish_rate_hz": 10.0,
+                "downsample_factor": 70,
+            }
+        ],
+        condition=IfCondition(use_realsense),
     )
     
     static_transform_map_vp_base_origin = Node(
@@ -172,13 +216,16 @@ def generate_launch_description():
 
 
     nodes = [
-        
-        vp_streamer_node,
-
         model_launch_arg,
         # serial_port_arg,
         # baud_rate_arg,
-        
+        use_realsense_arg,
+
+        vp_streamer_node,
+
+        realsense_launch,
+        downsample_node,
+
         robot_state_publisher_node,
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
 
@@ -194,7 +241,6 @@ def generate_launch_description():
         rviz2_node,
                         
         # joint_state_to_mycobot_node,
-
     ]
 
     return LaunchDescription(nodes)
