@@ -227,7 +227,11 @@ private:
       out_msg.encoding = "bgr8";
       out_msg.image = cropped;
       auto img_ptr = out_msg.toImageMsg();
-      if (cropped_rgb_pub_) cropped_rgb_pub_->publish(*img_ptr);
+      if (cropped_rgb_pub_) {
+        cropped_rgb_pub_->publish(*img_ptr);
+        RCLCPP_INFO(this->get_logger(), "Published cropped RGB image size=%dx%d",
+                    cropped.cols, cropped.rows);
+      }
     }
 
     // Populate grid, skipping bottom crop rows
@@ -355,11 +359,17 @@ private:
     // Publish the single-frame (non-accumulated) cloud if requested
     if (publish_single_frame_ && single_cloud_pub_) {
       single_cloud_pub_->publish(cloud_target);
+      RCLCPP_INFO(this->get_logger(),
+                  "Published single-frame point cloud with %u points (frame=%s)",
+                  cloud_target.width,
+                  cloud_target.header.frame_id.c_str());
     }
 
     // Accumulate (map) or publish single-frame
     if (!accumulate_) {
       cloud_pub_->publish(cloud_target);
+      RCLCPP_INFO(this->get_logger(), "Published point cloud (non-accumulated) with %u points",
+                  cloud_target.width);
       return;
     }
 
@@ -398,6 +408,8 @@ private:
       cloud_map.data = accumulated_data_;
 
       cloud_pub_->publish(cloud_map);
+      RCLCPP_INFO(this->get_logger(), "Published accumulated map point cloud with %u points",
+                  cloud_map.width);
     }
   }
 
