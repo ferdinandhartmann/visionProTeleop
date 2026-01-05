@@ -17,10 +17,10 @@ vp_streamer:
     force_reload: true
     ###### Camera parameters 
     camera_device: "/dev/video0" # laptop: "/dev/video0"
-    camera_resolution: "320x240" # "640x480" #"160x120" #"640x480"
+    camera_resolution: "640x480" # "640x480" #"160x120" #"640x480"
     format: "v4l2"
-    camera_fps: 25
-    camera_mode: "robot" # robot, realsense, both
+    camera_fps: 30
+    camera_mode: "both" # robot, realsense, both
     # Teleop target to publish when MuJoCo stream is reset. Values are in
     # the `mycobot_base` frame by default and will be published as
     # `teleoperation/TeleopTarget` on `/teleop/ee_target`.
@@ -31,12 +31,12 @@ vp_streamer:
 camera_streamer:
   ros__parameters:
     visionpro_ip: "192.168.10.113"
-    resolution:  "320x240"  # "1280x720"
-    camera_input: "/dev/video4" # Robot camera
+    resolution:  "848x480"  # "1280x720"
+    camera_input: "/dev/video0" # Robot camera
     # camera_input: "/dev/video0" # Laptop camera
     format: "v4l2" # on linux "v4l2", on windows "dshow", on mac "avfoundation"
     fps: 25
-    camera_mode: "robot" # robot, realsense, both
+    camera_mode: "both" # robot, realsense, both
 
 teleop_control_cpp:
   ros__parameters:

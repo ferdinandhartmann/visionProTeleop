@@ -23,12 +23,12 @@ class CameraStreamer(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('visionpro_ip', '192.168.50.153'),
+                ('visionpro_ip', '192.168.10.113'),
                 ('resolution', '640x480'),
                 ('camera_input', '/dev/video4'),
                 ('format', 'v4l2'),
                 ('fps', 30),
-                ('camera_mode', 'robot'),  # robot, realsense, both
+                ('camera_mode', 'realsense'),  # robot, realsense, both
             ]
         )
 
@@ -57,7 +57,9 @@ class CameraStreamer(Node):
         if USE_VISIONPRO:
             self.streamer = VisionProStreamer(ip=self.visionpro_ip, record=False)
             self.streamer.configure_video(device=None, format=self.format, size=self.resolution, fps=self.fps)
-            self.streamer.start_webrtc(port=9999)
+            self.streamer.start_webrtc()
+            self.streamer.register_frame_callback(lambda frame: frame)            
+
             self.get_logger().info("Vision Pro streaming enabled")
 
         self._use_robot_camera = self.camera_mode in ("robot", "both")
@@ -135,14 +137,23 @@ class CameraStreamer(Node):
     def _read_realsense_frame(self) -> Optional[np.ndarray]:
         if not self._use_realsense or self._realsense_pipeline is None:
             return None
-        frames = self._realsense_pipeline.wait_for_frames(timeout_ms=200)
+
+        try:
+            frames = self._realsense_pipeline.wait_for_frames(timeout_ms=200)
+        except RuntimeError:
+            # No frame this cycle — totally normal
+            return None
+
         color_frame = frames.get_color_frame()
         if not color_frame:
             return None
+
         frame = np.asanyarray(color_frame.get_data())
-        if frame.shape[0] == 0 or frame.shape[1] == 0:
+        if frame.size == 0:
             return None
+
         return cv2.resize(frame, self._frame_size)
+
 
     def _compose_frame(self, robot_frame: Optional[np.ndarray], realsense_frame: Optional[np.ndarray]) -> Optional[np.ndarray]:
         if self.camera_mode == "robot":
