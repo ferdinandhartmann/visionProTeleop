@@ -62,6 +62,16 @@ ament_target_dependencies(
 )
 target_link_libraries(depth_to_cloud_node ${OpenCV_LIBRARIES})
 
+add_executable(rgb_pointcloud_downsampler_node src/rgb_pointcloud_downsampler.cpp)
+ament_target_dependencies(
+  rgb_pointcloud_downsampler_node
+  rclcpp
+  sensor_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+)
+
 # Link against the generated C++ typesupport for TeleopTarget
 rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
@@ -70,10 +80,13 @@ target_link_libraries(teleop_control_cpp
 target_link_libraries(inverse_kinematics_node
   "${cpp_typesupport_target}" Eigen3::Eigen)
 
+ament_python_install_package(${PROJECT_NAME})
+
 install(TARGETS 
   teleop_control_cpp 
   depth_to_cloud_node 
   inverse_kinematics_node
+  rgb_pointcloud_downsampler_node
   DESTINATION lib/${PROJECT_NAME})
 
 # ament_python_install_package(${PROJECT_NAME})
