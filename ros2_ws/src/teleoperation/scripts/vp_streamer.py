@@ -7,13 +7,15 @@ import threading
 from pathlib import Path
 import queue
 from typing import Dict, List, Optional
+import struct
 
 from ament_index_python.packages import get_package_share_directory
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import JointState
+from rclpy.time import Duration
+from sensor_msgs.msg import JointState, PointCloud2
 from std_msgs.msg import Bool
 import cv2
 from cv_bridge import CvBridge
@@ -32,6 +34,8 @@ from tf2_ros import LookupException, ConnectivityException, ExtrapolationExcepti
 from teleoperation.msg import TeleopTarget
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
+from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
+from sensor_msgs_py import point_cloud2
 
     # import avp_stream, inspect
     # print("USING avp_stream from:", avp_stream.__file__, flush=True)
@@ -65,8 +69,12 @@ class VPStreamer(Node):
         self.declare_parameter("camera_resolution", "320x240")
         self.declare_parameter("camera_fps", 25)
         self.declare_parameter("format", "v4l2")
+        self.declare_parameter("camera_mode", "robot")  # robot, realsense, both
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
+        self.declare_parameter("enable_pointcloud", True)
+        self.declare_parameter("pointcloud_topic", "/points_downsampled")
+        self.declare_parameter("realsense_image_topic", "/camera/camera/color/image_raw")
         
         # Resolve the default MuJoCo scene from the robot_description package.
         robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
@@ -103,27 +111,64 @@ class VPStreamer(Node):
 
         self.enable_audio = params["enable_audio"]
         self.enable_camera = params["enable_camera"]
+        self.enable_pointcloud = params["enable_pointcloud"]
+        self.pointcloud_topic = params["pointcloud_topic"]
+        self._realsense_image_topic = params["realsense_image_topic"]
+
+        self.camera_mode = str(params["camera_mode"]).lower()
+        if self.camera_mode not in ("robot", "realsense", "both"):
+            self.get_logger().warning(f"Unknown camera_mode '{self.camera_mode}', defaulting to robot")
+            self.camera_mode = "robot"
+        self._use_robot_camera = self.camera_mode in ("robot", "both")
+        self._use_realsense = self.camera_mode in ("realsense", "both")
+        width, height = map(int, str(params["camera_resolution"]).split('x'))
+        self._frame_size = (width, height)
+        self._camera_period = 1.0 / params["camera_fps"] if params["camera_fps"] > 0 else 0.0
+        self._realsense_lock = None
+        self._latest_realsense_frame = None
         
+        self._last_pointcloud_time = 0.0
+        self._pointcloud_rate_hz_internal = 30.0
+        self._pointcloud_max_points = 200000
+        self._tf_target_frame = "mycobot_base"
+
+        # TF listener must exist before any callbacks try to use it
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         
         self.bridge = CvBridge()
         if self.enable_camera:
-            self.cap = cv2.VideoCapture(params["camera_device"])
-            if not self.cap.isOpened():
-                raise RuntimeError(f"Could not open camera {params['camera_device']}")
-            
-            camera_period = 1.0 / params["camera_fps"]
-            
-            width, height = map(int, params["camera_resolution"].split('x'))
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            self.cap.set(cv2.CAP_PROP_FPS, params["camera_fps"])
-            
-            self._camera_period = camera_period
-            self.camera_publisher = self.create_publisher(Image, "/camera_raw", 10)
+            self.cap = None
+            if self._use_robot_camera:
+                self.cap = cv2.VideoCapture(params["camera_device"])
+                if not self.cap.isOpened():
+                    raise RuntimeError(f"Could not open camera {params['camera_device']}")
+                
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                self.cap.set(cv2.CAP_PROP_FPS, params["camera_fps"])
+                
+                self.camera_publisher_robot = self.create_publisher(Image, "/camera_raw_robot", 10)
+
+            if self._use_realsense:
+                self.camera_publisher_realsense = self.create_publisher(Image, "/camera_raw_realsense", 10)
+                self._realsense_lock = threading.Lock()
+                qos_sensor = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+                self.realsense_subscription = self.create_subscription(
+                    Image,
+                    self._realsense_image_topic,
+                    self._realsense_image_cb,
+                    qos_sensor,
+                )
+                self.get_logger().info(f"Subscribed to RealSense color stream on {self._realsense_image_topic}")
+
+            if self._use_realsense and self._use_robot_camera:
+                self.camera_publisher_combined = self.create_publisher(Image, "/camera_raw_combined", 10)
+                
             self._camera_thread = threading.Thread(target=self._camera_loop, name="vp_camera", daemon=True)
             self._camera_thread.start()
             
-            self.get_logger().info("Camera initialized")
+            self.get_logger().info(f"Camera(s) initialized (mode={self.camera_mode})")
 
 
         self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
@@ -162,7 +207,8 @@ class VPStreamer(Node):
                 fps=params["camera_fps"],
             )
             self.get_logger().info("Vision Pro camera streaming enabled")
-            
+            self.streamer.register_frame_callback(lambda frame: frame)            
+        
         if self.enable_audio:
             self.motor_audio = MotorSoundModel()
             self.streamer.configure_audio(sample_rate=48000)
@@ -185,9 +231,11 @@ class VPStreamer(Node):
         joint_topic = params["joint_state_topic"]
         self.joint_sub = self.create_subscription(JointState, joint_topic, self._joint_state_cb, qos)
         self.get_logger().info(f"Listening for joint states on {joint_topic}")
-        
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        if self.enable_pointcloud:
+            pc_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+            self.pointcloud_sub = self.create_subscription(PointCloud2, self.pointcloud_topic, self._pointcloud_cb, pc_qos)
+            self.get_logger().info(f"Point cloud streaming enabled from {self.pointcloud_topic}")
 
         self.ee_fk_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame"
@@ -228,9 +276,13 @@ class VPStreamer(Node):
         camera_device = self.get_parameter("camera_device").value
         camera_resolution = self.get_parameter("camera_resolution").value
         camera_fps = self.get_parameter("camera_fps").value
+        camera_mode = self.get_parameter("camera_mode").value
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
+        enable_pointcloud = self.get_parameter("enable_pointcloud").value
+        pointcloud_topic = self.get_parameter("pointcloud_topic").value
+        realsense_image_topic = self.get_parameter("realsense_image_topic").value
         ee_target_on_reset_position = list(self.get_parameter("ee_target_on_reset_position").get_parameter_value().double_array_value)
         ee_target_on_reset_orientation_xyzw = list(self.get_parameter("ee_target_on_reset_orientation_xyzw").get_parameter_value().double_array_value)
         ee_target_on_reset_gripper = int(self.get_parameter("ee_target_on_reset_gripper").get_parameter_value().integer_value)
@@ -246,9 +298,13 @@ class VPStreamer(Node):
             "camera_device": camera_device,
             "camera_resolution": camera_resolution,
             "camera_fps": camera_fps,
+            "camera_mode": camera_mode,
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
+            "enable_pointcloud": enable_pointcloud,
+            "pointcloud_topic": pointcloud_topic,
+            "realsense_image_topic": realsense_image_topic,
             "ee_target_on_reset_position": ee_target_on_reset_position,
             "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
             "ee_target_on_reset_gripper": ee_target_on_reset_gripper,
@@ -282,6 +338,69 @@ class VPStreamer(Node):
                 self._latest_joint_state[name] = position
                 
             self.latest_joint_vel = list(msg.velocity)
+
+    def _pointcloud_cb(self, msg: PointCloud2) -> None:
+        if not self.enable_pointcloud or self.streamer is None:
+            return
+
+        now = time.time()
+        if now - self._last_pointcloud_time < 1.0 / self._pointcloud_rate_hz_internal:
+            return
+        
+        if not self.tf_buffer.can_transform(
+                self._tf_target_frame,
+                msg.header.frame_id,
+                rclpy.time.Time(seconds=0),
+                timeout=Duration(seconds=0.0),
+            ):
+            self._periodic_log("pc_tf_check", 2.0, f"Point cloud TF not available from {msg.header.frame_id} to {self._tf_target_frame}")
+            return
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self._tf_target_frame,
+                msg.header.frame_id,
+                rclpy.time.Time(seconds=0),
+                timeout=Duration(seconds=0.1),
+            )
+            self._apply_world_z_flip(transform)
+        except (LookupException, ConnectivityException, ExtrapolationException) as exc:
+            self._periodic_log("pc_tf", 2.0, f"Point cloud TF lookup failed: {exc}", level="warn")
+            return
+
+        try:
+            transformed = do_transform_cloud(msg, transform)
+        except Exception as exc:  # noqa: BLE001
+            self._periodic_log("pc_transform", 2.0, f"Point cloud transform failed: {exc}", level="warn")
+            return
+
+        points_iter = point_cloud2.read_points(
+            transformed, field_names=("x", "y", "z", "rgb"), skip_nans=True
+        )
+
+        positions = []
+        colors = []
+        for idx, (x, y, z, rgb) in enumerate(points_iter):
+            if idx >= self._pointcloud_max_points:
+                break
+            positions.append((float(x), float(y), float(z)))
+            try:
+                rgb_uint = struct.unpack("<I", struct.pack("<f", float(rgb)))[0]
+            except struct.error:
+                rgb_uint = 0
+            r = (rgb_uint >> 16) & 0xFF
+            g = (rgb_uint >> 8) & 0xFF
+            b = rgb_uint & 0xFF
+            colors.append((r, g, b))
+
+        if not positions:
+            return
+
+        pos_arr = np.asarray(positions, dtype=np.float32)
+        col_arr = np.asarray(colors, dtype=np.uint8)
+        # self.get_logger().info(f"First few pointcloud positions: {pos_arr[:5]}")
+        self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=self._pointcloud_rate_hz_internal)
+        self._last_pointcloud_time = now
 
 
     def _apply_joint_state(self) -> None:
@@ -492,6 +611,31 @@ class VPStreamer(Node):
             self._last_log_times[key] = now
 
 
+    def _apply_world_z_flip(self, transform: TransformStamped) -> None:
+        """Premultiply a 180-degree rotation about the world Z axis."""
+        translation = transform.transform.translation
+        translation.x = -translation.x
+        translation.y = -translation.y
+
+        rot = transform.transform.rotation
+        rot.x, rot.y, rot.z, rot.w = self._quat_multiply(
+            (0.0, 0.0, 1.0, 0.0),
+            (rot.x, rot.y, rot.z, rot.w),
+        )
+
+
+    @staticmethod
+    def _quat_multiply(q1, q2):
+        x1, y1, z1, w1 = q1
+        x2, y2, z2, w2 = q2
+        return (
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        )
+
+
     def _clear_target_mocap(self) -> None:
         mocap_id = self.model.body_mocapid[self.ee_target_body_id]
         if mocap_id < 0:
@@ -646,24 +790,106 @@ class VPStreamer(Node):
 
         self.get_logger().info("Published ee_target reset pose on /teleop/ee_target")
 
-            
+                
     def _camera_cb(self) -> None:
-        ret, frame = self.cap.read()
-        if not ret:
-            return
-        
-        # Rotate the image 90 degrees anti-clockwise
-        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-        self.camera_publisher.publish(img_msg)
+        robot_frame = self._read_robot_frame()
+        realsense_frame = self._read_realsense_frame()
+        frame = self._compose_frame(robot_frame, realsense_frame)
 
-        # Send frame to Vision Pro
-        if self.streamer is not None:
+        # --- Publish robot camera ---
+        if self._use_robot_camera and robot_frame is not None:
+            img_msg_robot = self.bridge.cv2_to_imgmsg(robot_frame, encoding="bgr8")
+            self.camera_publisher_robot.publish(img_msg_robot)
+
+        # --- Publish realsense camera ---
+        if self._use_realsense and realsense_frame is not None:
+            img_msg_realsense = self.bridge.cv2_to_imgmsg(realsense_frame, encoding="bgr8")
+            self.camera_publisher_realsense.publish(img_msg_realsense)
+
+        # --- Publish combined ---
+        if self.camera_mode == "both" and frame is not None:
+            img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            self.camera_publisher_combined.publish(img_msg)
+
+        # --- Stream to Vision Pro ---
+        if self.streamer is not None and frame is not None:
             self.streamer.update_frame(frame)
         
         # # Optional local OpenCV preview
         # cv2.imshow("Webcam", frame)
         # cv2.waitKey(1)
+
+    def _read_robot_frame(self) -> Optional[np.ndarray]:
+        if not self._use_robot_camera or self.cap is None:
+            return None
+        ret, frame = self.cap.read()
+        if not ret:
+            return None
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return cv2.resize(frame, (self._frame_size[1], self._frame_size[0]))
+
+    def _read_realsense_frame(self) -> Optional[np.ndarray]:
+        if not self._use_realsense or self._realsense_lock is None:
+            return None
+        with self._realsense_lock:
+            if self._latest_realsense_frame is None:
+                return None
+            return self._latest_realsense_frame.copy()
+
+    def _realsense_image_cb(self, msg: Image) -> None:
+        if not self._use_realsense:
+            return
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:  # noqa: BLE001
+            self._periodic_log("realsense_frame_convert", 5.0, f"Failed to convert RealSense image: {exc}", level="warn")
+            return
+
+        if frame is None:
+            return
+
+        frame = cv2.resize(frame, self._frame_size)
+        with self._realsense_lock:
+            self._latest_realsense_frame = frame
+
+    def _compose_frame(
+        self,
+        robot_frame: Optional[np.ndarray],
+        realsense_frame: Optional[np.ndarray],
+    ) -> Optional[np.ndarray]:
+
+        if self.camera_mode == "robot":
+            return robot_frame
+        if self.camera_mode == "realsense":
+            return realsense_frame
+        if robot_frame is None or realsense_frame is None:
+            return None
+
+        gap = 0
+
+        # --- Ensure uint8 BGR ---
+        robot = robot_frame.astype(np.uint8)
+        rs = realsense_frame.astype(np.uint8)
+
+        # --- Dimensions ---
+        robot_h, robot_w = robot.shape[:2]
+        rs_h, rs_w = rs.shape[:2]
+
+        total_h = robot_h + gap + rs_h
+        total_w = max(robot_w, rs_w)
+
+        # --- Create canvas ---
+        canvas = np.full((total_h, total_w, 3), 255, dtype=np.uint8)
+
+        # --- Paste robot on TOP (no resize, no stretch) ---
+        canvas[0:robot_h, (rs_w-robot_w)//2:(rs_w-robot_w)//2 + robot_w] = robot
+
+        # --- Paste RealSense below with gap ---
+        y0 = robot_h + gap
+        canvas[y0 : y0 + rs_h, 0:rs_w] = rs
+
+        return canvas
+
 
     def _camera_loop(self) -> None:
         next_time = time.perf_counter()

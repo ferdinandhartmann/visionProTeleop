@@ -16,6 +16,10 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(tf2_sensor_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TeleopTarget.msg"
@@ -28,7 +32,6 @@ ament_target_dependencies(teleop_control_cpp
   rclcpp
   geometry_msgs
   sensor_msgs
-  std_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -41,9 +44,32 @@ ament_target_dependencies(inverse_kinematics_node
   rclcpp
   geometry_msgs
   sensor_msgs
-  tf2
+  
   tf2_geometry_msgs
   tf2_ros
+)
+
+add_executable(depth_to_cloud_node src/depth_to_cloud.cpp)
+ament_target_dependencies(
+  depth_to_cloud_node
+  rclcpp
+  sensor_msgs
+  cv_bridge
+  message_filters
+  tf2_ros
+  tf2
+  tf2_sensor_msgs
+)
+target_link_libraries(depth_to_cloud_node ${OpenCV_LIBRARIES})
+
+add_executable(rgb_pointcloud_downsampler_node src/rgb_pointcloud_downsampler.cpp)
+ament_target_dependencies(
+  rgb_pointcloud_downsampler_node
+  rclcpp
+  sensor_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
 )
 
 # Link against the generated C++ typesupport for TeleopTarget
@@ -54,8 +80,11 @@ target_link_libraries(teleop_control_cpp
 target_link_libraries(inverse_kinematics_node
   "${cpp_typesupport_target}" Eigen3::Eigen)
 
-install(TARGETS teleop_control_cpp
+install(TARGETS 
+  teleop_control_cpp 
+  depth_to_cloud_node 
   inverse_kinematics_node
+  rgb_pointcloud_downsampler_node
   DESTINATION lib/${PROJECT_NAME})
 
 # ament_python_install_package(${PROJECT_NAME})
@@ -64,9 +93,12 @@ install(PROGRAMS
   scripts/camera_streamer.py
   scripts/joint_state_to_mycobot.py
   scripts/keyboard_ee_teleop.py
+  scripts/dummy_pointcloud_publisher.py
   scripts/vp_transform_publisher.py
   scripts/vp_streamer.py
   scripts/sam_client.py
+  scripts/run_sim.py
+  scripts/dummy_pointcloud_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -79,6 +111,7 @@ install(PROGRAMS
 install(DIRECTORY
   launch
   config
+  rviz
   resource
   DESTINATION share/${PROJECT_NAME}
 )

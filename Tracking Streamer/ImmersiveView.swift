@@ -601,6 +601,13 @@ class VideoStreamManager: ObservableObject {
         }
     }
     
+    /// Callback for point cloud snapshots
+    var onPointCloudReceived: (([SIMD3<Float>], [SIMD3<Float>]) -> Void)? {
+        didSet {
+            webrtcClient?.onPointCloudReceived = onPointCloudReceived
+        }
+    }
+    
     func start(imageData: ImageData) {
         // Refuse to start if we're in a disconnected state (webrtcGeneration < 0)
         // This prevents accidental restarts during cleanup
@@ -651,6 +658,10 @@ class VideoStreamManager: ObservableObject {
                 // Set up sim-poses callback if it was configured before connection
                 if let simCallback = self.onSimPosesReceived {
                     client.onSimPosesReceived = simCallback
+                }
+                
+                if let pointCloudCallback = self.onPointCloudReceived {
+                    client.onPointCloudReceived = pointCloudCallback
                 }
                 
                 // Only create new renderers if they don't exist

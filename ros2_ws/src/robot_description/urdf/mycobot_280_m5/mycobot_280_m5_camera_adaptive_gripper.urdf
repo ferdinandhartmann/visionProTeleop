@@ -155,6 +155,15 @@
     </collision>
   </link>
 
+  <link name="camera_lens">
+  </link>
+
+  <joint name="camera_to_camera_lens" type="fixed">
+    <parent link="camera"/>
+    <child link="camera_lens"/>
+    <origin xyz="0.042 0.005 0" rpy="-1.5708 1.5708 -0.1"/>
+  </joint>
+
 
  <!-- Gripper -->
   <link name="gripper_base">

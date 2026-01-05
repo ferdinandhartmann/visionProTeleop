@@ -12,7 +12,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
-        ("share/" + package_name + "/config", glob("config/*.rviz")),
+        ("share/" + package_name + "/rviz", glob("rviz/*.rviz")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -28,7 +28,8 @@ setup(
             "keyboard_ee_teleop = teleoperation.keyboard_ee_teleop:main",
             "joint_state_to_mycobot = teleoperation.joint_state_to_mycobot:main",
             "vp_streamer = teleoperation.vp_streamer:main",
-            "sam_client_node = teleoperation.sam_client:main"
+            "sam_client_node = teleoperation.sam_client:main",
+            "run_sim = teleoperation.run_sim:main",
         ],
     },
 )
