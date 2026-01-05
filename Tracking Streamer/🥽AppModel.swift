@@ -491,8 +491,11 @@ class DataManager: ObservableObject {
         self.videoSource = VideoSource(rawValue: UserDefaults.standard.string(forKey: "videoSource") ?? "") ?? .network
         
         // Use local vars for checks to avoid accessing self before full init
-        let savedZ = UserDefaults.standard.float(forKey: "videoPlaneZDistance")
-        self.videoPlaneZDistance = (savedZ == 0) ? 10.0 : savedZ
+        if let savedZ = UserDefaults.standard.object(forKey: "videoPlaneZDistance") as? Float {
+            self.videoPlaneZDistance = savedZ
+        } else {
+            self.videoPlaneZDistance = -10.0
+        }
         
         let savedY = UserDefaults.standard.float(forKey: "videoPlaneYPosition")
         self.videoPlaneYPosition = (savedY == 0) ? 12.0 : savedY
