@@ -24,7 +24,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: ""
+    SyncSource: PointCloud2
 Visualization Manager:
   Class: ""
   Displays:
@@ -33,7 +33,11 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
+        base_link:
+          Value: true
         camera:
+          Value: true
+        camera_bottom_screw_frame:
           Value: true
         camera_color_frame:
           Value: true
@@ -46,12 +50,6 @@ Visualization Manager:
         camera_lens:
           Value: true
         camera_link:
-          Value: true
-        ee_target:
-          Value: true
-        ee_target_offset_mycobot_base:
-          Value: true
-        ee_target_offset_mycobot_base_vis:
           Value: true
         gripper_base:
           Value: true
@@ -87,111 +85,7 @@ Visualization Manager:
           Value: true
         mycobot_base:
           Value: true
-        visionpro/head:
-          Value: true
-        visionpro/left/index_0:
-          Value: true
-        visionpro/left/index_1:
-          Value: true
-        visionpro/left/index_2:
-          Value: true
-        visionpro/left/index_3:
-          Value: true
-        visionpro/left/index_4:
-          Value: true
-        visionpro/left/little_0:
-          Value: true
-        visionpro/left/little_1:
-          Value: true
-        visionpro/left/little_2:
-          Value: true
-        visionpro/left/little_3:
-          Value: true
-        visionpro/left/little_4:
-          Value: true
-        visionpro/left/middle_0:
-          Value: true
-        visionpro/left/middle_1:
-          Value: true
-        visionpro/left/middle_2:
-          Value: true
-        visionpro/left/middle_3:
-          Value: true
-        visionpro/left/middle_4:
-          Value: true
-        visionpro/left/ring_0:
-          Value: true
-        visionpro/left/ring_1:
-          Value: true
-        visionpro/left/ring_2:
-          Value: true
-        visionpro/left/ring_3:
-          Value: true
-        visionpro/left/ring_4:
-          Value: true
-        visionpro/left/thumb_0:
-          Value: true
-        visionpro/left/thumb_1:
-          Value: true
-        visionpro/left/thumb_2:
-          Value: true
-        visionpro/left/thumb_3:
-          Value: true
-        visionpro/left/thumb_4:
-          Value: true
-        visionpro/left/wrist:
-          Value: true
-        visionpro/right/index_0:
-          Value: true
-        visionpro/right/index_1:
-          Value: true
-        visionpro/right/index_2:
-          Value: true
-        visionpro/right/index_3:
-          Value: true
-        visionpro/right/index_4:
-          Value: true
-        visionpro/right/little_0:
-          Value: true
-        visionpro/right/little_1:
-          Value: true
-        visionpro/right/little_2:
-          Value: true
-        visionpro/right/little_3:
-          Value: true
-        visionpro/right/little_4:
-          Value: true
-        visionpro/right/middle_0:
-          Value: true
-        visionpro/right/middle_1:
-          Value: true
-        visionpro/right/middle_2:
-          Value: true
-        visionpro/right/middle_3:
-          Value: true
-        visionpro/right/middle_4:
-          Value: true
-        visionpro/right/ring_0:
-          Value: true
-        visionpro/right/ring_1:
-          Value: true
-        visionpro/right/ring_2:
-          Value: true
-        visionpro/right/ring_3:
-          Value: true
-        visionpro/right/ring_4:
-          Value: true
-        visionpro/right/thumb_0:
-          Value: true
-        visionpro/right/thumb_1:
-          Value: true
-        visionpro/right/thumb_2:
-          Value: true
-        visionpro/right/thumb_3:
-          Value: true
-        visionpro/right/thumb_4:
-          Value: true
-        visionpro/right/wrist:
+        realsense/camera_link:
           Value: true
         vp_base:
           Value: true
@@ -205,10 +99,13 @@ Visualization Manager:
       Tree:
         map:
           mycobot_base:
-            ee_target_offset_mycobot_base:
-              {}
-            ee_target_offset_mycobot_base_vis:
-              {}
+            camera_link:
+              camera_color_frame:
+                camera_color_optical_frame:
+                  {}
+              camera_depth_frame:
+                camera_depth_optical_frame:
+                  {}
             gripper_ee:
               {}
             link1:
@@ -232,74 +129,11 @@ Visualization Manager:
                               gripper_right3:
                                 gripper_right1:
                                   {}
+            realsense/camera_link:
+              {}
           vp_base_origin:
             vp_base:
-              ee_target:
-                {}
-              visionpro/head:
-                {}
-              visionpro/left/wrist:
-                visionpro/left/index_0:
-                  visionpro/left/index_1:
-                    visionpro/left/index_2:
-                      visionpro/left/index_3:
-                        visionpro/left/index_4:
-                          {}
-                visionpro/left/little_0:
-                  visionpro/left/little_1:
-                    visionpro/left/little_2:
-                      visionpro/left/little_3:
-                        visionpro/left/little_4:
-                          {}
-                visionpro/left/middle_0:
-                  visionpro/left/middle_1:
-                    visionpro/left/middle_2:
-                      visionpro/left/middle_3:
-                        visionpro/left/middle_4:
-                          {}
-                visionpro/left/ring_0:
-                  visionpro/left/ring_1:
-                    visionpro/left/ring_2:
-                      visionpro/left/ring_3:
-                        visionpro/left/ring_4:
-                          {}
-                visionpro/left/thumb_0:
-                  visionpro/left/thumb_1:
-                    visionpro/left/thumb_2:
-                      visionpro/left/thumb_3:
-                        visionpro/left/thumb_4:
-                          {}
-              visionpro/right/wrist:
-                visionpro/right/index_0:
-                  visionpro/right/index_1:
-                    visionpro/right/index_2:
-                      visionpro/right/index_3:
-                        visionpro/right/index_4:
-                          {}
-                visionpro/right/little_0:
-                  visionpro/right/little_1:
-                    visionpro/right/little_2:
-                      visionpro/right/little_3:
-                        visionpro/right/little_4:
-                          {}
-                visionpro/right/middle_0:
-                  visionpro/right/middle_1:
-                    visionpro/right/middle_2:
-                      visionpro/right/middle_3:
-                        visionpro/right/middle_4:
-                          {}
-                visionpro/right/ring_0:
-                  visionpro/right/ring_1:
-                    visionpro/right/ring_2:
-                      visionpro/right/ring_3:
-                        visionpro/right/ring_4:
-                          {}
-                visionpro/right/thumb_0:
-                  visionpro/right/thumb_1:
-                    visionpro/right/thumb_2:
-                      visionpro/right/thumb_3:
-                        visionpro/right/thumb_4:
-                          {}
+              {}
       Update Interval: 0
       Value: true
     - Alpha: 0.5
@@ -324,7 +158,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        "": true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -562,7 +396,7 @@ Visualization Manager:
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
       Color: 255; 255; 255
-      Color Transformer: ""
+      Color Transformer: RGB8
       Decay Time: 0
       Enabled: true
       Invert Rainbow: false
@@ -571,7 +405,7 @@ Visualization Manager:
       Min Color: 0; 0; 0
       Min Intensity: 0
       Name: PointCloud2
-      Position Transformer: ""
+      Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 3
       Size (m): 0.009999999776482582
@@ -586,6 +420,45 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /realsense/robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_bottom_screw_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel Realsense
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -632,25 +505,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.077188491821289
+      Distance: 0.9580035209655762
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.2529132664203644
-        Y: -0.15712440013885498
-        Z: 0.44620150327682495
+        X: 0.013913056813180447
+        Y: 0.0368695892393589
+        Z: 0.24536722898483276
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7253976464271545
+      Pitch: 0.3453981280326843
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 2.383554697036743
+      Yaw: 2.583552122116089
     Saved: ~
 Window Geometry:
   Displays:

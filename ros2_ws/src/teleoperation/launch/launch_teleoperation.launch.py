@@ -114,6 +114,30 @@ def generate_launch_description():
         }.items(),
         condition=IfCondition(use_realsense),
     )
+    
+            
+    realsense_description = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="realsense_state_publisher",
+        namespace="realsense",
+        output="screen",
+        parameters=[{
+            "robot_description": ParameterValue(
+                Command([
+                    "xacro ",
+                    os.path.join(
+                        get_package_share_directory("realsense2_description"),
+                        "urdf",
+                        "test_d435_camera.urdf.xacro",
+                    ),
+                    # " base_frame:=realsense_base_link"
+                ]),
+                value_type=str,
+            )
+        }],
+        condition=IfCondition(use_realsense),
+    )
 
     downsample_node = Node(
         package="teleoperation",
@@ -144,11 +168,13 @@ def generate_launch_description():
         executable="static_transform_publisher",
         name="static_transform_camera_lens_realsense",
         arguments=[
-            "0", "0", "0.2",  # translation x y z
-            "0", "0", "0",  # rotation roll pitch yaw (radians)
-            # "camera_lens",
-            "mycobot_base",
-            "camera_link"
+            "0", "0.02", "0.0", # camera_lens
+            "1.57", "-1.57", "0.0", # camera_lens
+            # "0", "0", "0.2",     # mycobot_base
+            # "0", "0", "0",     # mycobot_base
+            "camera_lens",
+            # "mycobot_base",
+            "base_link", #(from realsense, i dont know how to rename it)
         ],
         output="screen"
     )
@@ -230,12 +256,14 @@ def generate_launch_description():
         # baud_rate_arg,
         use_realsense_arg,
 
-        vp_streamer_node,
-
         static_transform_camera_lens_realsense,
         realsense_launch,
+        realsense_description,
         downsample_node,
         # dummy_pointcloud_publisher_node, 
+        
+        vp_streamer_node,
+
 
         robot_state_publisher_node,
         # listen_real_node,  # disabled: teleop_control now owns the serial port and publishes /joint_states
