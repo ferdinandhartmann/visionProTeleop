@@ -26,7 +26,7 @@ public:
   {
     input_topic_       = this->declare_parameter<std::string>("input_topic", "/camera/camera/depth/color/points");
     output_topic_      = this->declare_parameter<std::string>("output_topic", "/points_downsampled");
-    target_frame_      = this->declare_parameter<std::string>("target_frame", "");
+    target_frame_      = this->declare_parameter<std::string>("target_frame", "camera_link");
     publish_rate_hz_   = this->declare_parameter<double>("publish_rate_hz", 25.0);
     factor_            = this->declare_parameter<int>("downsample_factor", 40);
     tf_timeout_s_      = this->declare_parameter<double>("tf_timeout_s", 0.02);
