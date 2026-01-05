@@ -238,7 +238,8 @@ def generate_launch_description():
             {"viewer": "ar"}, # Options: "None", "ar", "mujoco"
             {"enable_camera": True},
             {"enable_audio": False},
-            {"camera_mode": "both"} # robot, realsense, both
+            {"camera_mode": "both"}, # robot, realsense, both
+            {"enable_pointcloud": True}
         ],
     )
     
