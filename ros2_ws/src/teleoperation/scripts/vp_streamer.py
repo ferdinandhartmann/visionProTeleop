@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import threading
 from pathlib import Path
 import queue
@@ -74,7 +73,8 @@ class VPStreamer(Node):
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
         self.declare_parameter("enable_pointcloud", True)
-        self.declare_parameter("pointcloud_topic", "/rgb_map/dummy_cloud")
+        self.declare_parameter("pointcloud_topic", "/points_downsampled")
+        self.declare_parameter("realsense_image_topic", "/camera/camera/color/image_raw")
         
         # Resolve the default MuJoCo scene from the robot_description package.
         robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
@@ -113,6 +113,7 @@ class VPStreamer(Node):
         self.enable_camera = params["enable_camera"]
         self.enable_pointcloud = params["enable_pointcloud"]
         self.pointcloud_topic = params["pointcloud_topic"]
+        self._realsense_image_topic = params["realsense_image_topic"]
 
         self.camera_mode = str(params["camera_mode"]).lower()
         if self.camera_mode not in ("robot", "realsense", "both"):
@@ -123,8 +124,8 @@ class VPStreamer(Node):
         width, height = map(int, str(params["camera_resolution"]).split('x'))
         self._frame_size = (width, height)
         self._camera_period = 1.0 / params["camera_fps"] if params["camera_fps"] > 0 else 0.0
-        self._realsense_pipeline = None
-        self._realsense_config = None
+        self._realsense_lock = None
+        self._latest_realsense_frame = None
         
         self._last_pointcloud_time = 0.0
         self._pointcloud_rate_hz_internal = 30.0
@@ -150,9 +151,16 @@ class VPStreamer(Node):
                 self.camera_publisher_robot = self.create_publisher(Image, "/camera_raw_robot", 10)
 
             if self._use_realsense:
-                self._init_realsense(width, height, params["camera_fps"])
-
                 self.camera_publisher_realsense = self.create_publisher(Image, "/camera_raw_realsense", 10)
+                self._realsense_lock = threading.Lock()
+                qos_sensor = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+                self.realsense_subscription = self.create_subscription(
+                    Image,
+                    self._realsense_image_topic,
+                    self._realsense_image_cb,
+                    qos_sensor,
+                )
+                self.get_logger().info(f"Subscribed to RealSense color stream on {self._realsense_image_topic}")
 
             if self._use_realsense and self._use_robot_camera:
                 self.camera_publisher_combined = self.create_publisher(Image, "/camera_raw_combined", 10)
@@ -274,6 +282,7 @@ class VPStreamer(Node):
         enable_audio = self.get_parameter("enable_audio").value
         enable_pointcloud = self.get_parameter("enable_pointcloud").value
         pointcloud_topic = self.get_parameter("pointcloud_topic").value
+        realsense_image_topic = self.get_parameter("realsense_image_topic").value
         ee_target_on_reset_position = list(self.get_parameter("ee_target_on_reset_position").get_parameter_value().double_array_value)
         ee_target_on_reset_orientation_xyzw = list(self.get_parameter("ee_target_on_reset_orientation_xyzw").get_parameter_value().double_array_value)
         ee_target_on_reset_gripper = int(self.get_parameter("ee_target_on_reset_gripper").get_parameter_value().integer_value)
@@ -295,6 +304,7 @@ class VPStreamer(Node):
             "enable_audio": enable_audio,
             "enable_pointcloud": enable_pointcloud,
             "pointcloud_topic": pointcloud_topic,
+            "realsense_image_topic": realsense_image_topic,
             "ee_target_on_reset_position": ee_target_on_reset_position,
             "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
             "ee_target_on_reset_gripper": ee_target_on_reset_gripper,
@@ -818,31 +828,29 @@ class VPStreamer(Node):
         frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
         return cv2.resize(frame, (self._frame_size[1], self._frame_size[0]))
 
-    def _init_realsense(self, width: int, height: int, fps: int) -> None:
-        spec = importlib.util.find_spec("pyrealsense2")
-        if spec is None:
-            raise RuntimeError("camera_mode includes RealSense but pyrealsense2 is not installed")
-
-        import pyrealsense2 as rs  # noqa: WPS433
-
-        self._realsense = rs
-        self._realsense_pipeline = rs.pipeline()
-        self._realsense_config = rs.config()
-        self._realsense_config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
-        self._realsense_pipeline.start(self._realsense_config)
-        self.get_logger().info("RealSense camera initialized for Vision Pro stream")
-
     def _read_realsense_frame(self) -> Optional[np.ndarray]:
-        if not self._use_realsense or self._realsense_pipeline is None:
+        if not self._use_realsense or self._realsense_lock is None:
             return None
-        frames = self._realsense_pipeline.wait_for_frames(timeout_ms=200)
-        color_frame = frames.get_color_frame()
-        if not color_frame:
-            return None
-        frame = np.asanyarray(color_frame.get_data())
-        if frame.shape[0] == 0 or frame.shape[1] == 0:
-            return None
-        return cv2.resize(frame, self._frame_size)
+        with self._realsense_lock:
+            if self._latest_realsense_frame is None:
+                return None
+            return self._latest_realsense_frame.copy()
+
+    def _realsense_image_cb(self, msg: Image) -> None:
+        if not self._use_realsense:
+            return
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:  # noqa: BLE001
+            self._periodic_log("realsense_frame_convert", 5.0, f"Failed to convert RealSense image: {exc}", level="warn")
+            return
+
+        if frame is None:
+            return
+
+        frame = cv2.resize(frame, self._frame_size)
+        with self._realsense_lock:
+            self._latest_realsense_frame = frame
 
     def _compose_frame(
         self,
@@ -1043,8 +1051,6 @@ class VPStreamer(Node):
             self._audio_thread.join(timeout=1.0)
         if getattr(self, "cap", None):
             self.cap.release()
-        if getattr(self, "_realsense_pipeline", None):
-            self._realsense_pipeline.stop()
         return super().destroy_node()
 
 

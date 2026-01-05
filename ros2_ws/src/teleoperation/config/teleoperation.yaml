@@ -21,6 +21,8 @@ vp_streamer:
     format: "v4l2"
     camera_fps: 30
     camera_mode: "both" # robot, realsense, both
+    realsense_image_topic: "/camera/camera/color/image_raw"
+    pointcloud_topic: "/points_downsampled"
     # Teleop target to publish when MuJoCo stream is reset. Values are in
     # the `mycobot_base` frame by default and will be published as
     # `teleoperation/TeleopTarget` on `/teleop/ee_target`.
