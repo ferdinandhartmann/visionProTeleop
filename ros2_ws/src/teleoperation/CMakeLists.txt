@@ -80,8 +80,6 @@ target_link_libraries(teleop_control_cpp
 target_link_libraries(inverse_kinematics_node
   "${cpp_typesupport_target}" Eigen3::Eigen)
 
-ament_python_install_package(${PROJECT_NAME})
-
 install(TARGETS 
   teleop_control_cpp 
   depth_to_cloud_node 

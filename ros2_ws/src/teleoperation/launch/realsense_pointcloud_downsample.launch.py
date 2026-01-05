@@ -18,27 +18,26 @@ def generate_launch_description():
                 "rs_launch.py",
             )
         ),
-        launch_arguments={
+       launch_arguments={
+            "enable_depth": "true",
+            "enable_color": "true",
+
             "depth_module.depth_profile": "1280x720x30",
+            "rgb_camera.color_profile": "640x480x30",
+
+            "align_depth.enable": "true",
+
             "pointcloud.enable": "true",
+            # "pointcloud.stream_filter": "1",
+            # "pointcloud.stream_index_filter": "0",  # usually 0
+
+            # Reduce internal buffering
+            # "queue_size": "1",
+            # "wait_for_device_timeout": "5.0",
+            # "enable_sync": "true",
         }.items(),
     )
 
-    target_frame_arg = DeclareLaunchArgument(
-        "target_frame", default_value="mycobot_base"
-    )
-    downsample_factor_arg = DeclareLaunchArgument(
-        "downsample_factor", default_value="4"
-    )
-    publish_rate_arg = DeclareLaunchArgument(
-        "publish_rate_hz", default_value="5.0"
-    )
-    input_topic_arg = DeclareLaunchArgument(
-        "input_topic", default_value="/camera/depth/color/points"
-    )
-    output_topic_arg = DeclareLaunchArgument(
-        "output_topic", default_value="/camera/depth/color/points_downsampled"
-    )
 
     downsample_node = Node(
         package="teleoperation",
@@ -47,27 +46,32 @@ def generate_launch_description():
         output="screen",
         parameters=[
             {
-                "input_topic": LaunchConfiguration("input_topic"),
-                "output_topic": LaunchConfiguration("output_topic"),
-                "target_frame": LaunchConfiguration("target_frame"),
-                "publish_rate_hz": ParameterValue(
-                    LaunchConfiguration("publish_rate_hz"), value_type=float
-                ),
-                "downsample_factor": ParameterValue(
-                    LaunchConfiguration("downsample_factor"), value_type=int
-                ),
+                "input_topic": "/camera/camera/depth/color/points",
+                "output_topic": "/points_downsampled",
+                "target_frame": "camera_link",
+                "publish_rate_hz": 10.0,
+                "downsample_factor": 70,
             }
         ],
     )
 
-    return LaunchDescription(
-        [
-            target_frame_arg,
-            downsample_factor_arg,
-            publish_rate_arg,
-            input_topic_arg,
-            output_topic_arg,
+    rviz_config_path = os.path.join(
+        get_package_share_directory("teleoperation"),
+        "config",
+        "realsense_pointcloud.rviz",
+    )
+
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        output="screen",
+        arguments=["-d", rviz_config_path],
+    )
+
+    return LaunchDescription([
             realsense_launch,
             downsample_node,
+            rviz_node,
         ]
     )

@@ -1,15 +1,20 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sensor_msgs/point_cloud2_iterator.hpp>
 
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
-#include <tf2_sensor_msgs/tf2_sensor_msgs.h>
+#include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
+
+#include <geometry_msgs/msg/transform_stamped.hpp>
 
 #include <memory>
 #include <string>
 #include <optional>
+#include <mutex>
+#include <chrono>
+#include <algorithm>
+#include <cstring>   // memcpy
 
 class RGBPointCloudDownsampler : public rclcpp::Node
 {
@@ -19,168 +24,168 @@ public:
     tf_buffer_(this->get_clock()),
     tf_listener_(tf_buffer_)
   {
-    input_topic_ = this->declare_parameter<std::string>(
-      "input_topic", "/camera/depth/color/points");
-    output_topic_ = this->declare_parameter<std::string>(
-      "output_topic", "/camera/depth/color/points_downsampled");
-    target_frame_ = this->declare_parameter<std::string>(
-      "target_frame", "mycobot_base");
-    publish_rate_hz_ = this->declare_parameter<double>("publish_rate_hz", 5.0);
-    downsample_factor_ = std::max(
-      1, this->declare_parameter<int>("downsample_factor", 4));
+    input_topic_       = this->declare_parameter<std::string>("input_topic", "/camera/camera/depth/color/points");
+    output_topic_      = this->declare_parameter<std::string>("output_topic", "/points_downsampled");
+    target_frame_      = this->declare_parameter<std::string>("target_frame", "");
+    publish_rate_hz_   = this->declare_parameter<double>("publish_rate_hz", 25.0);
+    factor_            = this->declare_parameter<int>("downsample_factor", 40);
+    tf_timeout_s_      = this->declare_parameter<double>("tf_timeout_s", 0.02);
+    use_timer_         = this->declare_parameter<bool>("use_timer", true);
+    do_tf_             = this->declare_parameter<bool>("do_tf", false); // turn off unless you really need it
 
-    publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-      output_topic_, rclcpp::QoS(10));
-    subscription_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      input_topic_, rclcpp::SensorDataQoS(),
-      std::bind(&RGBPointCloudDownsampler::cloudCallback, this, std::placeholders::_1));
+    // Publisher QoS: small queue
+    pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_topic_, rclcpp::QoS(1));
 
-    if (publish_rate_hz_ > 0.0) {
-      const double period = 1.0 / publish_rate_hz_;
+    // Subscription QoS: keep_last(1), best effort
+    auto qos = rclcpp::SensorDataQoS().keep_last(1).best_effort();
+    sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+      input_topic_, qos,
+      [this](sensor_msgs::msg::PointCloud2::SharedPtr msg)
+      {
+        std::lock_guard<std::mutex> lock(mtx_);
+        latest_ = std::move(msg);
+      });
+
+    if (use_timer_ && publish_rate_hz_ > 0.0) {
       timer_ = this->create_wall_timer(
-        std::chrono::duration<double>(period),
-        std::bind(&RGBPointCloudDownsampler::publishLatest, this));
+        std::chrono::duration<double>(1.0 / publish_rate_hz_),
+        std::bind(&RGBPointCloudDownsampler::tick, this));
     }
 
-    RCLCPP_INFO(
-      this->get_logger(),
-      "RGBPointCloudDownsampler started. input=%s output=%s target_frame=%s "
-      "downsample_factor=%d publish_rate_hz=%.2f",
-      input_topic_.c_str(), output_topic_.c_str(), target_frame_.c_str(),
-      downsample_factor_, publish_rate_hz_);
+    RCLCPP_INFO(this->get_logger(),
+      "FAST Downsampler ready. input=%s output=%s factor=%d rate=%.1f do_tf=%s target_frame=%s",
+      input_topic_.c_str(), output_topic_.c_str(), factor_, publish_rate_hz_,
+      do_tf_ ? "true" : "false", target_frame_.c_str());
   }
 
 private:
-  void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
+  void tick()
   {
-    sensor_msgs::msg::PointCloud2 cloud = *msg;
+    sensor_msgs::msg::PointCloud2::SharedPtr msg;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      msg = latest_;
+    }
+    if (!msg) return;
 
-    if (!target_frame_.empty() && msg->header.frame_id != target_frame_) {
-      try {
-        const geometry_msgs::msg::TransformStamped transform =
-          tf_buffer_.lookupTransform(
-            target_frame_, msg->header.frame_id, msg->header.stamp,
-            tf2::durationFromSec(0.1));
-        tf2::doTransform(*msg, cloud, transform);
-        cloud.header.frame_id = target_frame_;
-      } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN_THROTTLE(
-          this->get_logger(), *this->get_clock(), 2000,
-          "Transform from %s to %s failed: %s",
-          msg->header.frame_id.c_str(), target_frame_.c_str(), ex.what());
-        return;
-      }
+    sensor_msgs::msg::PointCloud2 cloud;
+    if (do_tf_) {
+      if (!transformIfNeeded(*msg, cloud)) return;
+    } else {
+      cloud = *msg; // one copy per publish tick (inevitable because we output a new msg anyway)
     }
 
-    latest_cloud_ = cloud;
+    auto out = downsampleStride(cloud);
+    if (!out) return;
+    pub_->publish(*out);
+  }
 
-    if (!timer_) {
-      publishCloud(cloud);
+  bool transformIfNeeded(const sensor_msgs::msg::PointCloud2 & in,
+                         sensor_msgs::msg::PointCloud2 & out)
+  {
+    if (target_frame_.empty() || in.header.frame_id == target_frame_) {
+      out = in;
+      return true;
+    }
+
+    try {
+      const auto tf = tf_buffer_.lookupTransform(
+        target_frame_, in.header.frame_id, in.header.stamp,
+        tf2::durationFromSec(std::max(0.0, tf_timeout_s_)));
+
+      tf2::doTransform(in, out, tf);
+      out.header.frame_id = target_frame_;
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "TF %s -> %s failed: %s",
+        in.header.frame_id.c_str(), target_frame_.c_str(), ex.what());
+      return false;
     }
   }
 
-  void publishLatest()
+  std::optional<sensor_msgs::msg::PointCloud2>
+  downsampleStride(const sensor_msgs::msg::PointCloud2 & in) const
   {
-    if (latest_cloud_.header.frame_id.empty()) {
-      return;
-    }
-    publishCloud(latest_cloud_);
-  }
+    const size_t total_pts = static_cast<size_t>(in.width) * static_cast<size_t>(in.height);
+    if (total_pts == 0) return std::nullopt;
 
-  void publishCloud(const sensor_msgs::msg::PointCloud2 & cloud)
-  {
-    const auto downsampled = downsampleCloud(cloud);
-    if (!downsampled) {
-      RCLCPP_DEBUG(this->get_logger(), "Downsampled cloud is empty, skipping publish.");
-      return;
-    }
-    publisher_->publish(*downsampled);
-  }
+    if (factor_ <= 1) return in;
 
-  std::optional<sensor_msgs::msg::PointCloud2> downsampleCloud(
-    const sensor_msgs::msg::PointCloud2 & input) const
-  {
-    const int factor = std::max(1, downsample_factor_);
-    if (factor == 1) {
-      return input;
-    }
-
-    const size_t total_points =
-      static_cast<size_t>(input.width) * static_cast<size_t>(input.height);
-    if (total_points == 0) {
+    if (in.point_step == 0) return std::nullopt;
+    if (in.data.size() < total_pts * static_cast<size_t>(in.point_step)) {
+      // malformed message
       return std::nullopt;
     }
 
-    const size_t output_size = (total_points + static_cast<size_t>(factor) - 1) /
-      static_cast<size_t>(factor);
+    // output points count (floor)
+    const size_t out_pts = total_pts / static_cast<size_t>(factor_);
+    if (out_pts == 0) return std::nullopt;
 
-    sensor_msgs::msg::PointCloud2 output;
-    output.header = input.header;
-    output.height = 1;
-    output.is_bigendian = input.is_bigendian;
-    output.is_dense = input.is_dense;
+    sensor_msgs::msg::PointCloud2 out;
+    out.header       = in.header;
+    out.height       = 1;
+    out.width        = static_cast<uint32_t>(out_pts);
+    out.fields       = in.fields;        // preserve EVERYTHING
+    out.is_bigendian = in.is_bigendian;
+    out.is_dense     = in.is_dense;
+    out.point_step   = in.point_step;
+    out.row_step     = out.point_step * out.width;
 
-    sensor_msgs::PointCloud2Modifier modifier(output);
-    modifier.setPointCloud2FieldsByString(2, "xyz", "rgb");
-    modifier.resize(output_size);
+    out.data.resize(static_cast<size_t>(out.row_step));
 
-    sensor_msgs::PointCloud2ConstIterator<float> iter_x(input, "x");
-    sensor_msgs::PointCloud2ConstIterator<float> iter_y(input, "y");
-    sensor_msgs::PointCloud2ConstIterator<float> iter_z(input, "z");
-    sensor_msgs::PointCloud2ConstIterator<float> iter_rgb(input, "rgb");
+    const uint8_t* src = in.data.data();
+    uint8_t* dst = out.data.data();
+    const size_t ps = static_cast<size_t>(in.point_step);
 
-    sensor_msgs::PointCloud2Iterator<float> out_x(output, "x");
-    sensor_msgs::PointCloud2Iterator<float> out_y(output, "y");
-    sensor_msgs::PointCloud2Iterator<float> out_z(output, "z");
-    sensor_msgs::PointCloud2Iterator<float> out_rgb(output, "rgb");
-
+    // copy every factor-th point as a raw block
     size_t written = 0;
-    for (size_t idx = 0; idx < total_points; ++idx, ++iter_x, ++iter_y, ++iter_z, ++iter_rgb) {
-      if (idx % static_cast<size_t>(factor) != 0) {
-        continue;
-      }
-      *out_x = *iter_x;
-      *out_y = *iter_y;
-      *out_z = *iter_z;
-      *out_rgb = *iter_rgb;
-      ++out_x;
-      ++out_y;
-      ++out_z;
-      ++out_rgb;
+    for (size_t i = 0; i < total_pts; i += static_cast<size_t>(factor_)) {
+      std::memcpy(dst + written * ps, src + i * ps, ps);
       ++written;
+      if (written >= out_pts) break;
     }
 
-    modifier.resize(written);
-    output.width = static_cast<uint32_t>(written);
-    output.row_step = output.point_step * output.width;
+    out.width = static_cast<uint32_t>(written);
+    out.row_step = out.point_step * out.width;
+    out.data.resize(static_cast<size_t>(out.row_step));
 
-    if (written == 0) {
-      return std::nullopt;
-    }
-
-    return output;
+    return (written > 0) ? std::optional(out) : std::nullopt;
   }
 
+private:
   std::string input_topic_;
   std::string output_topic_;
   std::string target_frame_;
-  double publish_rate_hz_{5.0};
-  int downsample_factor_{1};
+
+  double publish_rate_hz_{25.0};
+  int factor_{40};
+  double tf_timeout_s_{0.02};
+  bool use_timer_{true};
+  bool do_tf_{false};
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
 
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
-  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
-  sensor_msgs::msg::PointCloud2 latest_cloud_;
+  std::mutex mtx_;
+  sensor_msgs::msg::PointCloud2::SharedPtr latest_;
 };
 
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<RGBPointCloudDownsampler>());
+  auto node = std::make_shared<RGBPointCloudDownsampler>();
+
+  rclcpp::executors::MultiThreadedExecutor exec(
+      rclcpp::ExecutorOptions(), 2); // 2 Threads reichen
+  exec.add_node(node);
+  exec.spin();
+
   rclcpp::shutdown();
   return 0;
 }
