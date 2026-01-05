@@ -13,40 +13,31 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
 
     config_folder = os.path.join(get_package_share_directory("teleoperation"), "config")
-    
-    rviz_folder = os.path.join(get_package_share_directory("teleoperation"), "rviz")
-
     teleop_config = os.path.join(config_folder, "teleoperation.yaml")
+    rviz_folder = os.path.join(get_package_share_directory("teleoperation"), "rviz")
     
-    model_launch_arg = DeclareLaunchArgument(
-        "model",
-        default_value=os.path.join(
-            get_package_share_directory("robot_description"),
-            "urdf/mycobot_280_m5/mycobot_280_m5_camera_adaptive_gripper.urdf"
-        )
+    model = os.path.join(
+        get_package_share_directory("robot_description"),
+        "urdf/mycobot_280_m5/mycobot_280_m5_camera_adaptive_gripper.urdf"
     )
     
-    serial_port_arg = DeclareLaunchArgument(
-        'port',
-        default_value='/dev/ttyACM0',
-        description='Serial port to use'
-    )
+    #####################################################################################
+    ############################### Set Launch Arguments ################################
+    #####################################################################################
+    serial_port = "/dev/ttyACM0"
+    baud_rate = "115200"
+    
+    enable_camera = True
+    camera_mode = "both" # robot, realsense, both
+    enable_pointcloud = True
+    enable_audio = True
 
-    baud_rate_arg = DeclareLaunchArgument(
-        'baud',
-        default_value='115200',
-        description='Baud rate to use'
-    )
 
-    use_realsense_arg = DeclareLaunchArgument(
-        "use_realsense",
-        default_value="true",
-        description="Enable Intel RealSense RGB-D camera and downsampled point cloud",
-    )
-    use_realsense = LaunchConfiguration("use_realsense")
+    use_realsense = camera_mode in ("realsense", "both")
+    use_realsense_condition = IfCondition("true" if use_realsense else "false")
+
     
-    robot_description = ParameterValue(Command(['xacro ', LaunchConfiguration('model')]),
-                                       value_type=str)
+    robot_description = ParameterValue(Command(['xacro ', model]), value_type=str)
 
 
     robot_state_publisher_node = Node(
@@ -107,12 +98,15 @@ def generate_launch_description():
         launch_arguments={
             "enable_depth": "true",
             "enable_color": "true",
-            "depth_module.depth_profile": "1280x720x30",
-            "rgb_camera.color_profile": "640x480x30",
-            "align_depth.enable": "true",
-            "pointcloud.enable": "true",
+            "depth_module.depth_profile": "640x480x15",
+            "rgb_camera.color_profile": "640x480x15",
+            "align_depth.enable": "false",
+            "pointcloud.enable": "true" if enable_pointcloud else "false",
+            "enable_infra": "false",
+            "enable_infra1": "false",
+            "enable_infra2": "false"
         }.items(),
-        condition=IfCondition(use_realsense),
+        condition=use_realsense_condition,
     )
     
             
@@ -136,7 +130,7 @@ def generate_launch_description():
                 value_type=str,
             )
         }],
-        condition=IfCondition(use_realsense),
+        condition=use_realsense_condition,
     )
 
     downsample_node = Node(
@@ -147,7 +141,7 @@ def generate_launch_description():
         parameters=[
             teleop_config,
         ],
-        condition=IfCondition(use_realsense),
+        condition=IfCondition("true" if enable_pointcloud else "false"),
     )
     
     static_transform_map_vp_base_origin = Node(
@@ -167,16 +161,17 @@ def generate_launch_description():
         package="tf2_ros",
         executable="static_transform_publisher",
         name="static_transform_camera_lens_realsense",
+        output="screen",
         arguments=[
-            "0", "0.02", "0.0", # camera_lens
-            "1.57", "-1.57", "0.0", # camera_lens
-            # "0", "0", "0.2",     # mycobot_base
-            # "0", "0", "0",     # mycobot_base
-            "camera_lens",
-            # "mycobot_base",
+            # "0", "0.02", "0.0", # camera_lens
+            # "1.57", "-1.57", "0.0", # camera_lens
+            "0", "0", "0.2",     # mycobot_base
+            "0", "0.2", "0",     # mycobot_base
+            # "camera_lens",
+            "mycobot_base",
             "base_link", #(from realsense, i dont know how to rename it)
         ],
-        output="screen"
+        condition=use_realsense_condition,
     )
     
     teleop_control_cpp_node = Node(
@@ -236,10 +231,10 @@ def generate_launch_description():
         parameters=[
             teleop_config,
             {"viewer": "ar"}, # Options: "None", "ar", "mujoco"
-            {"enable_camera": True},
-            {"enable_audio": False},
-            {"camera_mode": "both"}, # robot, realsense, both
-            {"enable_pointcloud": True}
+            {"enable_camera": enable_camera},
+            {"enable_audio": enable_audio},
+            {"camera_mode": camera_mode}, # robot, realsense, both
+            {"enable_pointcloud": enable_pointcloud}
         ],
     )
     
@@ -252,11 +247,6 @@ def generate_launch_description():
 
 
     nodes = [
-        model_launch_arg,
-        # serial_port_arg,
-        # baud_rate_arg,
-        use_realsense_arg,
-
         static_transform_camera_lens_realsense,
         realsense_launch,
         realsense_description,

@@ -6,6 +6,7 @@ from geometry_msgs.msg import TransformStamped, Point
 from avp_stream import VisionProStreamer
 import numpy as np
 from tf2_ros import TransformBroadcaster
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 
 JOINT_NAMES = [
     "wrist",  # 0
@@ -148,111 +149,187 @@ class VPTransformPublisher(Node):
 
         self.declare_parameter("visionpro_ip", "192.168.50.153")
         self.declare_parameter("pinch_threshold", 0.02)
+        self.declare_parameter("rate_hz", 60.0)
 
         visionpro_ip = self.get_parameter("visionpro_ip").get_parameter_value().string_value
         self.pinch_threshold = self.get_parameter("pinch_threshold").get_parameter_value().double_value
+        rate_hz = self.get_parameter("rate_hz").get_parameter_value().double_value        
         
         self.streamer = VisionProStreamer(ip=visionpro_ip)
 
+        qos_fast = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.marker_pub = self.create_publisher(MarkerArray, "/visionpro/hand_markers", 10)
-        self.timer = self.create_timer(0.01, self.update)
+        self.marker_pub = self.create_publisher(MarkerArray, "/visionpro/hand_markers", qos_fast)
+        self.timer = self.create_timer(1.0 / rate_hz, self.update)
         
         self.get_logger().info("VP Transform Publisher started.")
 
-    def publish_tf(self, parent, child, mat):
+    def publish_tf_msg(self, parent, child, mat, stamp):
         t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.stamp = stamp
         t.header.frame_id = parent
         t.child_frame_id = child
 
-        t.transform.translation.x = mat[0][3]
-        t.transform.translation.y = mat[1][3]
-        t.transform.translation.z = mat[2][3]
+        t.transform.translation.x = float(mat[0, 3])
+        t.transform.translation.y = float(mat[1, 3])
+        t.transform.translation.z = float(mat[2, 3])
 
-        q = quat_from_matrix(mat)
-        t.transform.rotation.x = q[0]
-        t.transform.rotation.y = q[1]
-        t.transform.rotation.z = q[2]
-        t.transform.rotation.w = q[3]
+        q = quat_from_matrix(mat[:3, :3])
+        t.transform.rotation.x = float(q[0])
+        t.transform.rotation.y = float(q[1])
+        t.transform.rotation.z = float(q[2])
+        t.transform.rotation.w = float(q[3])
+        return t
 
-        self.tf_broadcaster.sendTransform(t)
-        
-    
+    def position_from_matrix(self, T):
+        return float(T[0, 3]), float(T[1, 3]), float(T[2, 3])
+
     def update(self):
         data = self.streamer.latest
         if data is None:
             return
 
+        stamp = self.get_clock().now().to_msg()
+        tfs = []
         markers = MarkerArray()
+        marker_id = 0
 
-        pinch_threshold = self.pinch_threshold
-
-        # Publish head in vp_base
+        # ------------------------
+        # Head TF (still needed)
+        # ------------------------
         head_mat = data["head"][0]
-        self.publish_tf("vp_base", "visionpro/head", head_mat)
+        tfs.append(self.publish_tf_msg(
+            "vp_base",
+            "visionpro/head",
+            head_mat,
+            stamp
+        ))
 
+        # ------------------------
+        # Hands
+        # ------------------------
         for side, wrist_mat, fingers, pinch_dist in [
-            ("left", data["left_wrist"][0], data["left_fingers"], data["left_pinch_distance"]),
-            ("right", data["right_wrist"][0], data["right_fingers"], data["right_pinch_distance"])
+            ("left",  data["left_wrist"][0],  data["left_fingers"],  data["left_pinch_distance"]),
+            ("right", data["right_wrist"][0], data["right_fingers"], data["right_pinch_distance"]),
         ]:
-            self.publish_tf("vp_base", f"visionpro/{side}/wrist", wrist_mat)
+            # Wrist TF
+            tfs.append(self.publish_tf_msg(
+                "vp_base",
+                f"visionpro/{side}/wrist",
+                wrist_mat,
+                stamp
+            ))
 
-            # --- TF publishing for joints ---
-            joints = [np.eye(4)] + list(fingers)  # joint[0] is wrist (identity relative to wrist)
+            # Build full joint list (world transforms)
+            joints = [wrist_mat]
 
-            for i, _ in enumerate(joints):
-                if i == 0:
-                    continue  # skip wrist (already published)
+            for T_rel in fingers:
+                if not is_valid_transform(T_rel):
+                    joints.append(joints[-1])  # fallback, keeps array length consistent
+                else:
+                    joints.append(wrist_mat @ T_rel)
 
-                joint_name = JOINT_NAMES[i]
+            # ------------------------
+            # TF for joints (optional but kept)
+            # ------------------------
+            for i in range(1, len(joints)):
                 parent_idx = PARENT_INDEX[i]
-                parent_name = f"visionpro/{side}/{JOINT_NAMES[parent_idx]}"
-                child_name = f"visionpro/{side}/{joint_name}"
-
-                # Get transforms relative to wrist
                 T_parent = joints[parent_idx]
-                T_child = joints[i]
-                
+                T_child  = joints[i]
+
                 if not is_valid_transform(T_parent):
-                    # Skip this joint for this frame
                     continue
 
-                T_rel = np.linalg.inv(T_parent) @ T_child  # relative transform
+                T_rel = np.linalg.inv(T_parent) @ T_child
 
-                self.publish_tf(parent_name, child_name, T_rel)
+                parent_name = f"visionpro/{side}/{JOINT_NAMES[parent_idx]}"
+                child_name  = f"visionpro/{side}/{JOINT_NAMES[i]}"
 
-            # --- Visual Markers: wrist + thumb tip + index tip ---
-            # Visual markers for wrist, thumb_4, index_4
-            tip_ids = [0, 5, 10]  # wrist, thumb tip, index tip
+                tfs.append(self.publish_tf_msg(
+                    parent_name,
+                    child_name,
+                    T_rel,
+                    stamp
+                ))
+
+            # ------------------------
+            # MARKERS (WORLD FRAME!)
+            # ------------------------
+            # Wrist + thumb tip + index tip SPHERES
+            tip_ids = [0, 5, 10]
 
             for j in tip_ids:
-                joint_name = JOINT_NAMES[j]
-                frame_id = f"visionpro/{side}/{joint_name}"
+                T_world = joints[j]
+                x, y, z = self.position_from_matrix(T_world)
 
                 m = Marker()
-                m.header.frame_id = frame_id
-                m.id = 1000 + j + (0 if side == "left" else 100)
+                m.header.frame_id = "vp_base"
+                m.header.stamp = stamp
+
+                m.ns = f"{side}_hand"
+                m.id = j + (0 if side == "left" else 100)
+
                 m.type = Marker.SPHERE
+                m.action = Marker.ADD
+
+                m.pose.position.x = x
+                m.pose.position.y = y
+                m.pose.position.z = z
+                m.pose.orientation.w = 1.0
+
                 m.scale.x = m.scale.y = m.scale.z = 0.03
 
-                # Color logic
                 if j == 0:
-                    m.color.r, m.color.g, m.color.b = 1.0, 0.5, 0.0  # wrist always orange
+                    m.color.r, m.color.g, m.color.b = 1.0, 0.5, 0.0
                 else:
-                    if pinch_dist < pinch_threshold:
-                        m.color.r, m.color.g, m.color.b = 0.0, 1.0, 0.0  # green on pinch
+                    if pinch_dist < self.pinch_threshold:
+                        m.color.r, m.color.g, m.color.b = 0.0, 1.0, 0.0
                     else:
-                        m.color.r, m.color.g, m.color.b = 1.0, 0.5, 0.0  # orange default
+                        m.color.r, m.color.g, m.color.b = 1.0, 0.5, 0.0
+
                 m.color.a = 1.0
 
-                # Origin of its own frame
-                m.pose.position.x = 0.0
-                m.pose.position.y = 0.0
-                m.pose.position.z = 0.0
+                m.lifetime.sec = 0
+                m.lifetime.nanosec = 0
 
                 markers.markers.append(m)
+            
+            # MARKER LINES FOR HAND SKELETON
+            line = Marker()
+            line.header.frame_id = "vp_base"
+            line.header.stamp = stamp
+            line.ns = f"{side}_hand_skeleton"
+            line.id = 0 if side == "left" else 1
+            line.type = Marker.LINE_LIST
+            line.action = Marker.ADD
 
+            line.scale.x = 0.005  # line thickness
+            line.color.r = 0.0
+            line.color.g = 1.0
+            line.color.b = 1.0
+            line.color.a = 1.0
+            line.lifetime.sec = 0
+            line.lifetime.nanosec = 0
+
+            for a, b in HAND_CONNECTIONS:
+                xa, ya, za = self.position_from_matrix(joints[a])
+                xb, yb, zb = self.position_from_matrix(joints[b])
+
+                p1 = Point(x=xa, y=ya, z=za)
+                p2 = Point(x=xb, y=yb, z=zb)
+
+                line.points.append(p1)
+                line.points.append(p2)
+
+            markers.markers.append(line)
+
+
+
+        # ------------------------
+        # Publish once
+        # ------------------------
+        self.tf_broadcaster.sendTransform(tfs)
         self.marker_pub.publish(markers)
 
 
