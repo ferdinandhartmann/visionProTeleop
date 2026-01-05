@@ -11,9 +11,9 @@ from launch_ros.parameter_descriptions import ParameterValue
     
 def generate_launch_description():
 
-    config_folder = os.path.join(
-        get_package_share_directory("teleoperation"), "config"
-    )
+    config_folder = os.path.join(get_package_share_directory("teleoperation"), "config")
+    
+    rviz_folder = os.path.join(get_package_share_directory("teleoperation"), "rviz")
 
     teleop_config = os.path.join(config_folder, "teleoperation.yaml")
     
@@ -118,7 +118,7 @@ def generate_launch_description():
         output="log",
         arguments=[
             "-d",
-            os.path.join(config_folder, "visionpro.rviz"),
+            os.path.join(rviz_folder, "visionpro.rviz"),
         ],
     )
 

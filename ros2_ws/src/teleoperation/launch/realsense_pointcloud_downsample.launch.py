@@ -9,6 +9,12 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+rviz_config_path = os.path.join(
+    get_package_share_directory("teleoperation"),
+    "rviz",
+    "realsense_pointcloud.rviz",
+)
+    
 def generate_launch_description():
     realsense_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -53,12 +59,6 @@ def generate_launch_description():
                 "downsample_factor": 70,
             }
         ],
-    )
-
-    rviz_config_path = os.path.join(
-        get_package_share_directory("teleoperation"),
-        "config",
-        "realsense_pointcloud.rviz",
     )
 
     rviz_node = Node(

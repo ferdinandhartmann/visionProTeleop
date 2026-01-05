@@ -12,9 +12,9 @@ from launch.actions import TimerAction
     
 def generate_launch_description():
 
-    config_folder = os.path.join(
-        get_package_share_directory("teleoperation"), "config"
-    )
+    config_folder = os.path.join(get_package_share_directory("teleoperation"), "config")
+    
+    rviz_folder = os.path.join(get_package_share_directory("teleoperation"), "rviz")
     
     model_launch_arg = DeclareLaunchArgument(
         "model",
@@ -144,7 +144,7 @@ def generate_launch_description():
         output="log",
         arguments=[
             "-d",
-            os.path.join(config_folder, "mapping.rviz"),
+            os.path.join(rviz_folder, "mapping.rviz"),
         ],
     )
 
