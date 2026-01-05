@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import threading
 from pathlib import Path
 import queue
@@ -69,6 +70,7 @@ class VPStreamer(Node):
         self.declare_parameter("camera_resolution", "320x240")
         self.declare_parameter("camera_fps", 25)
         self.declare_parameter("format", "v4l2")
+        self.declare_parameter("camera_mode", "robot")  # robot, realsense, both
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", True)
         self.declare_parameter("enable_pointcloud", True)
@@ -111,6 +113,18 @@ class VPStreamer(Node):
         self.enable_camera = params["enable_camera"]
         self.enable_pointcloud = params["enable_pointcloud"]
         self.pointcloud_topic = params["pointcloud_topic"]
+
+        self.camera_mode = str(params["camera_mode"]).lower()
+        if self.camera_mode not in ("robot", "realsense", "both"):
+            self.get_logger().warning(f"Unknown camera_mode '{self.camera_mode}', defaulting to robot")
+            self.camera_mode = "robot"
+        self._use_robot_camera = self.camera_mode in ("robot", "both")
+        self._use_realsense = self.camera_mode in ("realsense", "both")
+        width, height = map(int, str(params["camera_resolution"]).split('x'))
+        self._frame_size = (width, height)
+        self._camera_period = 1.0 / params["camera_fps"] if params["camera_fps"] > 0 else 0.0
+        self._realsense_pipeline = None
+        self._realsense_config = None
         
         self._last_pointcloud_time = 0.0
         self._pointcloud_rate_hz_internal = 30.0
@@ -123,23 +137,24 @@ class VPStreamer(Node):
         
         self.bridge = CvBridge()
         if self.enable_camera:
-            self.cap = cv2.VideoCapture(params["camera_device"])
-            if not self.cap.isOpened():
-                raise RuntimeError(f"Could not open camera {params['camera_device']}")
-            
-            camera_period = 1.0 / params["camera_fps"]
-            
-            width, height = map(int, params["camera_resolution"].split('x'))
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            self.cap.set(cv2.CAP_PROP_FPS, params["camera_fps"])
-            
-            self._camera_period = camera_period
+            self.cap = None
+            if self._use_robot_camera:
+                self.cap = cv2.VideoCapture(params["camera_device"])
+                if not self.cap.isOpened():
+                    raise RuntimeError(f"Could not open camera {params['camera_device']}")
+                
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                self.cap.set(cv2.CAP_PROP_FPS, params["camera_fps"])
+
+            if self._use_realsense:
+                self._init_realsense(width, height, params["camera_fps"])
+
             self.camera_publisher = self.create_publisher(Image, "/camera_raw", 10)
             self._camera_thread = threading.Thread(target=self._camera_loop, name="vp_camera", daemon=True)
             self._camera_thread.start()
             
-            self.get_logger().info("Camera initialized")
+            self.get_logger().info(f"Camera initialized (mode={self.camera_mode})")
 
 
         self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
@@ -246,6 +261,7 @@ class VPStreamer(Node):
         camera_device = self.get_parameter("camera_device").value
         camera_resolution = self.get_parameter("camera_resolution").value
         camera_fps = self.get_parameter("camera_fps").value
+        camera_mode = self.get_parameter("camera_mode").value
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
@@ -266,6 +282,7 @@ class VPStreamer(Node):
             "camera_device": camera_device,
             "camera_resolution": camera_resolution,
             "camera_fps": camera_fps,
+            "camera_mode": camera_mode,
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
@@ -758,22 +775,65 @@ class VPStreamer(Node):
 
             
     def _camera_cb(self) -> None:
-        ret, frame = self.cap.read()
-        if not ret:
+        robot_frame = self._read_robot_frame()
+        realsense_frame = self._read_realsense_frame()
+        frame = self._compose_frame(robot_frame, realsense_frame)
+        if frame is None:
             return
-        
-        # Rotate the image 90 degrees anti-clockwise
-        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
         img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
         self.camera_publisher.publish(img_msg)
 
-        # Send frame to Vision Pro
         if self.streamer is not None:
             self.streamer.update_frame(frame)
         
         # # Optional local OpenCV preview
         # cv2.imshow("Webcam", frame)
         # cv2.waitKey(1)
+
+    def _read_robot_frame(self) -> Optional[np.ndarray]:
+        if not self._use_robot_camera or self.cap is None:
+            return None
+        ret, frame = self.cap.read()
+        if not ret:
+            return None
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return cv2.resize(frame, self._frame_size)
+
+    def _init_realsense(self, width: int, height: int, fps: int) -> None:
+        spec = importlib.util.find_spec("pyrealsense2")
+        if spec is None:
+            raise RuntimeError("camera_mode includes RealSense but pyrealsense2 is not installed")
+
+        import pyrealsense2 as rs  # noqa: WPS433
+
+        self._realsense = rs
+        self._realsense_pipeline = rs.pipeline()
+        self._realsense_config = rs.config()
+        self._realsense_config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
+        self._realsense_pipeline.start(self._realsense_config)
+        self.get_logger().info("RealSense camera initialized for Vision Pro stream")
+
+    def _read_realsense_frame(self) -> Optional[np.ndarray]:
+        if not self._use_realsense or self._realsense_pipeline is None:
+            return None
+        frames = self._realsense_pipeline.wait_for_frames(timeout_ms=200)
+        color_frame = frames.get_color_frame()
+        if not color_frame:
+            return None
+        frame = np.asanyarray(color_frame.get_data())
+        if frame.shape[0] == 0 or frame.shape[1] == 0:
+            return None
+        return cv2.resize(frame, self._frame_size)
+
+    def _compose_frame(self, robot_frame: Optional[np.ndarray], realsense_frame: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if self.camera_mode == "robot":
+            return robot_frame
+        if self.camera_mode == "realsense":
+            return realsense_frame
+        if robot_frame is None or realsense_frame is None:
+            return None
+        return np.vstack([realsense_frame, robot_frame])
 
     def _camera_loop(self) -> None:
         next_time = time.perf_counter()
@@ -935,6 +995,8 @@ class VPStreamer(Node):
             self._audio_thread.join(timeout=1.0)
         if getattr(self, "cap", None):
             self.cap.release()
+        if getattr(self, "_realsense_pipeline", None):
+            self._realsense_pipeline.stop()
         return super().destroy_node()
 
 

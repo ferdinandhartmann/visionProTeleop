@@ -20,6 +20,7 @@ vp_streamer:
     camera_resolution: "320x240" # "640x480" #"160x120" #"640x480"
     format: "v4l2"
     camera_fps: 25
+    camera_mode: "robot" # robot, realsense, both
     # Teleop target to publish when MuJoCo stream is reset. Values are in
     # the `mycobot_base` frame by default and will be published as
     # `teleoperation/TeleopTarget` on `/teleop/ee_target`.
@@ -35,6 +36,7 @@ camera_streamer:
     # camera_input: "/dev/video0" # Laptop camera
     format: "v4l2" # on linux "v4l2", on windows "dshow", on mac "avfoundation"
     fps: 25
+    camera_mode: "robot" # robot, realsense, both
 
 teleop_control_cpp:
   ros__parameters:
