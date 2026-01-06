@@ -1024,6 +1024,18 @@ class VisionProStreamer:
             self._webrtc_sim_channel is not None
             and self._webrtc_sim_channel.readyState == "open"
         )
+        
+    def is_pointcloud_channel_open(self):
+        return (
+            self._webrtc_point_channel is not None
+            and self._webrtc_point_channel.readyState == "open"
+        )
+        
+    def is_video_channel_open(self):
+        return (
+            self.camera is not None
+            and self.camera.video_track is not None
+        )
     
     def cleanup(self):
         """Clean up resources and notify VisionOS of disconnect.

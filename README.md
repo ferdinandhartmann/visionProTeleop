@@ -2,6 +2,73 @@
 VisionProTeleop
 ===========
 
+
+
+### This is an enhanced version of the VisionProTeleop Streamer Repo which integrates ROS2 for and MyCobot 280 ROS2 controling, ROS2 Realsense Pointlcoud and has features in the TrackingStreamer app
+
+ROS2 package features:
+- Publishing ROS2 /tf and MarkerArray of the hand tracking data  
+- Inverse kinematics node in C++ for MyCobot 280
+- Setting wrist frame at the endeffector of MyCobot at the target frame upon enabling teleoperation for intuitive control. 
+- ROS2 robot_description package for MyCobot 280 with MyCobot280M5+camera+adaptive_gripper 
+    - urdf
+    - mujoco xml and mujoco scene xml
+- ROS2 node which sends joint values and gripper value to MyCobot at up to 12 Hz
+- Streaming Enable, Disable and Motor sound
+- Vision Pro Streaming Node which Streams
+    - Camera Images
+    - Audio
+    - Mujoco Simulation
+    - Pointlcoud
+    - Reset Action
+- RGB pointcloud downsampling and streaming (Realsense camera)
+- Seperate ROS2 node to stream camera to vision pro
+
+Enhanced Streaming app
+- Lock camera stream to world button in control bar
+- Lock controlbar to worl button in control bar
+- Reset button in control bar to reset mujoco simulation, reset mycobot position and restart the simulation stream
+- Display a pointlcloud in the simulation frame 
+- Exit button directly exits app wihout needing to confirm
+- Skipping TrackingView add pop-up 
+
+
+### Configuration
+
+Parameters for the teleoperation nodes can be set in the config file [`teleoperation.yaml`](ros2_ws/src/teleoperation/config/teleoperation.yaml)
+
+### Build and Launch
+
+```bash
+cd ros2_ws
+colcon build --symlink-install
+```
+
+To launch the full teleoperation system, use the launch file [`launch_teleoperation.launch.py`](ros2_ws/src/teleoperation/launch/launch_teleoperation.launch.py) and set at the top which modalities to to use
+
+```bash
+enable_camera = True
+camera_mode = "both" # robot, realsense, both
+enable_pointcloud = True
+enable_audio = True
+```
+
+```bash
+ros2 launch teleoperation launch_teleoperation.launch.py
+```
+
+
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+---
+# VisionProTeleop Original README
+
+
 <div align="center">
   <img width="340" src="assets/vptv2.png">
 </div>

@@ -340,7 +340,7 @@ class VPStreamer(Node):
             self.latest_joint_vel = list(msg.velocity)
 
     def _pointcloud_cb(self, msg: PointCloud2) -> None:
-        if not self.enable_pointcloud or self.streamer is None:
+        if not self.enable_pointcloud and self.streamer.is_pointcloud_channel_open():
             return
 
         now = time.time()
@@ -749,6 +749,7 @@ class VPStreamer(Node):
                 self._pending_model = None
                 self._pending_data = None
                 self._reset_state = "paused"
+                self._stop_event.set()
                 return
 
             # Final phase: model/data provided
@@ -824,6 +825,7 @@ class VPStreamer(Node):
                 self._periodic_log("camera_pub_combined", 1.0, f"Failed to publish combined camera image: {exc}", level="warn")
 
         # --- Stream to Vision Pro ---
+        # and self.streamer.is_video_channel_open()
         if self.streamer is not None and frame is not None:
             try:
                 self.streamer.update_frame(frame)

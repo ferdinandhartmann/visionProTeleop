@@ -23,12 +23,12 @@ class CameraStreamer(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('visionpro_ip', '192.168.10.113'),
+                ('visionpro_ip', '192.168.50.153'),
                 ('resolution', '640x480'),
                 ('camera_input', '/dev/video4'),
                 ('format', 'v4l2'),
                 ('fps', 30),
-                ('camera_mode', 'realsense'),  # robot, realsense, both
+                ('camera_mode', 'both'),  # robot, realsense, both
             ]
         )
 

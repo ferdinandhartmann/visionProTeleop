@@ -116,6 +116,6 @@
     <position name="gripper_finger_right" joint="gripper_right3_to_gripper_right1" kp="60" dampratio="1" ctrllimited="true" ctrlrange="0.0 0.8" />
   </actuator>
   <keyframe>
-    <key name="home" qpos="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" />
+    <key name="home" qpos="0 0 0 0 0 0 0 0 0 0 " />
   </keyframe>
 </mujoco>

@@ -96,7 +96,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            "enable_depth": "true",
+            "enable_depth": "true" if enable_pointcloud else "false",
             "enable_color": "true",
             "depth_module.depth_profile": "640x480x15",
             "rgb_camera.color_profile": "640x480x15",
@@ -165,8 +165,8 @@ def generate_launch_description():
         arguments=[
             # "0", "0.02", "0.0", # camera_lens
             # "1.57", "-1.57", "0.0", # camera_lens
-            "0", "0", "0.2",     # mycobot_base
-            "0", "0.2", "0",     # mycobot_base
+            "-0.14", "0.28", "0.46",     # mycobot_base
+            "-0.78", "0.78", "0.0",     # mycobot_base
             # "camera_lens",
             "mycobot_base",
             "base_link", #(from realsense, i dont know how to rename it)
@@ -200,7 +200,7 @@ def generate_launch_description():
         executable="joint_state_to_mycobot.py",
         name="joint_state_to_mycobot",
         output="screen",
-        parameters=[teleop_config],
+        parameters=[teleop_config],    
     )
     
     inverse_kinematics_node = Node(
@@ -268,7 +268,7 @@ def generate_launch_description():
         
         rviz2_node,
                         
-        # joint_state_to_mycobot_node,
+        joint_state_to_mycobot_node,
     ]
 
     return LaunchDescription(nodes)

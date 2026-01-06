@@ -1,15 +1,12 @@
+# Notes
 
 
-
-
-ffmpeg -i disabled_sound.mp3 -ac 1 -ar 48000 disabled.wav
-
-
-
-
-
-inand@ferdiubuntu:~/visionpro_teleop_project/visionProTeleop/ros2_ws$ rs-enumerate-devices | grep -A20 "Supported modes"
- Supported modes:
+## REALSENSE CAMERA:
+```bash
+rs-enumerate-devices | grep -A20 "Supported modes"
+```
+```bash
+Supported modes:
     STREAM      RESOLUTION     FORMAT      FPS
     Infrared 1  1280x800       Y16         @ 25/15 Hz
     Infrared 1      |          Y8          @ 30/15 Hz
@@ -30,8 +27,8 @@ inand@ferdiubuntu:~/visionpro_teleop_project/visionProTeleop/ros2_ws$ rs-enumera
     Infrared 2   640x400       Y16         @ 25/15 Hz
     Infrared 2   640x360       Y8          @ 90/60/30/15/6 Hz
     Infrared 2   480x270       Y8          @ 90/60/30/15/6 Hz
---
- Supported modes:
+
+Supported modes:
     STREAM      RESOLUTION     FORMAT      FPS
     Color       1920x1080      RGB8        @ 30/15/6 Hz
     Color           |          Y8          @ 30/15/6 Hz
@@ -52,12 +49,14 @@ inand@ferdiubuntu:~/visionpro_teleop_project/visionProTeleop/ros2_ws$ rs-enumera
     Color           |          BGR8        @ 60/30/15/6 Hz
     Color           |          YUYV        @ 60/30/15/6 Hz
     Color        848x480       RGB8        @ 60/30/15/6 Hz
-ferdinand@ferdiubuntu:~/visionpro_teleop_project/visionProTeleop/ros2_ws$ 
+```
 
-
-
-FOR ROBOT CAMERA:
+---
+## ROBOT CAMERA:
+```bash
 v4l2-ctl --list-formats-ext -d /dev/video5
+```
+```bash
 ioctl: VIDIOC_ENUM_FMT
         Type: Video Capture
 
@@ -141,10 +140,14 @@ ioctl: VIDIOC_ENUM_FMT
                         Interval: Discrete 0.333s (3.000 fps)
                 Size: Discrete 2592x1944
                         Interval: Discrete 0.333s (3.000 fps)
+```
 
-
-
+---
+## WEBCAM
+```bash
 v4l2-ctl --list-formats-ext -d /dev/video0
+```
+```bash
 ioctl: VIDIOC_ENUM_FMT
         Type: Video Capture
 
@@ -182,41 +185,41 @@ ioctl: VIDIOC_ENUM_FMT
                         Interval: Discrete 0.033s (30.000 fps)
                 Size: Discrete 160x120
                         Interval: Discrete 0.033s (30.000 fps)
+```
 
+## Hand Tracking data and size 
+```bash
+def update(self):
+    data = self.streamer.latest
+    if data is None:
+        return
 
+    markers = MarkerArray()
 
-
-    def update(self):
-        data = self.streamer.latest
-        if data is None:
-            return
-
-        markers = MarkerArray()
-
-        # Head
-        head_mat = data["head"][0]
-        self.publish_tf("map", "visionpro/head", head_mat)
-        
-        print("Publishing hand TFs...")
-        print(data.keys())
-        print("Head data:")
-        print(data["head"])
-        print("Left pinch distance:")
-        print(data["left_pinch_distance"])
-        print("Right pinch distance:")
-        print(data["right_pinch_distance"])
-        print("Left wrist roll:")
-        print(data["left_wrist_roll"])
-        print("Right wrist roll:")
-        print(data["right_wrist_roll"])
-        print("Left wrist data:")
-        print(data["left_wrist"])
-        print("Left fingers data:")
-        print(data["left_fingers"])
-        print("Right wrist data:")
-        print(data["right_wrist"])
-        print("Right fingers data:")
-        print(data["right_fingers"])
+    # Head
+    head_mat = data["head"][0]
+    self.publish_tf("map", "visionpro/head", head_mat)
+    
+    print("Publishing hand TFs...")
+    print(data.keys())
+    print("Head data:")
+    print(data["head"])
+    print("Left pinch distance:")
+    print(data["left_pinch_distance"])
+    print("Right pinch distance:")
+    print(data["right_pinch_distance"])
+    print("Left wrist roll:")
+    print(data["left_wrist_roll"])
+    print("Right wrist roll:")
+    print(data["right_wrist_roll"])
+    print("Left wrist data:")
+    print(data["left_wrist"])
+    print("Left fingers data:")
+    print(data["left_fingers"])
+    print("Right wrist data:")
+    print(data["right_wrist"])
+    print("Right fingers data:")
+    print(data["right_fingers"])
 
 
 
@@ -503,3 +506,4 @@ ioctl: VIDIOC_ENUM_FMT
 [transform_publisher-2]   [ 9.98002589e-01 -2.84918565e-02  5.63584678e-02 -2.39643157e-02]
 [transform_publisher-2]   [-6.15338907e-02 -2.38065243e-01  9.69296634e-01 -4.96009104e-02]
 [transform_publisher-2]   [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]]
+```

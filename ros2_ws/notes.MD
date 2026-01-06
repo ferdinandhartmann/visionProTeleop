@@ -14,6 +14,8 @@ https://github.com/icloud-photos-downloader/icloud_photos_downloader?tab=readme-
 
 if changing somehthing in apv_streamer files install with pip install -e . instead of pip --upgrade
 
+ffmpeg -i disabled_sound.mp3 -ac 1 -ar 48000 disabled.wav
+
 
 Test internet connection speed: 
 
