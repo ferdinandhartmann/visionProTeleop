@@ -37,6 +37,23 @@ Enhanced Streaming app
 
 Parameters for the teleoperation nodes can be set in the config file [`teleoperation.yaml`](ros2_ws/src/teleoperation/config/teleoperation.yaml)
 
+### Demo Images
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/8b692573-c12a-40b2-9d62-499ccbfc2f51" width="48%" />
+  <img src="https://github.com/user-attachments/assets/c9bcaa12-baa9-47e8-8e9b-2f3063b5613a" width="48%" />
+</p>
+
+### Demo Video 
+
+https://github.com/user-attachments/assets/639cb9b6-6371-441f-803b-f7388d67403c
+
+### RVIZ Visualization
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/abe7bbe5-85a7-42f2-ae77-dcdde5514e95" width="40%" />
+</p>
+
 ### Build and Launch
 
 ```bash
@@ -56,8 +73,6 @@ enable_audio = True
 ```bash
 ros2 launch teleoperation launch_teleoperation.launch.py
 ```
-
-
 
 
 &nbsp;
