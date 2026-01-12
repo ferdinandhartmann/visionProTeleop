@@ -40,7 +40,7 @@ VisionProTeleop
 
 ### System Architecture
 
-<img width="4350" height="1629" alt="visionpro_teleop_diagramm_full" src="https://github.com/user-attachments/assets/be12634b-e6e1-49da-924f-5e83e2f44e76" />
+<img width="4350" height="1608" alt="visionpro_teleop_diagram" src="https://github.com/user-attachments/assets/4de6fa19-7826-4027-bdd1-0b3a8fefa9bc" />
 
 ### Demo Video 
 
