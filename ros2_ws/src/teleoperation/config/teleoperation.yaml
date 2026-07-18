@@ -17,7 +17,7 @@ vp_streamer:
     update_simulation_hz: 120.0
     force_reload: true
     ###### Camera parameters 
-    camera_device: "/dev/video0" # laptop: "/dev/video0"
+    camera_device: "/dev/video4" # laptop: "/dev/video0"
     camera_resolution: "640x480" # "640x480" #"160x120" #"640x480"
     format: "v4l2"
     camera_fps: 30

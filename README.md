@@ -2,9 +2,19 @@
 VisionProTeleop
 ===========
 
-
-
 ### This is an enhanced version of the VisionProTeleop Streamer Repo which integrates ROS2 for: MyCobot 280 M5 with Gripper and Camera for Teleoperation, ROS2 Realsense RGB Pointlcoud and additional features in the TrackingStreamer App
+
+<p align="center">
+  <a href="https://ferdinandhartmann.github.io/visionProTeleop/">
+    <strong>🌐 View the Project Website</strong><br>
+    https://ferdinandhartmann.github.io/visionProTeleop/
+  </a>
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/8b692573-c12a-40b2-9d62-499ccbfc2f51" width="48%" />
+  <img src="https://github.com/user-attachments/assets/c9bcaa12-baa9-47e8-8e9b-2f3063b5613a" width="48%" />
+</p>
 
 #### ROS2 package features
 - Publishing ROS2 /tf and MarkerArray of the hand tracking data  
@@ -30,13 +40,6 @@ VisionProTeleop
 - Exit button directly exits app wihout needing to confirm
 - Skipping TrackingView add pop-up 
 
-
-### Demo Images
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/8b692573-c12a-40b2-9d62-499ccbfc2f51" width="48%" />
-  <img src="https://github.com/user-attachments/assets/c9bcaa12-baa9-47e8-8e9b-2f3063b5613a" width="48%" />
-</p>
 
 ### System Architecture
 

@@ -19,6 +19,8 @@ build/
 *.usda
 build/
 *.mp4
+!website/assets/teleoperation-demo.mp4
+!website/assets/teleoperation-highlight.mp4
 # CloudKit private key - DO NOT COMMIT
 avp_stream/datasets/eckey.pem
 *.pem

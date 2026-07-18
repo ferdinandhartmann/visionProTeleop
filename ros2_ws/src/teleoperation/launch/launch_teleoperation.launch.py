@@ -165,8 +165,8 @@ def generate_launch_description():
         arguments=[
             # "0", "0.02", "0.0", # camera_lens
             # "1.57", "-1.57", "0.0", # camera_lens
-            "-0.14", "0.28", "0.46",     # mycobot_base
-            "-0.78", "0.78", "0.0",     # mycobot_base
+            "-0.265", "0.31", "0.45",     # mycobot_base
+            "-0.78", "0.57", "0.0",     # mycobot_base
             # "camera_lens",
             "mycobot_base",
             "base_link", #(from realsense, i dont know how to rename it)

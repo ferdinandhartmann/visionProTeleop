@@ -1,49 +1,55 @@
-name: Deploy Documentation to GitHub Pages
+name: Deploy project website and documentation
 
 on:
   push:
     branches:
-      - visual  # Change to your default branch if different
       - main
     paths:
-      - 'docs/build/html/**'
-  workflow_dispatch:  # Allow manual triggering
+      - "website/**"
+      - "docs/build/html/**"
+      - ".github/workflows/deploy-docs.yml"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Fetch all history for all branches
-    
-    - name: Check if docs/build/html exists
-      run: |
-        if [ ! -d "docs/build/html" ]; then
-          echo "Error: docs/build/html directory not found"
-          echo "Please build the documentation locally first using ./build_docs.sh"
-          exit 1
-        fi
-        echo "Documentation found in docs/build/html"
-        ls -la docs/build/html
-    
-    - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./docs/build/html
-        publish_branch: gh-pages
-        force_orphan: true  # Keep gh-pages clean
-        user_name: 'github-actions[bot]'
-        user_email: 'github-actions[bot]@users.noreply.github.com'
-        commit_message: 'Deploy documentation'
-    
-    - name: Summary
-      run: |
-        echo "✓ Documentation deployed to GitHub Pages"
-        echo "Visit: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Assemble Pages artifact
+        run: |
+          test -f website/index.html
+          test -f website/styles.css
+          test -f website/script.js
+          test -d website/assets
+          test -f docs/build/html/index.html
+
+          mkdir -p pages-dist/docs
+          cp website/index.html website/styles.css website/script.js pages-dist/
+          cp -R website/assets pages-dist/assets
+          cp -R docs/build/html/. pages-dist/docs/
+          touch pages-dist/.nojekyll
+
+          test ! -e pages-dist/privacy.html
+          test -f pages-dist/index.html
+          test -f pages-dist/docs/index.html
+
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./pages-dist
+          publish_branch: gh-pages
+          force_orphan: true
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          commit_message: "Deploy project website and documentation"
