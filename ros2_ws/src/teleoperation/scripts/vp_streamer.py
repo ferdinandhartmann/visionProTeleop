@@ -6,8 +6,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 import queue
+import tempfile
 from typing import Dict, List, Optional
-import struct
 
 from ament_index_python.packages import get_package_share_directory
 import rclpy
@@ -28,14 +28,13 @@ import soundfile as sf
 import time
 
 from avp_stream import VisionProStreamer
+from avp_stream.pointcloud_protocol import extract_xyz_rgb, transform_xyz
 
 from tf2_ros import Buffer, TransformListener
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 from teleoperation.msg import TeleopTarget
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
-from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
-from sensor_msgs_py import point_cloud2
 
     # import avp_stream, inspect
     # print("USING avp_stream from:", avp_stream.__file__, flush=True)
@@ -74,10 +73,32 @@ class VPStreamer(Node):
         self.declare_parameter("enable_audio", True)
         self.declare_parameter("enable_pointcloud", True)
         self.declare_parameter("pointcloud_topic", "/points_downsampled")
+        self.declare_parameter("pointcloud_rate_hz", 30.0)
+        self.declare_parameter("pointcloud_max_points", 100000)
+        self.declare_parameter("pointcloud_flip_world_z", True)
+        self.declare_parameter("mocap_flip_world_z", True)
         self.declare_parameter("realsense_image_topic", "/camera/camera/color/image_raw")
+        self.declare_parameter("base_frame", "mycobot_base")
+        self.declare_parameter("current_tool_frame", "gripper_ee")
+        self.declare_parameter(
+            "target_visual_tf_frame", "ee_target_offset_mycobot_base_vis"
+        )
+        self.declare_parameter("ee_fk_body_name", "ee_fk_frame")
+        self.declare_parameter("ee_target_body_name", "ee_target_frame")
+        self.declare_parameter("publish_reset_teleop_target", True)
+        self.declare_parameter(
+            "expected_joint_names",
+            ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper_controller"],
+        )
+        self.declare_parameter("gripper_source_joint", "")
+        self.declare_parameter("gripper_model_joints", [""])
+        self.declare_parameter("gripper_source_min", 0.0)
+        self.declare_parameter("gripper_source_max", 1.0)
+        self.declare_parameter("gripper_model_open", 0.04)
+        self.declare_parameter("gripper_model_closed", 0.0)
         
         # Resolve the default MuJoCo scene from the robot_description package.
-        robot_description_share = Path("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/robot_description")
+        robot_description_share = Path(get_package_share_directory("robot_description"))
         default_xml = robot_description_share / "mycobot_mujoco/scene_mycobot.xml"
         self.declare_parameter(
             "xml_path",
@@ -106,8 +127,9 @@ class VPStreamer(Node):
         self._motor_gain = 0.0
         self._enable_idx = 0
         self._disable_idx = 0
-        self.enable_sound = load_wav_mono("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/teleoperation/sounds/enabled.wav")
-        self.disable_sound = load_wav_mono("/home/ferdinand/visionpro_teleop_project/visionProTeleop/ros2_ws/src/teleoperation/sounds/disabled.wav")
+        teleoperation_share = Path(get_package_share_directory("teleoperation"))
+        self.enable_sound = load_wav_mono(str(teleoperation_share / "sounds/enabled.wav"))
+        self.disable_sound = load_wav_mono(str(teleoperation_share / "sounds/disabled.wav"))
 
         self.enable_audio = params["enable_audio"]
         self.enable_camera = params["enable_camera"]
@@ -128,9 +150,28 @@ class VPStreamer(Node):
         self._latest_realsense_frame = None
         
         self._last_pointcloud_time = 0.0
-        self._pointcloud_rate_hz_internal = 30.0
-        self._pointcloud_max_points = 200000
-        self._tf_target_frame = "mycobot_base"
+        self._pointcloud_rate_hz_internal = params["pointcloud_rate_hz"]
+        self._pointcloud_max_points = params["pointcloud_max_points"]
+        self._pointcloud_msg_lock = threading.Lock()
+        self._latest_pointcloud_msg = None
+        self._last_pointcloud_msg = None
+        self._pointcloud_encoded_frames = 0
+        self._pointcloud_rejected_frames = 0
+        self._pointcloud_flip_world_z = params["pointcloud_flip_world_z"]
+        self._mocap_flip_world_z = params["mocap_flip_world_z"]
+        self._tf_target_frame = params["base_frame"]
+        self._current_tool_frame = params["current_tool_frame"]
+        self._target_visual_tf_frame = params["target_visual_tf_frame"]
+        self._ee_fk_body_name = params["ee_fk_body_name"]
+        self._ee_target_body_name = params["ee_target_body_name"]
+        self._publish_reset_target = params["publish_reset_teleop_target"]
+        self._expected_joint_names = params["expected_joint_names"]
+        self._gripper_source_joint = params["gripper_source_joint"]
+        self._gripper_model_joints = params["gripper_model_joints"]
+        self._gripper_source_min = params["gripper_source_min"]
+        self._gripper_source_max = params["gripper_source_max"]
+        self._gripper_model_open = params["gripper_model_open"]
+        self._gripper_model_closed = params["gripper_model_closed"]
 
         # TF listener must exist before any callbacks try to use it
         self.tf_buffer = Buffer()
@@ -171,7 +212,9 @@ class VPStreamer(Node):
             self.get_logger().info(f"Camera(s) initialized (mode={self.camera_mode})")
 
 
-        self.model = mujoco.MjModel.from_xml_path(params["xml_path"])
+        self._temporary_model_path = None
+        self._resolved_xml_path = self._resolve_model_path(params["xml_path"])
+        self.model = mujoco.MjModel.from_xml_path(self._resolved_xml_path)
         self.data = mujoco.MjData(self.model)
         self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
         
@@ -182,7 +225,7 @@ class VPStreamer(Node):
         if params["viewer"] == "ar":
 
             self.streamer.configure_mujoco(
-                xml_path=params["xml_path"],
+                xml_path=self._resolved_xml_path,
                 model=self.model,
                 data=self.data,
                 relative_to=params["attach_to"],
@@ -235,15 +278,15 @@ class VPStreamer(Node):
         if self.enable_pointcloud:
             pc_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
             self.pointcloud_sub = self.create_subscription(PointCloud2, self.pointcloud_topic, self._pointcloud_cb, pc_qos)
+            self._pointcloud_thread = threading.Thread(
+                target=self._pointcloud_loop,
+                name="vp_pointcloud",
+                daemon=True,
+            )
+            self._pointcloud_thread.start()
             self.get_logger().info(f"Point cloud streaming enabled from {self.pointcloud_topic}")
 
-        self.ee_fk_body_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame"
-        )
-
-        self.ee_target_body_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame"
-        )
+        self.ee_fk_body_id, self.ee_target_body_id = self._lookup_visual_body_ids()
         
         # FOR RESET
         self.streamer.register_reset_callback(self._on_streamer_reset)
@@ -282,7 +325,28 @@ class VPStreamer(Node):
         enable_audio = self.get_parameter("enable_audio").value
         enable_pointcloud = self.get_parameter("enable_pointcloud").value
         pointcloud_topic = self.get_parameter("pointcloud_topic").value
+        pointcloud_rate_hz = float(self.get_parameter("pointcloud_rate_hz").value)
+        pointcloud_max_points = int(self.get_parameter("pointcloud_max_points").value)
+        pointcloud_flip_world_z = bool(self.get_parameter("pointcloud_flip_world_z").value)
+        mocap_flip_world_z = bool(self.get_parameter("mocap_flip_world_z").value)
         realsense_image_topic = self.get_parameter("realsense_image_topic").value
+        base_frame = self.get_parameter("base_frame").value
+        current_tool_frame = self.get_parameter("current_tool_frame").value
+        target_visual_tf_frame = self.get_parameter("target_visual_tf_frame").value
+        ee_fk_body_name = self.get_parameter("ee_fk_body_name").value
+        ee_target_body_name = self.get_parameter("ee_target_body_name").value
+        publish_reset_teleop_target = bool(
+            self.get_parameter("publish_reset_teleop_target").value
+        )
+        expected_joint_names = list(self.get_parameter("expected_joint_names").value)
+        gripper_source_joint = self.get_parameter("gripper_source_joint").value
+        gripper_model_joints = [
+            name for name in self.get_parameter("gripper_model_joints").value if name
+        ]
+        gripper_source_min = float(self.get_parameter("gripper_source_min").value)
+        gripper_source_max = float(self.get_parameter("gripper_source_max").value)
+        gripper_model_open = float(self.get_parameter("gripper_model_open").value)
+        gripper_model_closed = float(self.get_parameter("gripper_model_closed").value)
         ee_target_on_reset_position = list(self.get_parameter("ee_target_on_reset_position").get_parameter_value().double_array_value)
         ee_target_on_reset_orientation_xyzw = list(self.get_parameter("ee_target_on_reset_orientation_xyzw").get_parameter_value().double_array_value)
         ee_target_on_reset_gripper = int(self.get_parameter("ee_target_on_reset_gripper").get_parameter_value().integer_value)
@@ -304,11 +368,50 @@ class VPStreamer(Node):
             "enable_audio": enable_audio,
             "enable_pointcloud": enable_pointcloud,
             "pointcloud_topic": pointcloud_topic,
+            "pointcloud_rate_hz": pointcloud_rate_hz,
+            "pointcloud_max_points": pointcloud_max_points,
+            "pointcloud_flip_world_z": pointcloud_flip_world_z,
+            "mocap_flip_world_z": mocap_flip_world_z,
             "realsense_image_topic": realsense_image_topic,
+            "base_frame": base_frame,
+            "current_tool_frame": current_tool_frame,
+            "target_visual_tf_frame": target_visual_tf_frame,
+            "ee_fk_body_name": ee_fk_body_name,
+            "ee_target_body_name": ee_target_body_name,
+            "publish_reset_teleop_target": publish_reset_teleop_target,
+            "expected_joint_names": expected_joint_names,
+            "gripper_source_joint": gripper_source_joint,
+            "gripper_model_joints": gripper_model_joints,
+            "gripper_source_min": gripper_source_min,
+            "gripper_source_max": gripper_source_max,
+            "gripper_model_open": gripper_model_open,
+            "gripper_model_closed": gripper_model_closed,
             "ee_target_on_reset_position": ee_target_on_reset_position,
             "ee_target_on_reset_orientation_xyzw": ee_target_on_reset_orientation_xyzw,
             "ee_target_on_reset_gripper": ee_target_on_reset_gripper,
         }
+
+    def _resolve_model_path(self, xml_path: str) -> str:
+        """Expand package tokens in an MJCF without baking machine-specific paths."""
+        source_path = Path(xml_path)
+        xml_text = source_path.read_text(encoding="utf-8")
+        token = "${franka_description}"
+        if token not in xml_text:
+            return str(source_path)
+
+        description_share = get_package_share_directory("franka_description")
+        xml_text = xml_text.replace(token, description_share)
+        temporary = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".xml",
+            prefix="fr3_robotiq_",
+            delete=False,
+            encoding="utf-8",
+        )
+        temporary.write(xml_text)
+        temporary.close()
+        self._temporary_model_path = temporary.name
+        return temporary.name
 
 
     def _build_joint_mapping(self, mujoco) -> Dict[str, int]:
@@ -317,19 +420,24 @@ class VPStreamer(Node):
             name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
             if name:
                 mapping[name] = self.model.jnt_qposadr[joint_id]
-        expected = [
-            "joint1",
-            "joint2",
-            "joint3",
-            "joint4",
-            "joint5",
-            "joint6",
-            "gripper_controller",
-        ]
-        missing = [name for name in expected if name not in mapping]
+        missing = [name for name in self._expected_joint_names if name not in mapping]
         if missing:
-            self.get_logger().warn(f"MuJoCo model missing joints referenced by IK: {missing}")
+            self.get_logger().warn(f"MuJoCo model missing expected ROS joints: {missing}")
         return mapping
+
+    def _lookup_visual_body_ids(self):
+        fk_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, self._ee_fk_body_name
+        )
+        target_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, self._ee_target_body_name
+        )
+        if fk_body_id < 0 or target_body_id < 0:
+            raise RuntimeError(
+                "MuJoCo scene must contain bodies "
+                f"'{self._ee_fk_body_name}' and '{self._ee_target_body_name}'"
+            )
+        return fk_body_id, target_body_id
 
 
     def _joint_state_cb(self, msg: JointState) -> None:
@@ -340,67 +448,112 @@ class VPStreamer(Node):
             self.latest_joint_vel = list(msg.velocity)
 
     def _pointcloud_cb(self, msg: PointCloud2) -> None:
-        if not self.enable_pointcloud and self.streamer.is_pointcloud_channel_open():
-            return
+        """Keep only the newest ROS cloud; conversion happens off the ROS executor."""
+        with self._pointcloud_msg_lock:
+            self._latest_pointcloud_msg = msg
 
-        now = time.time()
-        if now - self._last_pointcloud_time < 1.0 / self._pointcloud_rate_hz_internal:
-            return
-        
-        if not self.tf_buffer.can_transform(
-                self._tf_target_frame,
-                msg.header.frame_id,
-                rclpy.time.Time(seconds=0),
-                timeout=Duration(seconds=0.0),
-            ):
-            self._periodic_log("pc_tf_check", 2.0, f"Point cloud TF not available from {msg.header.frame_id} to {self._tf_target_frame}")
-            return
+    def _pointcloud_loop(self) -> None:
+        period = 1.0 / max(1.0, float(self._pointcloud_rate_hz_internal))
+        next_tick = time.monotonic()
+        while not self._stop_event.is_set():
+            delay = next_tick - time.monotonic()
+            if delay > 0.0:
+                self._stop_event.wait(min(delay, 0.02))
+                continue
+            next_tick = max(next_tick + period, time.monotonic())
 
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self._tf_target_frame,
-                msg.header.frame_id,
-                rclpy.time.Time(seconds=0),
-                timeout=Duration(seconds=0.1),
-            )
-            self._apply_world_z_flip(transform)
-        except (LookupException, ConnectivityException, ExtrapolationException) as exc:
-            self._periodic_log("pc_tf", 2.0, f"Point cloud TF lookup failed: {exc}", level="warn")
-            return
+            if not self.streamer.is_pointcloud_channel_open():
+                continue
+            with self._pointcloud_msg_lock:
+                msg = self._latest_pointcloud_msg
+            if msg is None or msg is self._last_pointcloud_msg:
+                continue
+            self._last_pointcloud_msg = msg
+            self._process_pointcloud(msg)
 
-        try:
-            transformed = do_transform_cloud(msg, transform)
-        except Exception as exc:  # noqa: BLE001
-            self._periodic_log("pc_transform", 2.0, f"Point cloud transform failed: {exc}", level="warn")
-            return
+    def _process_pointcloud(self, msg: PointCloud2) -> None:
+        transform = None
+        if msg.header.frame_id != self._tf_target_frame:
+            if not self.tf_buffer.can_transform(
+                    self._tf_target_frame,
+                    msg.header.frame_id,
+                    rclpy.time.Time(seconds=0),
+                    timeout=Duration(seconds=0.0),
+                ):
+                self._periodic_log(
+                    "pc_tf_check",
+                    2.0,
+                    f"Point cloud TF not available from {msg.header.frame_id} "
+                    f"to {self._tf_target_frame}",
+                )
+                return
 
-        points_iter = point_cloud2.read_points(
-            transformed, field_names=("x", "y", "z", "rgb"), skip_nans=True
-        )
-
-        positions = []
-        colors = []
-        for idx, (x, y, z, rgb) in enumerate(points_iter):
-            if idx >= self._pointcloud_max_points:
-                break
-            positions.append((float(x), float(y), float(z)))
             try:
-                rgb_uint = struct.unpack("<I", struct.pack("<f", float(rgb)))[0]
-            except struct.error:
-                rgb_uint = 0
-            r = (rgb_uint >> 16) & 0xFF
-            g = (rgb_uint >> 8) & 0xFF
-            b = rgb_uint & 0xFF
-            colors.append((r, g, b))
+                transform = self.tf_buffer.lookup_transform(
+                    self._tf_target_frame,
+                    msg.header.frame_id,
+                    rclpy.time.Time(seconds=0),
+                    timeout=Duration(seconds=0.1),
+                )
+                if self._pointcloud_flip_world_z:
+                    self._apply_world_z_flip(transform)
+            except (LookupException, ConnectivityException, ExtrapolationException) as exc:
+                self._periodic_log(
+                    "pc_tf",
+                    2.0,
+                    f"Point cloud TF lookup failed: {exc}",
+                    level="warn",
+                )
+                return
 
-        if not positions:
+        try:
+            positions, colors = extract_xyz_rgb(msg)
+            if transform is not None:
+                positions = transform_xyz(positions, transform)
+        except Exception as exc:  # noqa: BLE001
+            self._pointcloud_rejected_frames += 1
+            self._periodic_log(
+                "pc_decode",
+                2.0,
+                f"Point cloud decode/transform failed: {exc}",
+                level="warn",
+            )
             return
 
-        pos_arr = np.asarray(positions, dtype=np.float32)
-        col_arr = np.asarray(colors, dtype=np.uint8)
-        # self.get_logger().info(f"First few pointcloud positions: {pos_arr[:5]}")
-        self.streamer.update_pointcloud(pos_arr, col_arr, rate_hz=self._pointcloud_rate_hz_internal)
-        self._last_pointcloud_time = now
+        point_count = int(positions.shape[0])
+        if point_count == 0:
+            return
+        if point_count > self._pointcloud_max_points:
+            self._pointcloud_rejected_frames += 1
+            self._periodic_log(
+                "pc_oversize",
+                2.0,
+                f"Point cloud has {point_count} valid points; configured maximum is "
+                f"{self._pointcloud_max_points}. Upstream decimation must be increased.",
+                level="warn",
+            )
+            return
+
+        timestamp_ns = (
+            int(msg.header.stamp.sec) * 1_000_000_000
+            + int(msg.header.stamp.nanosec)
+        )
+        try:
+            self.streamer.update_pointcloud(
+                positions,
+                colors,
+                rate_hz=self._pointcloud_rate_hz_internal,
+                timestamp_ns=timestamp_ns,
+            )
+            self._pointcloud_encoded_frames += 1
+        except Exception as exc:  # noqa: BLE001
+            self._pointcloud_rejected_frames += 1
+            self._periodic_log(
+                "pc_encode",
+                2.0,
+                f"Point cloud encoding failed: {exc}",
+                level="warn",
+            )
 
 
     def _apply_joint_state(self) -> None:
@@ -417,9 +570,26 @@ class VPStreamer(Node):
 
         ################# Apply joint states into MuJoCo buffers #################
         for name, position in joint_copy.items():
+            if name == self._gripper_source_joint and self._gripper_model_joints:
+                source_span = self._gripper_source_max - self._gripper_source_min
+                if source_span <= 0.0:
+                    continue
+                fraction = float(
+                    np.clip((position - self._gripper_source_min) / source_span, 0.0, 1.0)
+                )
+                model_position = (
+                    self._gripper_model_open
+                    + fraction * (self._gripper_model_closed - self._gripper_model_open)
+                )
+                for model_joint in self._gripper_model_joints:
+                    model_idx = self.joint_name_to_qpos.get(model_joint)
+                    if model_idx is not None:
+                        self.data.qpos[model_idx] = model_position
+                continue
+
             idx = self.joint_name_to_qpos.get(name)
             if idx is None:
-                    continue
+                continue
             if name == "gripper_controller":
                 gripper_lower_limit = -0.25
                 gripper_upper_limit = 0.8
@@ -464,8 +634,9 @@ class VPStreamer(Node):
 
                 self.joint_name_to_qpos = self._build_joint_mapping(mujoco)
 
-                self.ee_fk_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_fk_frame")
-                self.ee_target_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "ee_target_frame")
+                self.ee_fk_body_id, self.ee_target_body_id = (
+                    self._lookup_visual_body_ids()
+                )
                 
                 self._hard_reset_mujoco_state()
 
@@ -482,14 +653,16 @@ class VPStreamer(Node):
                     
                 time.sleep(0.5)  # brief pause to ensure stability after reset
                 
-                # Publish a tf so that ee_target_offset_mycobot_base_vis snaps to gripper_ee 
-                # (tf doesnt work only direct modification but left it anyways)
                 try:
-                    tf_fk = self.tf_buffer.lookup_transform("mycobot_base", "gripper_ee", rclpy.time.Time(seconds=0))
+                    tf_fk = self.tf_buffer.lookup_transform(
+                        self._tf_target_frame,
+                        self._current_tool_frame,
+                        rclpy.time.Time(seconds=0),
+                    )
 
                     tf_msg = TransformStamped()
-                    tf_msg.header.frame_id = "mycobot_base"
-                    tf_msg.child_frame_id = "ee_target_offset_mycobot_base_vis"
+                    tf_msg.header.frame_id = self._tf_target_frame
+                    tf_msg.child_frame_id = self._target_visual_tf_frame
                     tf_msg.transform = tf_fk.transform
 
                     self._reset_tf_msg = tf_msg
@@ -500,12 +673,17 @@ class VPStreamer(Node):
                     mujoco.mj_forward(self.model, self.data)
                     self._reset_target_min_time = self.get_clock().now()
 
-                    self.get_logger().info("Armed reset TF publish window for ee_target_offset_mycobot_base_vis")
+                    self.get_logger().info(
+                        f"Armed reset TF publish window for {self._target_visual_tf_frame}"
+                    )
                 except (LookupException, ConnectivityException, ExtrapolationException):
                     # Clear the target mocap to avoid freezing at a stale pose.
                     self._clear_target_mocap()
                     self._reset_target_min_time = self.get_clock().now()
-                    self.get_logger().info("Could not lookup transform from mycobot_base to gripper_ee for ee_target_offset_mycobot_base_vis; cleared target mocap")
+                    self.get_logger().info(
+                        f"Could not look up {self._current_tool_frame} in "
+                        f"{self._tf_target_frame}; cleared target mocap"
+                    )
                     pass
 
                 return 
@@ -539,6 +717,15 @@ class VPStreamer(Node):
     def _hard_reset_mujoco_state(self):
         # 1) reset dynamic state
         mujoco.mj_resetData(self.model, self.data)
+
+        if self._gripper_source_joint:
+            home_key = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_KEY, "home"
+            )
+            if home_key >= 0:
+                mujoco.mj_resetDataKeyframe(self.model, self.data, home_key)
+            mujoco.mj_forward(self.model, self.data)
+            return
 
         # 2) put robot in a known good configuration
         with self._joint_state_lock:
@@ -651,34 +838,33 @@ class VPStreamer(Node):
         if mocap_id < 0:
             return
 
-        # --- position (rotate 180deg about world Z) ---
         x = tf.transform.translation.x
         y = tf.transform.translation.y
         z = tf.transform.translation.z
-        self.data.mocap_pos[mocap_id, 0] = -x
-        self.data.mocap_pos[mocap_id, 1] = -y
+        direction = -1.0 if self._mocap_flip_world_z else 1.0
+        self.data.mocap_pos[mocap_id, 0] = direction * x
+        self.data.mocap_pos[mocap_id, 1] = direction * y
         self.data.mocap_pos[mocap_id, 2] =  z
 
-        # --- orientation (premultiply by 180deg about world Z) ---
         r = tf.transform.rotation
         q_tf = np.array([r.w, r.x, r.y, r.z], dtype=np.float64)
-
-        q_corr = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)  # yaw=pi about Z
-
-        q_out = np.zeros(4, dtype=np.float64)
-        mujoco.mju_mulQuat(q_out, q_corr, q_tf)  # world-frame correction
-
-        self.data.mocap_quat[mocap_id, :] = q_out
+        if self._mocap_flip_world_z:
+            q_corr = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+            q_out = np.zeros(4, dtype=np.float64)
+            mujoco.mju_mulQuat(q_out, q_corr, q_tf)
+            self.data.mocap_quat[mocap_id, :] = q_out
+        else:
+            self.data.mocap_quat[mocap_id, :] = q_tf
 
 
     def _update_target_frames(self):
         try:
             latest_time = rclpy.time.Time(seconds=0)
 
-            # FK pose (from IK node) — latest available
+            # Current physical tool pose.
             tf_fk = self.tf_buffer.lookup_transform(
-                "mycobot_base",
-                "gripper_ee",
+                self._tf_target_frame,
+                self._current_tool_frame,
                 latest_time
             )
             self._set_mocap_from_tf(self.ee_fk_body_id, tf_fk)
@@ -689,10 +875,10 @@ class VPStreamer(Node):
                 mujoco.mj_forward(self.model, self.data)
                 return
 
-            # Teleop target pose — latest available
+            # Latest Cartesian teleop target.
             tf_target = self.tf_buffer.lookup_transform(
-                "mycobot_base",
-                "ee_target_offset_mycobot_base_vis",
+                self._tf_target_frame,
+                self._target_visual_tf_frame,
                 latest_time
             )
             if self._reset_target_min_time is not None:
@@ -700,8 +886,8 @@ class VPStreamer(Node):
                 if tf_time < self._reset_target_min_time:
                     try:
                         tf_fk = self.tf_buffer.lookup_transform(
-                            "mycobot_base",
-                            "gripper_ee",
+                            self._tf_target_frame,
+                            self._current_tool_frame,
                             latest_time
                         )
                         self._set_mocap_from_tf(self.ee_target_body_id, tf_fk)
@@ -749,7 +935,6 @@ class VPStreamer(Node):
                 self._pending_model = None
                 self._pending_data = None
                 self._reset_state = "paused"
-                self._stop_event.set()
                 return
 
             # Final phase: model/data provided
@@ -769,7 +954,7 @@ class VPStreamer(Node):
 
         # Header
         msg.pose.header.stamp = self.get_clock().now().to_msg()
-        msg.pose.header.frame_id = "mycobot_base"
+        msg.pose.header.frame_id = self._tf_target_frame
 
         # Pose
         pos = self.get_parameter("ee_target_on_reset_position").value
@@ -787,9 +972,10 @@ class VPStreamer(Node):
         # Gripper
         msg.gripper = int(self.get_parameter("ee_target_on_reset_gripper").value)
 
-        self.ee_target_pub.publish(msg)
+        if self._publish_reset_target:
+            self.ee_target_pub.publish(msg)
 
-        self.get_logger().info("Published ee_target reset pose on /teleop/ee_target")
+            self.get_logger().info("Published ee_target reset pose on /teleop/ee_target")
 
                 
     def _camera_cb(self) -> None:
@@ -865,7 +1051,6 @@ class VPStreamer(Node):
         if frame is None:
             return
 
-        frame = cv2.resize(frame, self._frame_size)
         with self._realsense_lock:
             self._latest_realsense_frame = frame
 
@@ -1069,8 +1254,12 @@ class VPStreamer(Node):
             self._camera_thread.join(timeout=1.0)
         if getattr(self, "_audio_thread", None):
             self._audio_thread.join(timeout=1.0)
+        if getattr(self, "_pointcloud_thread", None):
+            self._pointcloud_thread.join(timeout=1.0)
         if getattr(self, "cap", None):
             self.cap.release()
+        if getattr(self, "_temporary_model_path", None):
+            Path(self._temporary_model_path).unlink(missing_ok=True)
         return super().destroy_node()
 
 

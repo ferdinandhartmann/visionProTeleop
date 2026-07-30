@@ -30,6 +30,7 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
     private var simPosesDataChannel: LKRTCDataChannel?  // WebRTC data channel for sim pose streaming
     private var controlDataChannel: LKRTCDataChannel?
     private var pointCloudDataChannel: LKRTCDataChannel?
+    private let pointCloudReassembler = PointCloudChunkReassembler()
     private var simPosesMessageCount: Int = 0  // Counter for debugging message flow
     private var lastProcessedPoseTimestamp: Double = 0  // For dropping stale frames
     private var handStreamTask: Task<Void, Never>?
@@ -55,8 +56,8 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
     /// Returns: (timestamp, poses, qpos, ctrl)
     var onSimPosesReceived: ((Double, [String: [Float]], [Float]?, [Float]?) -> Void)?
     
-    /// Callback for point cloud snapshots (positions in meters, colors 0-1)
-    var onPointCloudReceived: (([SIMD3<Float>], [SIMD3<Float>]) -> Void)?
+    /// Callback for validated, reassembled PCD2 point-cloud frames.
+    var onPointCloudReceived: ((PointCloudFrame) -> Void)?
     
     /// Callback for connection state changes (isConnected)
     var onConnectionStateChanged: ((Bool) -> Void)?
@@ -87,6 +88,9 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
         )
         
         super.init()
+        pointCloudReassembler.onFrame = { [weak self] frame in
+            self?.onPointCloudReceived?(frame)
+        }
     }
     
     deinit {
@@ -615,6 +619,7 @@ class WebRTCClient: NSObject, LKRTCPeerConnectionDelegate, @unchecked Sendable {
     }
     
     func disconnect() {
+        pointCloudReassembler.reset()
         peerConnection?.close()
         peerConnection = nil
         self.stopStatsTimer()
@@ -969,6 +974,7 @@ extension WebRTCClient: LKRTCDataChannelDelegate {
                 }
             } else if dataChannel == pointCloudDataChannel {
                 dlog("⚠️ [WebRTC] Point-cloud channel is closing/closed")
+                pointCloudReassembler.reset()
                 pointCloudDataChannel = nil
             }
         }
@@ -1113,56 +1119,7 @@ extension WebRTCClient: LKRTCDataChannelDelegate {
                 dlog("⚠️ [WebRTC sim-poses] Callback not set, dropping \(floatPoses.count) poses")
             }
         } else if dataChannel.label == "point-cloud" {
-            let data = buffer.data
-            guard data.count >= 4 else {
-                dlog("⚠️ [PointCloud] Message too small (\(data.count) bytes)")
-                return
-            }
-            
-            let count: UInt32 = data.withUnsafeBytes { ptr in
-                ptr.loadUnaligned(fromByteOffset: 0, as: UInt32.self)
-            }
-            if count == 0 {
-                return
-            }
-            
-            let positionsBytes = Int(count) * MemoryLayout<Float>.size * 3
-            let colorsBytes = Int(count) * 3
-            let expectedSize = 4 + positionsBytes + colorsBytes
-            if data.count < expectedSize {
-                dlog("⚠️ [PointCloud] Truncated message: expected \(expectedSize), got \(data.count)")
-                return
-            }
-            
-            var positions: [SIMD3<Float>] = []
-            positions.reserveCapacity(Int(count))
-            data.withUnsafeBytes { ptr in
-                let base = ptr.baseAddress!.advanced(by: 4)
-                for i in 0..<Int(count) {
-                    let offset = i * 12
-                    let x = base.loadUnaligned(fromByteOffset: offset, as: Float.self)
-                    let y = base.loadUnaligned(fromByteOffset: offset + 4, as: Float.self)
-                    let z = base.loadUnaligned(fromByteOffset: offset + 8, as: Float.self)
-                    positions.append(SIMD3<Float>(x, y, z))
-                }
-            }
-            
-            var colors: [SIMD3<Float>] = []
-            colors.reserveCapacity(Int(count))
-            data.withUnsafeBytes { ptr in
-                let colorBase = ptr.baseAddress!.advanced(by: 4 + positionsBytes)
-                for i in 0..<Int(count) {
-                    let offset = i * 3
-                    let r = Float(colorBase.load(fromByteOffset: offset, as: UInt8.self)) / 255.0
-                    let g = Float(colorBase.load(fromByteOffset: offset + 1, as: UInt8.self)) / 255.0
-                    let b = Float(colorBase.load(fromByteOffset: offset + 2, as: UInt8.self)) / 255.0
-                    colors.append(SIMD3<Float>(r, g, b))
-                }
-            }
-            
-            if let callback = onPointCloudReceived {
-                callback(positions, colors)
-            }
+            pointCloudReassembler.receive(buffer.data)
         } else if dataChannel.label == "control" {
             handleControlMessage(buffer)
         } else if dataChannel.label == "usdz-transfer" {

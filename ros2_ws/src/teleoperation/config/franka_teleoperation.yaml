@@ -1,0 +1,99 @@
+# Franka FR3 + Vision Pro teleoperation.
+# Runtime-specific addresses can be overridden by launch arguments.
+
+vp_transform_publisher:
+  ros__parameters:
+    visionpro_ip: "192.168.50.153"
+    pinch_threshold: 0.02
+    rate_hz: 50.0
+
+franka_visionpro_teleop:
+  ros__parameters:
+    robot_state_topic: /franka_robot_state_broadcaster/robot_state
+    pose_command_topic: /cartesian_impedance_controller/pose_command
+    gripper_command_topic: /factr_teleop/gripper_pos_cmd
+    enabled_topic: /teleop/teleop_enabled
+
+    base_frame: fr3_link0
+    hand_frame: visionpro/right/wrist
+    left_thumb_frame: visionpro/left/thumb_4
+    left_index_frame: visionpro/left/index_4
+    right_thumb_frame: visionpro/right/thumb_4
+    right_index_frame: visionpro/right/index_4
+    target_tf_frame: franka_visionpro_target
+    measured_ee_tf_frame: franka_measured_ee
+
+    tracking_rate_hz: 100.0
+    pose_publish_rate_hz: 250.0
+    gripper_publish_rate_hz: 25.0
+    tracking_timeout_sec: 0.25
+
+    # Left pinch is a hold-to-enable clutch.
+    activation_distance_m: 0.020
+    activation_release_distance_m: 0.025
+
+    # Deltas are measured after the vp_base calibration transform.
+    axis_map: [0, 1, 2]
+    axis_signs: [1.0, 1.0, 1.0]
+    translation_scale: 0.95
+    rotation_scale: 1.0
+    workspace_min_xyz: [0.00, -0.50, 0.02]
+    workspace_max_xyz: [0.75, 0.30, 0.70]
+
+    right_pinch_min_m: 0.015
+    right_pinch_max_m: 0.150
+    gripper_open_command: 0.0
+    gripper_closed_command: 0.95
+
+    position_filter_cutoff_hz: 12.0
+    orientation_filter_cutoff_hz: 12.0
+    gripper_filter_cutoff_hz: 2.0
+
+vp_streamer:
+  ros__parameters:
+    visionpro_ip: "192.168.50.153"
+    port: 50051
+    joint_state_topic: /joint_states
+    expected_joint_names:
+      [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
+    attach_to: [0.0, 0.3, 0.65, -55.0]
+    update_simulation_hz: 120.0
+    force_reload: true
+
+    base_frame: fr3_link0
+    current_tool_frame: franka_measured_ee
+    target_visual_tf_frame: franka_visionpro_target
+    ee_fk_body_name: ee_fk_frame
+    ee_target_body_name: ee_target_frame
+    publish_reset_teleop_target: false
+
+    # Map Robotiq feedback (0=open, ~0.725=closed) to the two MuJoCo finger slides.
+    gripper_source_joint: fr3_finger_joint
+    gripper_model_joints: [left_finger_joint, right_finger_joint]
+    gripper_source_min: 0.0
+    gripper_source_max: 0.725
+    gripper_model_open: 0.04
+    gripper_model_closed: 0.0
+
+    enable_camera: true
+    camera_mode: realsense
+    camera_resolution: "1280x720"
+    camera_fps: 30
+    format: v4l2
+    realsense_image_topic: /realsense/top/color/image_raw
+
+    enable_pointcloud: true
+    # The RealSense launch already applies its hardware/SDK decimation filter.
+    pointcloud_topic: /realsense/top/depth/color/points
+    pointcloud_rate_hz: 30.0
+    pointcloud_max_points: 100000
+    pointcloud_flip_world_z: false
+    mocap_flip_world_z: false
+
+    enable_audio: true
+
+robotiq_gripper_node:
+  ros__parameters:
+    command_position_threshold: 1
+    slow_speed: 20
+    fast_speed: 85

@@ -20,6 +20,7 @@ find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
+find_package(franka_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TeleopTarget.msg"
@@ -37,6 +38,20 @@ ament_target_dependencies(teleop_control_cpp
   tf2_geometry_msgs
   std_msgs
 )
+
+add_executable(franka_visionpro_teleop src/franka_visionpro_teleop.cpp)
+target_include_directories(franka_visionpro_teleop PRIVATE ${EIGEN3_INCLUDE_DIRS})
+ament_target_dependencies(franka_visionpro_teleop
+  rclcpp
+  franka_msgs
+  geometry_msgs
+  sensor_msgs
+  std_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+target_link_libraries(franka_visionpro_teleop Eigen3::Eigen)
 
 add_executable(inverse_kinematics_node src/inverse_kinematics.cpp)
 target_include_directories(inverse_kinematics_node PRIVATE ${EIGEN3_INCLUDE_DIRS})
@@ -82,6 +97,7 @@ target_link_libraries(inverse_kinematics_node
 
 install(TARGETS 
   teleop_control_cpp 
+  franka_visionpro_teleop
   depth_to_cloud_node 
   inverse_kinematics_node
   rgb_pointcloud_downsampler_node
@@ -113,6 +129,7 @@ install(DIRECTORY
   config
   rviz
   resource
+  sounds
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -14,7 +14,7 @@
 #include <mutex>
 #include <chrono>
 #include <algorithm>
-#include <cstring>   // memcpy
+#include <cstring>
 
 class RGBPointCloudDownsampler : public rclcpp::Node
 {
@@ -31,7 +31,7 @@ public:
     factor_            = this->declare_parameter<int>("downsample_factor", 40);
     tf_timeout_s_      = this->declare_parameter<double>("tf_timeout_s", 0.02);
     use_timer_         = this->declare_parameter<bool>("use_timer", true);
-    do_tf_             = this->declare_parameter<bool>("do_tf", false); // turn off unless you really need it
+    do_tf_             = this->declare_parameter<bool>("do_tf", false);
 
     // Publisher QoS: small queue
     pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_topic_, rclcpp::QoS(1));
@@ -40,7 +40,7 @@ public:
     auto qos = rclcpp::SensorDataQoS().keep_last(1).best_effort();
     sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic_, qos,
-      [this](sensor_msgs::msg::PointCloud2::SharedPtr msg)
+      [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
       {
         std::lock_guard<std::mutex> lock(mtx_);
         latest_ = std::move(msg);
@@ -53,7 +53,8 @@ public:
     }
 
     RCLCPP_INFO(this->get_logger(),
-      "FAST Downsampler ready. input=%s output=%s factor=%d rate=%.1f do_tf=%s target_frame=%s",
+      "Point-cloud preprocessor ready: input=%s output=%s factor=%d rate=%.1f "
+      "transform=%s target_frame=%s",
       input_topic_.c_str(), output_topic_.c_str(), factor_, publish_rate_hz_,
       do_tf_ ? "true" : "false", target_frame_.c_str());
   }
@@ -61,22 +62,31 @@ public:
 private:
   void tick()
   {
-    sensor_msgs::msg::PointCloud2::SharedPtr msg;
+    sensor_msgs::msg::PointCloud2::ConstSharedPtr msg;
     {
       std::lock_guard<std::mutex> lock(mtx_);
       msg = latest_;
     }
-    if (!msg) return;
-
+    if (!msg || msg == last_published_) {
+      return;
+    }
 
     if (do_tf_) {
-        sensor_msgs::msg::PointCloud2 transformed;
-        if (!transformIfNeeded(*msg, transformed)) return;
-        auto out = downsampleStride(transformed);
-        if (out) pub_->publish(*out);
+      sensor_msgs::msg::PointCloud2 transformed;
+      if (!transformIfNeeded(*msg, transformed)) {
+        return;
+      }
+      auto out = downsampleStride(transformed);
+      if (out) {
+        pub_->publish(*out);
+        last_published_ = msg;
+      }
     } else {
-        auto out = downsampleStride(*msg);          // ✅ no full copy
-        if (out) pub_->publish(*out);
+      auto out = downsampleStride(*msg);
+      if (out) {
+        pub_->publish(*out);
+        last_published_ = msg;
+      }
     }
   }
 
@@ -116,11 +126,9 @@ private:
 
     if (in.point_step == 0) return std::nullopt;
     if (in.data.size() < total_pts * static_cast<size_t>(in.point_step)) {
-      // malformed message
       return std::nullopt;
     }
 
-    // output points count (floor)
     const size_t out_pts = total_pts / static_cast<size_t>(factor_);
     if (out_pts == 0) return std::nullopt;
 
@@ -128,7 +136,7 @@ private:
     out.header       = in.header;
     out.height       = 1;
     out.width        = static_cast<uint32_t>(out_pts);
-    out.fields       = in.fields;        // preserve EVERYTHING
+    out.fields       = in.fields;
     out.is_bigendian = in.is_bigendian;
     out.is_dense     = in.is_dense;
     out.point_step   = in.point_step;
@@ -140,7 +148,6 @@ private:
     uint8_t* dst = out.data.data();
     const size_t ps = static_cast<size_t>(in.point_step);
 
-    // copy every factor-th point as a raw block
     size_t written = 0;
     for (size_t i = 0; i < total_pts; i += static_cast<size_t>(factor_)) {
       std::memcpy(dst + written * ps, src + i * ps, ps);
@@ -174,7 +181,8 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
 
   std::mutex mtx_;
-  sensor_msgs::msg::PointCloud2::SharedPtr latest_;
+  sensor_msgs::msg::PointCloud2::ConstSharedPtr latest_;
+  sensor_msgs::msg::PointCloud2::ConstSharedPtr last_published_;
 };
 
 int main(int argc, char ** argv)
@@ -182,10 +190,7 @@ int main(int argc, char ** argv)
   rclcpp::init(argc, argv);
   auto node = std::make_shared<RGBPointCloudDownsampler>();
 
-  rclcpp::executors::MultiThreadedExecutor exec(
-      rclcpp::ExecutorOptions(), 2); // 2 Threads reichen
-  exec.add_node(node);
-  exec.spin();
+  rclcpp::spin(node);
 
   rclcpp::shutdown();
   return 0;

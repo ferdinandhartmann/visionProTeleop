@@ -53,6 +53,9 @@
 		C1EAF9752ED7E66600549580 /* mujoco_ar.grpc.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAF96D2ED7E66600549580 /* mujoco_ar.grpc.swift */; };
 		C1EAF9772ED7EC9000549580 /* CombinedStreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAF9762ED7EC9000549580 /* CombinedStreamingView.swift */; };
 		C1EAF9792EDBA73600549580 /* UVCCameraManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAF9782EDBA73600549580 /* UVCCameraManager.swift */; };
+		C1F000112F00000000000001 /* PointCloudStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F000012F00000000000001 /* PointCloudStream.swift */; };
+		C1F000122F00000000000001 /* PointCloudRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F000022F00000000000001 /* PointCloudRenderer.swift */; };
+		C1F000132F00000000000001 /* PointCloudShaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = C1F000032F00000000000001 /* PointCloudShaders.metal */; };
 		C1EAF97F2EDBB9C700549580 /* RecordingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAF97E2EDBB9C700549580 /* RecordingManager.swift */; };
 		C1EAFA222EDCF22A00549580 /* OpenCVWrapper.mm in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFA202EDCF22A00549580 /* OpenCVWrapper.mm */; };
 		C1EAFA292EDCF5CF00549580 /* CameraCalibrationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1EAFA272EDCF5CF00549580 /* CameraCalibrationManager.swift */; };
@@ -134,6 +137,9 @@
 		C1EAF9702ED7E66600549580 /* MuJoCoStreamingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MuJoCoStreamingView.swift; sourceTree = "<group>"; };
 		C1EAF9762ED7EC9000549580 /* CombinedStreamingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CombinedStreamingView.swift; sourceTree = "<group>"; };
 		C1EAF9782EDBA73600549580 /* UVCCameraManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UVCCameraManager.swift; sourceTree = "<group>"; };
+		C1F000012F00000000000001 /* PointCloudStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointCloudStream.swift; sourceTree = "<group>"; };
+		C1F000022F00000000000001 /* PointCloudRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointCloudRenderer.swift; sourceTree = "<group>"; };
+		C1F000032F00000000000001 /* PointCloudShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = PointCloudShaders.metal; sourceTree = "<group>"; };
 		C1EAF97E2EDBB9C700549580 /* RecordingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingManager.swift; sourceTree = "<group>"; };
 		C1EAFA1F2EDCF22A00549580 /* OpenCVWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OpenCVWrapper.h; sourceTree = "<group>"; };
 		C1EAFA202EDCF22A00549580 /* OpenCVWrapper.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = OpenCVWrapper.mm; sourceTree = "<group>"; };
@@ -243,6 +249,9 @@
 				C1C767302EF220010020844F /* SignalingClient.swift */,
 				C1E05F7A2ECD850B0018C506 /* ImmersiveView.swift */,
 				C1E05F7B2ECD850B0018C506 /* WebRTCClient.swift */,
+				C1F000012F00000000000001 /* PointCloudStream.swift */,
+				C1F000022F00000000000001 /* PointCloudRenderer.swift */,
+				C1F000032F00000000000001 /* PointCloudShaders.metal */,
 				C1EAF97E2EDBB9C700549580 /* RecordingManager.swift */,
 				C1EAFA822EDF476A00549580 /* CloudStorageProvider.swift */,
 				C1EAFABA2EE0CB1700549580 /* MultipeerCalibrationManager.swift */,
@@ -455,6 +464,9 @@
 				C14B98BC2EECB747000B78D8 /* CalibrationDebugRecorder.swift in Sources */,
 				C1EAF9752ED7E66600549580 /* mujoco_ar.grpc.swift in Sources */,
 				C1E05F7E2ECD850B0018C506 /* WebRTCClient.swift in Sources */,
+				C1F000112F00000000000001 /* PointCloudStream.swift in Sources */,
+				C1F000122F00000000000001 /* PointCloudRenderer.swift in Sources */,
+				C1F000132F00000000000001 /* PointCloudShaders.metal in Sources */,
 				C1893C762B93C1AC00F2269D /* handtracking.grpc.swift in Sources */,
 				C1893C772B93C1AC00F2269D /* handtracking.pb.swift in Sources */,
 				16C95AE32B5E75D800CF0FED /* 🛠️Panel.swift in Sources */,

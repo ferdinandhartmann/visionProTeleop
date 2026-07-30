@@ -602,7 +602,7 @@ class VideoStreamManager: ObservableObject {
     }
     
     /// Callback for point cloud snapshots
-    var onPointCloudReceived: (([SIMD3<Float>], [SIMD3<Float>]) -> Void)? {
+    var onPointCloudReceived: ((PointCloudFrame) -> Void)? {
         didSet {
             webrtcClient?.onPointCloudReceived = onPointCloudReceived
         }
