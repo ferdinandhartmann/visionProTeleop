@@ -25,7 +25,7 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
                 [
-                    FindPackageShare("factr_utils"),
+                    FindPackageShare("franka_utils"),
                     "launch",
                     "franka_robotiqgripperoption.launch.py",
                 ]

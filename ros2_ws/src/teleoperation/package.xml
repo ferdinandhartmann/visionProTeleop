@@ -16,7 +16,7 @@
   <depend>franka_msgs</depend>
   <depend>controller_manager</depend>
   <depend>factr_teleop</depend>
-  <depend>factr_utils</depend>
+  <depend>franka_utils</depend>
   <depend>cameras</depend>
   <depend>robot_description</depend>
   <depend>hand_teleop</depend>
