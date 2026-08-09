@@ -36,9 +36,9 @@ class PackagedUSDZTests(unittest.TestCase):
             staged_xml = generator.stage_scene(xml, description, stage)
             staged_text = staged_xml.read_text(encoding="utf-8")
             self.assertNotIn("${franka_description}", staged_text)
-            self.assertTrue(
-                (stage / "assets/franka_description/meshes/robot_arms/fr3/collision/link0.stl").is_file()
-            )
+            visual_obj = stage / "assets/franka_visual/link0.obj"
+            self.assertTrue(visual_obj.is_file())
+            self.assertGreater(visual_obj.stat().st_size, 500_000)
 
     def test_direct_asset_bypasses_conversion_and_is_idempotent(self):
         asset = ROOT / "ros2_ws/src/robot_description/franka_mujoco/fr3_robotiq_2f85.usdz"

@@ -6,7 +6,17 @@ import simd
 @MainActor
 final class PointCloudRenderer {
 
-    static let maximumPointCount = PointCloudFrame.maximumPointCount
+    // Keep the GPU allocation bounded. The Franka stream is decimated to well
+    // below this value, while the wire decoder can still validate larger
+    // protocol frames before this renderer rejects them.
+    static let maximumPointCount = 20_000
+    private static let verticesPerPoint = 12
+    private static let indicesPerPoint = 60
+    private static let colorTextureWidth = 512
+    private static let colorTexturePointRows =
+        (maximumPointCount + colorTextureWidth - 1) / colorTextureWidth
+    private static let colorTextureHeight =
+        colorTexturePointRows * 2
 
     let entity: ModelEntity
 
@@ -21,7 +31,9 @@ final class PointCloudRenderer {
 
     private let commandQueue: MTLCommandQueue
     private let expansionPipeline: MTLComputePipelineState
+    private let colorPipeline: MTLComputePipelineState
     private let lowLevelMesh: LowLevelMesh
+    private let colorTexture: LowLevelTexture
 
     private var inputSlots: [InputSlot]
     private var pendingFrame: PointCloudFrame?
@@ -39,7 +51,9 @@ final class PointCloudRenderer {
               let commandQueue = device.makeCommandQueue(),
               let library = device.makeDefaultLibrary(),
               let expansionFunction =
-                library.makeFunction(name: "expandPointCloudSprites")
+                library.makeFunction(name: "expandPointCloudSprites"),
+              let colorFunction =
+                library.makeFunction(name: "updatePointCloudColorTexture")
         else {
             throw PointCloudRendererError.metalUnavailable
         }
@@ -51,12 +65,17 @@ final class PointCloudRenderer {
                 function: expansionFunction
             )
 
+        self.colorPipeline =
+            try device.makeComputePipelineState(
+                function: colorFunction
+            )
+
         self.spriteRadius = spriteRadius
 
         var descriptor = LowLevelMesh.Descriptor()
 
         descriptor.vertexCapacity =
-            Self.maximumPointCount * 4
+            Self.maximumPointCount * Self.verticesPerPoint
 
         descriptor.vertexAttributes = [
             .init(
@@ -66,8 +85,8 @@ final class PointCloudRenderer {
                 offset: 0
             ),
             .init(
-                semantic: .color,
-                format: .uchar4Normalized,
+                semantic: .uv0,
+                format: .float2,
                 layoutIndex: 0,
                 offset: 12
             ),
@@ -76,12 +95,12 @@ final class PointCloudRenderer {
         descriptor.vertexLayouts = [
             .init(
                 bufferIndex: 0,
-                bufferStride: 16
+                bufferStride: 20
             )
         ]
 
         descriptor.indexCapacity =
-            Self.maximumPointCount * 12
+            Self.maximumPointCount * Self.indicesPerPoint
 
         descriptor.indexType = .uint32
 
@@ -93,16 +112,18 @@ final class PointCloudRenderer {
             let indices =
                 rawIndices.bindMemory(to: UInt32.self)
 
-            let tetrahedron: [UInt32] = [
-                0, 1, 2,
-                0, 3, 1,
-                0, 2, 3,
-                1, 3, 2,
+            let sphereIndices: [UInt32] = [
+                0, 11, 5,  0, 5, 1,   0, 1, 7,   0, 7, 10,  0, 10, 11,
+                1, 5, 9,   5, 11, 4,  11, 10, 2, 10, 7, 6,  7, 1, 8,
+                3, 9, 4,   3, 4, 2,   3, 2, 6,   3, 6, 8,   3, 8, 9,
+                4, 9, 5,   2, 4, 11,  6, 2, 10,  8, 6, 7,   9, 8, 1,
             ]
             for pointIndex in 0..<Self.maximumPointCount {
-                let vertexBase = UInt32(pointIndex * 4)
-                let indexBase = pointIndex * tetrahedron.count
-                for (offset, localIndex) in tetrahedron.enumerated() {
+                let vertexBase = UInt32(
+                    pointIndex * Self.verticesPerPoint
+                )
+                let indexBase = pointIndex * sphereIndices.count
+                for (offset, localIndex) in sphereIndices.enumerated() {
                     indices[indexBase + offset] = vertexBase + localIndex
                 }
             }
@@ -121,6 +142,26 @@ final class PointCloudRenderer {
         ])
 
         self.lowLevelMesh = lowLevelMesh
+
+        var textureDescriptor = LowLevelTexture.Descriptor()
+        textureDescriptor.textureType = .type2D
+        textureDescriptor.arrayLength = 1
+        textureDescriptor.width = Self.colorTextureWidth
+        textureDescriptor.height = Self.colorTextureHeight
+        textureDescriptor.depth = 1
+        textureDescriptor.mipmapLevelCount = 1
+        textureDescriptor.pixelFormat = .bgra8Unorm
+        textureDescriptor.textureUsage = [.shaderRead, .shaderWrite]
+        textureDescriptor.swizzle = .init(
+            red: .red,
+            green: .green,
+            blue: .blue,
+            alpha: .alpha
+        )
+
+        let colorTexture =
+            try LowLevelTexture(descriptor: textureDescriptor)
+        self.colorTexture = colorTexture
 
         let entity = ModelEntity()
 
@@ -152,8 +193,11 @@ final class PointCloudRenderer {
         let meshResource =
             try MeshResource(from: lowLevelMesh)
 
+        let textureResource =
+            try TextureResource(from: colorTexture)
+
         let material =
-            UnlitMaterial(color: .white)
+            UnlitMaterial(texture: textureResource)
 
         entity.components.set(
             ModelComponent(
@@ -247,13 +291,59 @@ final class PointCloudRenderer {
         return
     }
 
+    // LowLevelTexture requires the command buffer to be enqueued before
+    // replace(using:) so RealityKit can synchronize the newly written texture
+    // with its renderer. Without this, the material can sample an
+    // uninitialized black resource and resource lifetime is undefined.
+    commandBuffer.enqueue()
+
     let outputBuffer =
         lowLevelMesh.replace(
             bufferIndex: 0,
             using: commandBuffer
         )
 
+    let outputColorTexture =
+        colorTexture.replace(using: commandBuffer)
+
     var pointCount = UInt32(frame.pointCount)
+
+    encoder.setComputePipelineState(
+        colorPipeline
+    )
+
+    encoder.setBuffer(
+        slot.buffer,
+        offset: 0,
+        index: 0
+    )
+
+    encoder.setBytes(
+        &pointCount,
+        length: MemoryLayout<UInt32>.size,
+        index: 1
+    )
+
+    encoder.setTexture(
+        outputColorTexture,
+        index: 0
+    )
+
+    let colorThreadWidth =
+        colorPipeline.threadExecutionWidth
+
+    encoder.dispatchThreadgroups(
+        MTLSize(
+            width: (frame.pointCount + colorThreadWidth - 1) / colorThreadWidth,
+            height: 1,
+            depth: 1
+        ),
+        threadsPerThreadgroup: MTLSize(
+            width: colorThreadWidth,
+            height: 1,
+            depth: 1
+        )
+    )
 
     encoder.setComputePipelineState(
         expansionPipeline
@@ -282,6 +372,16 @@ final class PointCloudRenderer {
         &radius,
         length: MemoryLayout<Float>.size,
         index: 3
+    )
+
+    var colorTextureSize = SIMD2<UInt32>(
+        UInt32(Self.colorTextureWidth),
+        UInt32(Self.colorTextureHeight)
+    )
+    encoder.setBytes(
+        &colorTextureSize,
+        length: MemoryLayout<SIMD2<UInt32>>.size,
+        index: 4
     )
 
     let threadWidth =
@@ -321,7 +421,7 @@ final class PointCloudRenderer {
     lowLevelMesh.parts.replaceAll([
         .init(
             indexOffset: 0,
-            indexCount: frame.pointCount * 12,
+            indexCount: frame.pointCount * Self.indicesPerPoint,
             topology: .triangle,
             materialIndex: 0,
             bounds: bounds
@@ -329,7 +429,7 @@ final class PointCloudRenderer {
     ])
 
     commandBuffer.addCompletedHandler {
-        [weak self, weak slot] _ in
+        [weak self, weak slot] completedBuffer in
 
         Task { @MainActor in
             guard let self,
@@ -340,6 +440,13 @@ final class PointCloudRenderer {
 
             slot.busy = false
 
+            if let error = completedBuffer.error {
+                dlog(
+                    "❌ [PointCloud GPU] command buffer failed: " +
+                    error.localizedDescription
+                )
+            }
+
             if let pending = self.pendingFrame {
                 self.pendingFrame = nil
                 self.submit(pending)
@@ -349,12 +456,14 @@ final class PointCloudRenderer {
 
     commandBuffer.commit()
 
-    entity.isEnabled = visible
+    if !entity.isEnabled {
+        entity.isEnabled = visible
+    }
 
     submittedFrames += 1
 
     logStatsIfNeeded(
-        pointCount: frame.pointCount
+        frame: frame
     )
 
     }
@@ -366,7 +475,7 @@ final class PointCloudRenderer {
     }
 
     private func logStatsIfNeeded(
-        pointCount: Int
+        frame: PointCloudFrame
     ) {
         let now =
             ProcessInfo.processInfo.systemUptime
@@ -377,12 +486,67 @@ final class PointCloudRenderer {
 
         lastStatsLog = now
 
+        let colorSummary = sampledColorSummary(frame)
+
         dlog(
             "🌫️ [PointCloud GPU] " +
-            "points=\(pointCount) " +
+            "points=\(frame.pointCount) " +
             "submitted=\(submittedFrames) " +
-            "gpu_busy_drops=\(gpuBusyDrops)"
+            "gpu_busy_drops=\(gpuBusyDrops) " +
+            colorSummary
         )
+    }
+
+    private func sampledColorSummary(
+        _ frame: PointCloudFrame
+    ) -> String {
+        let targetSamples = min(frame.pointCount, 256)
+        guard targetSamples > 0 else {
+            return "rgb_samples=0"
+        }
+
+        let pointStride = max(1, frame.pointCount / targetSamples)
+        var minimum = UInt8.max
+        var maximum = UInt8.min
+        var redTotal: UInt64 = 0
+        var greenTotal: UInt64 = 0
+        var blueTotal: UInt64 = 0
+        var sampleCount: UInt64 = 0
+
+        frame.packedPoints.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            var pointIndex = 0
+            while pointIndex < frame.pointCount,
+                  sampleCount < UInt64(targetSamples) {
+                let colorOffset =
+                    pointIndex * PointCloudFrame.recordBytes + 6
+                let red = bytes[colorOffset]
+                let green = bytes[colorOffset + 1]
+                let blue = bytes[colorOffset + 2]
+                minimum = Swift.min(
+                    minimum,
+                    Swift.min(red, Swift.min(green, blue))
+                )
+                maximum = Swift.max(
+                    maximum,
+                    Swift.max(red, Swift.max(green, blue))
+                )
+                redTotal += UInt64(red)
+                greenTotal += UInt64(green)
+                blueTotal += UInt64(blue)
+                sampleCount += 1
+                pointIndex += pointStride
+            }
+        }
+
+        guard sampleCount > 0 else {
+            return "rgb_samples=0"
+        }
+        return
+            "rgb_avg=(\(redTotal / sampleCount)," +
+            "\(greenTotal / sampleCount)," +
+            "\(blueTotal / sampleCount)) " +
+            "rgb_range=\(minimum)...\(maximum)"
     }
 }
 

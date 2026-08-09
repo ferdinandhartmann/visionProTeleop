@@ -2328,7 +2328,7 @@ struct StatusOverlay: View {
                 .buttonStyle(.plain)
                 
                 Button {
-                    dataManager.videoPlaneScale = 0.8
+                    dataManager.videoPlaneScale = 5.0 / 24.0
                     dataManager.videoPlaneZDistance = -10.0
                     dataManager.videoPlaneYPosition = 0.0
                     dataManager.videoPlaneAutoPerpendicular = false
@@ -3003,6 +3003,7 @@ struct StatusOverlay: View {
                         .buttonStyle(.plain)
                         
                         Button {
+                            dataManager.videoPlaneScale = 5.0 / 24.0
                             dataManager.videoPlaneZDistance = -10.0
                             dataManager.videoPlaneYPosition = 0.0
                             dataManager.videoPlaneAutoPerpendicular = false

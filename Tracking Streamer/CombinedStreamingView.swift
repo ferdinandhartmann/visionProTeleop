@@ -24,6 +24,11 @@ final class CombinedStreamingUpdateCache: ObservableObject {
     var cachedLeftBoneMaterial: RealityKit.Material? = nil
     var cachedRightBoneMaterial: RealityKit.Material? = nil
     var pointCloudRenderer: PointCloudRenderer? = nil
+    var lastVideoImageIdentifier: ObjectIdentifier? = nil
+    var lastVideoScale: Float = -.infinity
+    var lastVideoBaseline: Float = -.infinity
+    var lastVideoStereo = false
+    var lastVideoWasUVC = false
 }
 
 // MARK: - Marker Label View (SwiftUI attachment for real-time text updates)
@@ -208,7 +213,6 @@ struct CombinedStreamingView: View {
     @State private var stereoMaterialEntity: Entity? = nil
     @State private var fixedWorldTransform: Transform? = nil
     @State private var statusFixedWorldTransform: Transform? = nil
-    @State private var lastStatusFixedToWorld: Bool = false
     @State private var uvcFrame: UIImage? = nil  // UVC camera frame
     
     // MuJoCo state
@@ -460,168 +464,117 @@ struct CombinedStreamingView: View {
                 // Hide video plane when calibration wizard is active (video goes to wizard instead)
                 let hideForCalibration = dataManager.isCalibrationWizardActive
                 
-                // Update video texture based on source
-                if hasVideoFrame && !hideForCalibration, let skyBox = skyBoxEntity {
-                    let displayImage: UIImage
-                    let imageWidth: CGFloat
-                    let imageHeight: CGFloat
-                    
-                    if isUVCMode, let uvc = uvcFrame {
-                        // Use UVC camera frame
-                        displayImage = uvc
-                        imageWidth = displayImage.size.width
-                        imageHeight = displayImage.size.height
-                    } else if let imageRight = imageData.right {
-                        // Use network stream frame
-                        displayImage = imageRight
-                        imageWidth = imageRight.size.width
-                        imageHeight = imageRight.size.height
-                    } else {
-                        skyBoxEntity?.isEnabled = false
-                        return
-                    }
-                    
-                    // Record frame if recording is active (video-driven recording)
-                    // Each new video frame captures the latest tracking data
-                    if recordingManager.isRecording {
-                        recordingManager.recordVideoFrame(displayImage)
-                    }
-                    
-                    // Calculate aspect ratio - for stereo UVC, the displayed image is half width (side-by-side split)
-                    let isUVCStereo = isUVCMode && UVCCameraManager.shared.stereoEnabled
-                    let effectiveWidth = isUVCStereo ? imageWidth / 2 : imageWidth
-                    let aspectRatio = Float(effectiveWidth / imageHeight)
-                    let scale = dataManager.videoPlaneScale
-                    // Apply scale factor to plane dimensions
-                    let planeHeight: Float = 9.6 * scale
-                    var planeWidth = planeHeight * aspectRatio
-                    
-                    // Adjust plane width for stereo baseline cropping (crop not stretch)
-                    let baselineOffset = abs(dataManager.stereoBaselineOffset)
-                    if baselineOffset > 0.001 {
-                        planeWidth *= Float(1.0 - baselineOffset)
-                    }
-                    
-                    let newMesh = MeshResource.generatePlane(width: planeWidth, height: planeHeight)
-                    skyBox.components[ModelComponent.self]?.mesh = newMesh
-                    previewEntity?.components[ModelComponent.self]?.mesh = newMesh
-                    
+                // Texture and mesh creation are expensive. RealityView can update at
+                // hand-tracking rate, so process video only for a new frame or a
+                // display-setting change. Plane movement still updates above.
+                if hasVideoFrame && !hideForCalibration,
+                   let skyBox = skyBoxEntity,
+                   let displayImage = isUVCMode ? uvcFrame : imageData.right,
+                   let displayCG = displayImage.cgImage,
+                   displayImage.size.height > 0 {
+                    let isStereo = isUVCMode
+                        ? UVCCameraManager.shared.stereoEnabled
+                        : dataManager.stereoEnabled
+                    let scale = max(dataManager.videoPlaneScale, 0.05)
+                    let signedBaseline = min(max(dataManager.stereoBaselineOffset, -0.45), 0.45)
+                    let imageIdentifier = ObjectIdentifier(displayImage)
+                    let needsContentUpdate =
+                        updateCache.lastVideoImageIdentifier != imageIdentifier ||
+                        updateCache.lastVideoScale != scale ||
+                        updateCache.lastVideoBaseline != signedBaseline ||
+                        updateCache.lastVideoStereo != isStereo ||
+                        updateCache.lastVideoWasUVC != isUVCMode
+
                     skyBox.isEnabled = !videoMinimized
-                    
-                    // Check stereo mode: UVC uses UVCCameraManager.stereoEnabled, network uses DataManager.stereoEnabled
-                    let isStereo = isUVCMode ? UVCCameraManager.shared.stereoEnabled : DataManager.shared.stereoEnabled
-                    
-                    if isStereo {
-                        // Stereo mode: need left and right images
-                        let leftImage: CGImage?
-                        let rightImage: CGImage?
-                        
-                        if isUVCMode, let uvc = uvcFrame, let cgImage = uvc.cgImage {
-                            // Split UVC side-by-side frame into left and right halves
-                            let width = cgImage.width
-                            let height = cgImage.height
-                            let halfWidth = width / 2
-                            
-                            let leftRect = CGRect(x: 0, y: 0, width: halfWidth, height: height)
-                            let rightRect = CGRect(x: halfWidth, y: 0, width: halfWidth, height: height)
-                            
-                            leftImage = cgImage.cropping(to: leftRect)
-                            rightImage = cgImage.cropping(to: rightRect)
-                        } else if let imgLeft = imageData.left, let imgRight = imageData.right {
-                            // Network stream already has separate left/right
-                            leftImage = imgLeft.cgImage
-                            rightImage = imgRight.cgImage
-                        } else {
-                            leftImage = nil
-                            rightImage = nil
-                        }
-                        
-                        if let leftCG = leftImage, let rightCG = rightImage {
-                            // Apply baseline offset cropping if needed
-                            let offset = CGFloat(dataManager.stereoBaselineOffset)
-                            let finalLeftImage: CGImage?
-                            let finalRightImage: CGImage?
-                            
-                            if abs(offset) > 0.001 {
-                                let width = CGFloat(leftCG.width)
-                                let height = CGFloat(leftCG.height)
-                                let cropWidth = width * (1.0 - abs(offset))
-                                
-                                // Calculate crop rects based on offset direction
-                                // Negative offset (Narrower): Crop outer sides (Left: Crop Left, Right: Crop Right) -> Visual shift inward
-                                // Positive offset (Wider): Crop inner sides (Left: Crop Right, Right: Crop Left) -> Visual shift outward
-                                
-                                let leftRect: CGRect
-                                let rightRect: CGRect
-                                
-                                if offset < 0 {
-                                    // Narrower: Left eye crops left side (keeps right), Right eye crops right side (keeps left)
-                                    leftRect = CGRect(x: abs(offset) * width, y: 0, width: cropWidth, height: height)
-                                    rightRect = CGRect(x: 0, y: 0, width: cropWidth, height: height)
-                                } else {
-                                    // Wider: Left eye crops right side (keeps left), Right eye crops left side (keeps right)
-                                    leftRect = CGRect(x: 0, y: 0, width: cropWidth, height: height)
-                                    rightRect = CGRect(x: abs(offset) * width, y: 0, width: cropWidth, height: height)
-                                }
-                                
-                                finalLeftImage = leftCG.cropping(to: leftRect)
-                                finalRightImage = rightCG.cropping(to: rightRect)
-                            } else {
-                                finalLeftImage = leftCG
-                                finalRightImage = rightCG
-                            }
-                            
-                            do {
-                                guard let sphereEntity = stereoMaterialEntity,
-                                      var stereoMaterial = sphereEntity.components[ModelComponent.self]?.materials.first as? ShaderGraphMaterial else {
-                                    var skyBoxMaterial = UnlitMaterial()
-                                    var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                                    textureOptions.mipmapsMode = .none
-                                    if let img = finalRightImage {
-                                        let texture = try TextureResource.generate(from: img, options: textureOptions)
-                                        skyBoxMaterial.color = .init(texture: .init(texture))
-                                        skyBox.components[ModelComponent.self]?.materials = [skyBoxMaterial]
-                                    }
-                                    return
-                                }
-                                
-                                var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                                textureOptions.mipmapsMode = .none
-                                
-                                if let lImg = finalLeftImage, let rImg = finalRightImage {
-                                    let leftTexture = try TextureResource.generate(from: lImg, options: textureOptions)
-                                    let rightTexture = try TextureResource.generate(from: rImg, options: textureOptions)
-                                    try stereoMaterial.setParameter(name: "left", value: .textureResource(leftTexture))
-                                    try stereoMaterial.setParameter(name: "right", value: .textureResource(rightTexture))
-                                    skyBox.components[ModelComponent.self]?.materials = [stereoMaterial]
-                                }
-                            } catch {
-                                dlog("❌ ERROR: Failed to load stereo textures: \(error)")
-                            }
-                        } else {
-                            // Fallback to mono if stereo split fails
-                            var skyBoxMaterial = UnlitMaterial()
-                            do {
-                                var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                                textureOptions.mipmapsMode = .none
-                                let texture = try TextureResource.generate(from: displayImage.cgImage!, options: textureOptions)
-                                skyBoxMaterial.color = .init(texture: .init(texture))
-                                skyBox.components[ModelComponent.self]?.materials = [skyBoxMaterial]
-                            } catch {
-                                dlog("❌ ERROR: Failed to load fallback mono texture: \(error)")
-                            }
-                        }
-                    } else {
-                        // Mono mode (either UVC or network mono)
-                        var skyBoxMaterial = UnlitMaterial()
+
+                    if needsContentUpdate {
+                        updateCache.lastVideoImageIdentifier = imageIdentifier
+                        updateCache.lastVideoScale = scale
+                        updateCache.lastVideoBaseline = signedBaseline
+                        updateCache.lastVideoStereo = isStereo
+                        updateCache.lastVideoWasUVC = isUVCMode
+
+                        let effectiveWidth = isStereo && isUVCMode
+                            ? displayImage.size.width / 2
+                            : displayImage.size.width
+                        let aspectRatio = Float(effectiveWidth / displayImage.size.height)
+                        let planeHeight: Float = 9.6 * scale
+                        let planeWidth = planeHeight * aspectRatio * (1.0 - abs(signedBaseline))
+                        let newMesh = MeshResource.generatePlane(
+                            width: max(planeWidth, 0.01),
+                            height: max(planeHeight, 0.01)
+                        )
+                        skyBox.components[ModelComponent.self]?.mesh = newMesh
+                        previewEntity?.components[ModelComponent.self]?.mesh = newMesh
+
+                        var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
+                        textureOptions.mipmapsMode = .none
+
                         do {
-                            var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                            textureOptions.mipmapsMode = .none
-                            let texture = try TextureResource.generate(from: displayImage.cgImage!, options: textureOptions)
-                            skyBoxMaterial.color = .init(texture: .init(texture))
-                            skyBox.components[ModelComponent.self]?.materials = [skyBoxMaterial]
+                            if isStereo {
+                                let sourceLeft: CGImage?
+                                let sourceRight: CGImage?
+                                if isUVCMode {
+                                    let halfWidth = displayCG.width / 2
+                                    guard halfWidth > 0 else {
+                                        skyBox.isEnabled = false
+                                        return
+                                    }
+                                    sourceLeft = displayCG.cropping(
+                                        to: CGRect(x: 0, y: 0, width: halfWidth, height: displayCG.height)
+                                    )
+                                    sourceRight = displayCG.cropping(
+                                        to: CGRect(x: halfWidth, y: 0, width: halfWidth, height: displayCG.height)
+                                    )
+                                } else {
+                                    sourceLeft = imageData.left?.cgImage
+                                    sourceRight = imageData.right?.cgImage
+                                }
+
+                                if let leftCG = sourceLeft, let rightCG = sourceRight {
+                                    let offset = CGFloat(signedBaseline)
+                                    let cropFraction = CGFloat(1.0 - abs(signedBaseline))
+                                    let cropWidth = max(1.0, CGFloat(leftCG.width) * cropFraction)
+                                    let height = CGFloat(leftCG.height)
+                                    let leftRect = CGRect(
+                                        x: offset < 0 ? abs(offset) * CGFloat(leftCG.width) : 0,
+                                        y: 0,
+                                        width: cropWidth,
+                                        height: height
+                                    )
+                                    let rightRect = CGRect(
+                                        x: offset > 0 ? abs(offset) * CGFloat(rightCG.width) : 0,
+                                        y: 0,
+                                        width: cropWidth,
+                                        height: CGFloat(rightCG.height)
+                                    )
+                                    let finalLeft = leftCG.cropping(to: leftRect)
+                                    let finalRight = rightCG.cropping(to: rightRect)
+
+                                    if let left = finalLeft,
+                                       let right = finalRight,
+                                       let materialEntity = stereoMaterialEntity,
+                                       var material = materialEntity.components[ModelComponent.self]?.materials.first as? ShaderGraphMaterial {
+                                        let leftTexture = try TextureResource.generate(from: left, options: textureOptions)
+                                        let rightTexture = try TextureResource.generate(from: right, options: textureOptions)
+                                        try material.setParameter(name: "left", value: .textureResource(leftTexture))
+                                        try material.setParameter(name: "right", value: .textureResource(rightTexture))
+                                        skyBox.components[ModelComponent.self]?.materials = [material]
+                                    } else if let right = finalRight {
+                                        var material = UnlitMaterial()
+                                        let texture = try TextureResource.generate(from: right, options: textureOptions)
+                                        material.color = .init(texture: .init(texture))
+                                        skyBox.components[ModelComponent.self]?.materials = [material]
+                                    }
+                                }
+                            } else {
+                                var material = UnlitMaterial()
+                                let texture = try TextureResource.generate(from: displayCG, options: textureOptions)
+                                material.color = .init(texture: .init(texture))
+                                skyBox.components[ModelComponent.self]?.materials = [material]
+                            }
                         } catch {
-                            dlog("❌ ERROR: Failed to load mono texture: \(error)")
+                            dlog("❌ [VideoPlane] Failed to update texture: \(error)")
                         }
                     }
                 } else {
@@ -631,17 +584,11 @@ struct CombinedStreamingView: View {
             
             // === STATUS UPDATE ===
             let statusFixed = dataManager.statusFixedToWorld
-            let statusFixedChanged = statusFixed != lastStatusFixedToWorld
             let statusHeadAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity
             
             if let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor {
-                        if statusFixedChanged {
-                            // Capture the current world transform before switching anchors to prevent jumps
-                            let worldMatrix = statusContainer.transformMatrix(relativeTo: nil)
-                            statusFixedWorldTransform = Transform(matrix: worldMatrix)
-                        }
                         if statusContainer.parent !== worldAnchor {
                             statusContainer.setParent(worldAnchor, preservingWorldTransform: true)
                         }
@@ -668,8 +615,6 @@ struct CombinedStreamingView: View {
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
             }
-            lastStatusFixedToWorld = statusFixed
-            
             if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor, statusPreviewContainer.parent !== worldAnchor {
@@ -2151,7 +2096,7 @@ struct CombinedStreamingView: View {
 
 private func createSkyBox() -> Entity {
     let skyBoxEntity = Entity()
-    let defaultHeight: Float = 9.6
+    let defaultHeight: Float = 2.0
     let defaultWidth: Float = defaultHeight * (16.0 / 9.0)
     let largePlane = MeshResource.generatePlane(width: defaultWidth, height: defaultHeight)
     var skyBoxMaterial = UnlitMaterial()
@@ -2162,7 +2107,7 @@ private func createSkyBox() -> Entity {
 
 private func createPreviewPlane() -> Entity {
     let previewEntity = Entity()
-    let defaultHeight: Float = 9.6
+    let defaultHeight: Float = 2.0
     let defaultWidth: Float = defaultHeight * (16.0 / 9.0)
     let largePlane = MeshResource.generatePlane(width: defaultWidth, height: defaultHeight)
     var previewMaterial = UnlitMaterial()

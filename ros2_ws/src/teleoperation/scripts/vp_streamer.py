@@ -75,6 +75,7 @@ class VPStreamer(Node):
         self.declare_parameter("pointcloud_topic", "/points_downsampled")
         self.declare_parameter("pointcloud_rate_hz", 30.0)
         self.declare_parameter("pointcloud_max_points", 50000)
+        self.declare_parameter("pointcloud_stride", 1)
         self.declare_parameter("pointcloud_flip_world_z", True)
         self.declare_parameter("mocap_flip_world_z", True)
         self.declare_parameter("realsense_image_topic", "/camera/camera/color/image_raw")
@@ -161,6 +162,7 @@ class VPStreamer(Node):
         self._last_pointcloud_time = 0.0
         self._pointcloud_rate_hz_internal = params["pointcloud_rate_hz"]
         self._pointcloud_max_points = params["pointcloud_max_points"]
+        self._pointcloud_stride = max(1, int(params["pointcloud_stride"]))
         self._pointcloud_msg_lock = threading.Lock()
         self._latest_pointcloud_msg = None
         self._last_pointcloud_msg = None
@@ -341,6 +343,7 @@ class VPStreamer(Node):
         pointcloud_topic = self.get_parameter("pointcloud_topic").value
         pointcloud_rate_hz = float(self.get_parameter("pointcloud_rate_hz").value)
         pointcloud_max_points = int(self.get_parameter("pointcloud_max_points").value)
+        pointcloud_stride = int(self.get_parameter("pointcloud_stride").value)
         pointcloud_flip_world_z = bool(self.get_parameter("pointcloud_flip_world_z").value)
         mocap_flip_world_z = bool(self.get_parameter("mocap_flip_world_z").value)
         realsense_image_topic = self.get_parameter("realsense_image_topic").value
@@ -389,6 +392,7 @@ class VPStreamer(Node):
             "pointcloud_topic": pointcloud_topic,
             "pointcloud_rate_hz": pointcloud_rate_hz,
             "pointcloud_max_points": pointcloud_max_points,
+            "pointcloud_stride": pointcloud_stride,
             "pointcloud_flip_world_z": pointcloud_flip_world_z,
             "mocap_flip_world_z": mocap_flip_world_z,
             "realsense_image_topic": realsense_image_topic,
@@ -528,6 +532,9 @@ class VPStreamer(Node):
 
         try:
             positions, colors = extract_xyz_rgb(msg)
+            if self._pointcloud_stride > 1:
+                positions = positions[::self._pointcloud_stride]
+                colors = colors[::self._pointcloud_stride]
             if transform is not None:
                 positions = transform_xyz(positions, transform)
         except Exception as exc:  # noqa: BLE001

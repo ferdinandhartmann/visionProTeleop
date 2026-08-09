@@ -21,6 +21,8 @@ franka_visionpro_teleop:
     right_thumb_frame: visionpro/right/thumb_4
     right_index_frame: visionpro/right/index_4
     target_tf_frame: franka_visionpro_target
+    # RViz frame parented directly to the tracked wrist.
+    wrist_target_tf_frame: franka_visionpro_wrist_target
     measured_ee_tf_frame: franka_measured_ee
 
     tracking_rate_hz: 100.0
@@ -28,7 +30,7 @@ franka_visionpro_teleop:
     gripper_publish_rate_hz: 25.0
     tracking_timeout_sec: 0.25
     max_tracking_translation_jump_m: 0.05
-    max_tracking_rotation_jump_deg: 10.0
+    max_tracking_rotation_jump_deg: 15.0
 
     # Left pinch is a hold-to-enable clutch.
     activation_distance_m: 0.020
@@ -40,6 +42,11 @@ franka_visionpro_teleop:
     rotation_axis_signs: [-1.0, 1.0, -1.0]
     translation_scale: 0.8
     rotation_scale: 0.5
+    # Local pose from visionpro/right/wrist to the RViz wrist target.
+    # Rotation uses ROS roll-pitch-yaw order (X-Y-Z), in degrees.
+    # This does not alter the commanded robot pose.
+    wrist_target_offset_xyz: [-0.1, -0.06, 0.02]
+    wrist_target_offset_rpy_deg: [25.0, 179.0, 15.0]
     workspace_min_xyz: [0.00, -0.50, 0.02]
     workspace_max_xyz: [0.75, 0.30, 0.70]
 
@@ -59,9 +66,11 @@ vp_streamer:
     joint_state_topic: /joint_states
     expected_joint_names:
       [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
-    attach_to: [0.0, 0.3, 0.65, -55.0]
+    attach_to: [0.0, 0.4, 0.65, 90.0]
     update_simulation_hz: 30.0
-    pose_streaming_hz: 60.0
+    # 30 Hz is smooth in-headset and halves RealityKit transform updates.
+    # Robot control publishing remains independently configured at 250 Hz.
+    pose_streaming_hz: 30.0
     force_reload: false
 
     base_frame: fr3_link0
@@ -92,8 +101,11 @@ vp_streamer:
     enable_pointcloud: true
     # The RealSense launch already applies its hardware/SDK decimation filter.
     pointcloud_topic: /realsense/wrist/depth/color/points
-    pointcloud_rate_hz: 10.0
-    pointcloud_max_points: 100000
+    # Balanced Vision Pro profile: newest-frame streaming with roughly half of
+    # the already hardware-decimated RealSense points.
+    pointcloud_rate_hz: 6.0
+    pointcloud_max_points: 20000
+    pointcloud_stride: 2
     pointcloud_flip_world_z: false
     mocap_flip_world_z: false
 

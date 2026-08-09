@@ -137,6 +137,8 @@ private:
       "right_index_frame", "visionpro/right/index_4");
     target_tf_frame_ = declare_parameter<std::string>(
       "target_tf_frame", "franka_visionpro_target");
+    wrist_target_tf_frame_ = declare_parameter<std::string>(
+      "wrist_target_tf_frame", "franka_visionpro_wrist_target");
     measured_ee_tf_frame_ = declare_parameter<std::string>(
       "measured_ee_tf_frame", "franka_measured_ee");
 
@@ -170,6 +172,10 @@ private:
       "axis_signs", {1.0, 1.0, 1.0});
     const auto rotation_axis_signs = declare_parameter<std::vector<double>>(
       "rotation_axis_signs", {1.0, 1.0, 1.0});
+    const auto wrist_target_offset = declare_parameter<std::vector<double>>(
+      "wrist_target_offset_xyz", {0.0, 0.0, 0.0});
+    const auto wrist_target_offset_rpy_deg = declare_parameter<std::vector<double>>(
+      "wrist_target_offset_rpy_deg", {0.0, 0.0, 0.0});
     const auto workspace_min = declare_parameter<std::vector<double>>(
       "workspace_min_xyz", {0.0, -0.5, 0.02});
     const auto workspace_max = declare_parameter<std::vector<double>>(
@@ -193,9 +199,11 @@ private:
       throw std::invalid_argument("right_pinch_max_m must exceed right_pinch_min_m");
     }
     if (axis_map.size() != 3 || axis_signs.size() != 3 || rotation_axis_signs.size() != 3 ||
+      wrist_target_offset.size() != 3 || wrist_target_offset_rpy_deg.size() != 3 ||
       workspace_min.size() != 3 || workspace_max.size() != 3)
     {
-      throw std::invalid_argument("Axis and workspace parameters must contain three values");
+      throw std::invalid_argument(
+              "Axis, target offset, and workspace parameters must contain three values");
     }
 
     mapping_.setZero();
@@ -208,12 +216,21 @@ private:
       used_axes[axis] = true;
       mapping_(row, axis) = axis_signs[row];
       rotation_axis_signs_[row] = rotation_axis_signs[row];
+      wrist_target_offset_[row] = wrist_target_offset[row];
       workspace_min_[row] = workspace_min[row];
       workspace_max_[row] = workspace_max[row];
       if (workspace_max_[row] <= workspace_min_[row]) {
         throw std::invalid_argument("Each workspace maximum must exceed its minimum");
       }
     }
+
+    const double roll = wrist_target_offset_rpy_deg[0] * M_PI / 180.0;
+    const double pitch = wrist_target_offset_rpy_deg[1] * M_PI / 180.0;
+    const double yaw = wrist_target_offset_rpy_deg[2] * M_PI / 180.0;
+    wrist_target_offset_orientation_ = normalized(
+      Quaternion(Eigen::AngleAxisd(yaw, Vector3::UnitZ())) *
+      Quaternion(Eigen::AngleAxisd(pitch, Vector3::UnitY())) *
+      Quaternion(Eigen::AngleAxisd(roll, Vector3::UnitX())));
   }
 
   std::optional<geometry_msgs::msg::TransformStamped> lookup(
@@ -290,6 +307,20 @@ private:
       }
       return;
     }
+
+    // RViz-only wrist-offset frame. It is deliberately independent of the
+    // robot command: its parent is the tracked wrist, and its configured
+    // translation and RPY rotation are both local to that wrist frame.
+    geometry_msgs::msg::TransformStamped wrist_target_transform;
+    wrist_target_transform.header.stamp = hand->header.stamp;
+    wrist_target_transform.header.frame_id = hand_frame_;
+    wrist_target_transform.child_frame_id = wrist_target_tf_frame_;
+    wrist_target_transform.transform.translation.x = wrist_target_offset_.x();
+    wrist_target_transform.transform.translation.y = wrist_target_offset_.y();
+    wrist_target_transform.transform.translation.z = wrist_target_offset_.z();
+    wrist_target_transform.transform.rotation = quaternionMsg(wrist_target_offset_orientation_);
+    tf_broadcaster_.sendTransform(wrist_target_transform);
+
     last_tracking_stamp_ = tracking_stamp;
     const double left_pinch = (translation(*left_thumb) - translation(*left_index)).norm();
 
@@ -518,6 +549,7 @@ private:
   std::string right_thumb_frame_;
   std::string right_index_frame_;
   std::string target_tf_frame_;
+  std::string wrist_target_tf_frame_;
   std::string measured_ee_tf_frame_;
 
   double tracking_rate_hz_{100.0};
@@ -539,6 +571,8 @@ private:
   double gripper_closed_command_{0.95};
   Eigen::Matrix3d mapping_{Eigen::Matrix3d::Identity()};
   Vector3 rotation_axis_signs_{1.0, 1.0, 1.0};
+  Vector3 wrist_target_offset_{Vector3::Zero()};
+  Quaternion wrist_target_offset_orientation_{Quaternion::Identity()};
   Vector3 workspace_min_{0.0, -0.5, 0.02};
   Vector3 workspace_max_{0.75, 0.3, 0.70};
 

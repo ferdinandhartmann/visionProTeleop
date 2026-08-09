@@ -216,7 +216,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "visionpro_ip",
-                default_value="192.168.1.169",
+                default_value="192.168.1.190",
                 description="Vision Pro IP address.",
             ),
             DeclareLaunchArgument(

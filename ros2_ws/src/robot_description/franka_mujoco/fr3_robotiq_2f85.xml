@@ -112,13 +112,26 @@
     </body>
 
     <body name="ee_fk_frame" mocap="true">
-      <geom type="sphere" size="0.012" rgba="0 0.4 1 0.7" contype="0" conaffinity="0"/>
+      <body name="ee_fk_xb" pos="0.03 0 0" quat="0.7071068 0 -0.7071068 0">
+        <geom name="ee_fk_x" type="capsule" size="0.003 0.03" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_fk_yb" pos="0 0.03 0" quat="0.7071068 0.7071068 0 0">
+        <geom name="ee_fk_y" type="capsule" size="0.003 0.03" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_fk_zb" pos="0 0 0.03">
+        <geom name="ee_fk_z" type="capsule" size="0.003 0.03" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+      </body>
     </body>
     <body name="ee_target_frame" mocap="true">
-      <geom type="sphere" size="0.018" rgba="1 0.25 0.1 0.65" contype="0" conaffinity="0"/>
-      <site type="box" size="0.06 0.002 0.002" rgba="1 0 0 0.8"/>
-      <site type="box" size="0.002 0.06 0.002" rgba="0 1 0 0.8"/>
-      <site type="box" size="0.002 0.002 0.06" rgba="0 0 1 0.8"/>
+      <body name="ee_target_xb" pos="0.03 0 0" quat="0.7071068 0 -0.7071068 0">
+        <geom name="ee_target_x" type="capsule" size="0.003 0.03" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_target_yb" pos="0 0.03 0" quat="0.7071068 0.7071068 0 0">
+        <geom name="ee_target_y" type="capsule" size="0.003 0.03" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_target_zb" pos="0 0 0.03">
+        <geom name="ee_target_z" type="capsule" size="0.003 0.03" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+      </body>
     </body>
   </worldbody>
 
