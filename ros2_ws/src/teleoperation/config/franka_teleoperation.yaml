@@ -40,14 +40,14 @@ franka_visionpro_teleop:
     axis_map: [0, 1, 2]
     axis_signs: [1.0, 1.0, 1.0]
     rotation_axis_signs: [-1.0, 1.0, -1.0]
-    translation_scale: 0.8
-    rotation_scale: 0.5
+    translation_scale: 1.2
+    rotation_scale: 0.6
     # Local pose from visionpro/right/wrist to the RViz wrist target.
     # Rotation uses ROS roll-pitch-yaw order (X-Y-Z), in degrees.
     # This does not alter the commanded robot pose.
     wrist_target_offset_xyz: [-0.1, -0.06, 0.02]
     wrist_target_offset_rpy_deg: [25.0, 179.0, 15.0]
-    workspace_min_xyz: [0.00, -0.50, 0.02]
+    workspace_min_xyz: [-0.10, -0.50, 0.02]
     workspace_max_xyz: [0.75, 0.30, 0.70]
 
     right_pinch_min_m: 0.015
@@ -66,7 +66,7 @@ vp_streamer:
     joint_state_topic: /joint_states
     expected_joint_names:
       [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
-    attach_to: [0.0, 0.4, 0.65, 90.0]
+    attach_to: [-0.3, 0.0, 0.65, 90.0]
     update_simulation_hz: 30.0
     # 30 Hz is smooth in-headset and halves RealityKit transform updates.
     # Robot control publishing remains independently configured at 250 Hz.
@@ -101,11 +101,11 @@ vp_streamer:
     enable_pointcloud: true
     # The RealSense launch already applies its hardware/SDK decimation filter.
     pointcloud_topic: /realsense/wrist/depth/color/points
-    # Balanced Vision Pro profile: newest-frame streaming with roughly half of
-    # the already hardware-decimated RealSense points.
-    pointcloud_rate_hz: 6.0
+    # Send every valid point from the hardware-decimated RealSense stream.
+    # The visionOS renderer adapts local draw density only under GPU pressure.
+    pointcloud_rate_hz: 8.0
     pointcloud_max_points: 20000
-    pointcloud_stride: 2
+    pointcloud_stride: 1
     pointcloud_flip_world_z: false
     mocap_flip_world_z: false
 

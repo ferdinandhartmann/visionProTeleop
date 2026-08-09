@@ -2236,7 +2236,7 @@ struct StatusOverlay: View {
                             if !Task.isCancelled { previewActive = false }
                         }
                     }
-                ), in: 0.2...3.0, step: 0.1)
+                ), in: 0.05...1.0, step: 0.05)
                 .tint(.purple)
             }
             
@@ -2328,7 +2328,7 @@ struct StatusOverlay: View {
                 .buttonStyle(.plain)
                 
                 Button {
-                    dataManager.videoPlaneScale = 5.0 / 24.0
+                    dataManager.videoPlaneScale = 0.1
                     dataManager.videoPlaneZDistance = -10.0
                     dataManager.videoPlaneYPosition = 0.0
                     dataManager.videoPlaneAutoPerpendicular = false
@@ -2911,7 +2911,7 @@ struct StatusOverlay: View {
                                 if !Task.isCancelled { previewActive = false }
                             }
                         }
-                    ), in: 0.5...2.0, step: 0.1)
+                    ), in: 0.05...1.0, step: 0.05)
                     .tint(.purple)
                 }
                 
@@ -3003,7 +3003,7 @@ struct StatusOverlay: View {
                         .buttonStyle(.plain)
                         
                         Button {
-                            dataManager.videoPlaneScale = 5.0 / 24.0
+                            dataManager.videoPlaneScale = 0.1
                             dataManager.videoPlaneZDistance = -10.0
                             dataManager.videoPlaneYPosition = 0.0
                             dataManager.videoPlaneAutoPerpendicular = false

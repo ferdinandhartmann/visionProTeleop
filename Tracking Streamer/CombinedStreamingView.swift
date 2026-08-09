@@ -2776,7 +2776,11 @@ private struct LifecycleModifiers: ViewModifier {
                     attachPosition: attachToPosition,
                     attachRotation: attachToRotation
                 )
-                renderer.submit(frame)
+                renderer.submit(
+                    frame,
+                    headWorldTransform:
+                        DataManager.shared.latestHandTrackingData.Head
+                )
             }
         }
         

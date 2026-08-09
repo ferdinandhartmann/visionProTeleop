@@ -16,13 +16,15 @@ kernel void updatePointCloudColorTexture(
     device const uchar *packedPoints [[buffer(0)]],
     texture2d<half, access::write> colorTexture [[texture(0)]],
     constant uint &pointCount [[buffer(1)]],
+    constant uint &sourceStride [[buffer(2)]],
     uint pointIndex [[thread_position_in_grid]])
 {
     if (pointIndex >= pointCount) {
         return;
     }
 
-    const uint sourceOffset = pointIndex * 9u;
+    const uint sourcePointIndex = pointIndex * sourceStride;
+    const uint sourceOffset = sourcePointIndex * 9u;
     const half inverseByte = half(1.0h / 255.0h);
     const half4 color = half4(
         half(packedPoints[sourceOffset + 6u]) * inverseByte,
@@ -52,6 +54,9 @@ kernel void expandPointCloudSprites(
     constant uint &pointCount [[buffer(2)]],
     constant float &radius [[buffer(3)]],
     constant uint2 &colorTextureSize [[buffer(4)]],
+    constant float3 &billboardRight [[buffer(5)]],
+    constant float3 &billboardUp [[buffer(6)]],
+    constant uint &sourceStride [[buffer(7)]],
     uint pointIndex [[thread_position_in_grid]])
 {
     if (pointIndex >= pointCount) {
@@ -59,7 +64,8 @@ kernel void expandPointCloudSprites(
     }
 
     // Wire record: little-endian float16 XYZ followed by RGB (9 bytes).
-    const uint sourceOffset = pointIndex * 9u;
+    const uint sourcePointIndex = pointIndex * sourceStride;
+    const uint sourceOffset = sourcePointIndex * 9u;
     const ushort xBits = ushort(packedPoints[sourceOffset]) |
         (ushort(packedPoints[sourceOffset + 1u]) << 8);
     const ushort yBits = ushort(packedPoints[sourceOffset + 2u]) |
@@ -82,29 +88,22 @@ kernel void expandPointCloudSprites(
         float2(colorTexel) + float2(0.5f)
     ) / float2(colorTextureSize);
 
-    // An icosahedron gives every point a round, sphere-like silhouette from
-    // all view directions while retaining one exact source RGB value.
-    constexpr float phi = 1.61803398875f;
-    constexpr float normalization = 0.52573111212f;
-    const float3 offsets[12] = {
-        float3(-1.0f,  phi,  0.0f) * normalization,
-        float3( 1.0f,  phi,  0.0f) * normalization,
-        float3(-1.0f, -phi,  0.0f) * normalization,
-        float3( 1.0f, -phi,  0.0f) * normalization,
-        float3( 0.0f, -1.0f,  phi) * normalization,
-        float3( 0.0f,  1.0f,  phi) * normalization,
-        float3( 0.0f, -1.0f, -phi) * normalization,
-        float3( 0.0f,  1.0f, -phi) * normalization,
-        float3( phi,   0.0f, -1.0f) * normalization,
-        float3( phi,   0.0f,  1.0f) * normalization,
-        float3(-phi,   0.0f, -1.0f) * normalization,
-        float3(-phi,   0.0f,  1.0f) * normalization
+    // One center plus eight perimeter vertices creates a camera-facing round
+    // splat with 8 triangles instead of the former 20-triangle icosahedron.
+    // The basis comes from the latest Vision Pro head transform.
+    const uint destination = pointIndex * 9u;
+    vertices[destination] = PointCloudVertex{
+        packed_float3(center),
+        packed_float2(uv)
     };
 
-    const uint destination = pointIndex * 12u;
-    for (uint vertexIndex = 0u; vertexIndex < 12u; ++vertexIndex) {
-        vertices[destination + vertexIndex] = PointCloudVertex{
-            packed_float3(center + offsets[vertexIndex] * radius),
+    constexpr float twoPi = 6.28318530718f;
+    for (uint perimeterIndex = 0u; perimeterIndex < 8u; ++perimeterIndex) {
+        const float angle = twoPi * float(perimeterIndex) / 8.0f;
+        const float3 offset =
+            billboardRight * cos(angle) + billboardUp * sin(angle);
+        vertices[destination + perimeterIndex + 1u] = PointCloudVertex{
+            packed_float3(center + offset * radius),
             packed_float2(uv)
         };
     }

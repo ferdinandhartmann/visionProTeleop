@@ -320,7 +320,7 @@ class DataManager: ObservableObject {
     @Published var simEnabled: Bool = false    // Whether simulation is enabled
     @Published var controlChannelReady: Bool = false  // Whether control data channel is open
     @Published var crossNetworkRoomCode: String? = nil  // Room code for cross-network mode (nil = local mode)
-    @Published var pointCloudSpriteSize: Float = 0.006  // Size of rendered point sprites (meters)
+    @Published var pointCloudSpriteSize: Float = 0.0038  // Size of rendered point sprites (meters)
 
     // Robot visualization controls (persistent, default visible).
     @Published var showRobotModel: Bool {
@@ -500,9 +500,6 @@ class DataManager: ObservableObject {
     }
     
     private init() {
-        // The renderer's reference plane is 9.6 m high. A scale of 5/24
-        // makes the default visible height exactly 2.0 m.
-        let defaultVideoPlaneScale: Float = 5.0 / 24.0
         let compactVideoPlaneDefaultsVersion = 2
         let useCompactVideoPlaneDefaults =
             UserDefaults.standard.integer(
@@ -567,9 +564,8 @@ class DataManager: ObservableObject {
         self.handPredictionOffset = UserDefaults.standard.object(forKey: "handPredictionOffset") as? Float ?? 0.033
         // Use a compact default; scale changes both plane width and height.
         self.videoPlaneScale = useCompactVideoPlaneDefaults
-            ? defaultVideoPlaneScale
-            : UserDefaults.standard.object(forKey: "videoPlaneScale") as? Float
-                ?? defaultVideoPlaneScale
+            ? 0.1
+            : UserDefaults.standard.object(forKey: "videoPlaneScale") as? Float ?? 0.1
         // Load saved stereo baseline offset or default to 0.0 (no adjustment)
         self.stereoBaselineOffset = UserDefaults.standard.object(forKey: "stereoBaselineOffset") as? Float ?? 0.0
 
@@ -578,10 +574,10 @@ class DataManager: ObservableObject {
                 compactVideoPlaneDefaultsVersion,
                 forKey: "compactVideoPlaneDefaultsVersion"
             )
-            UserDefaults.standard.set(defaultVideoPlaneScale, forKey: "videoPlaneScale")
-            UserDefaults.standard.set(Float(0.0), forKey: "videoPlaneYPosition")
+            UserDefaults.standard.set(0.1, forKey: "videoPlaneScale")
+            UserDefaults.standard.set(0.0, forKey: "videoPlaneYPosition")
             let cloudStore = NSUbiquitousKeyValueStore.default
-            cloudStore.set(Double(defaultVideoPlaneScale), forKey: "visionos.videoPlaneScale")
+            cloudStore.set(0.1, forKey: "visionos.videoPlaneScale")
             cloudStore.set(0.0, forKey: "visionos.videoPlaneYPosition")
             cloudStore.synchronize()
         }
