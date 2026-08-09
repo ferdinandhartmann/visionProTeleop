@@ -55,7 +55,7 @@ class VPStreamer(Node):
             "ar",
             descriptor=ParameterDescriptor(description="Viewer type: 'ar' to stream to Vision Pro, 'mujoco' for local preview.",),
         )
-        self.declare_parameter("visionpro_ip", "192.168.11.99")
+        self.declare_parameter("visionpro_ip", "192.168.1.190")
         self.declare_parameter("port", 50051)
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter(
@@ -68,13 +68,13 @@ class VPStreamer(Node):
         self.declare_parameter("camera_resolution", "320x240")
         self.declare_parameter("camera_fps", 25)
         self.declare_parameter("format", "v4l2")
-        self.declare_parameter("camera_mode", "robot")  # robot, realsense, both
+        self.declare_parameter("camera_mode", "realsense")  # robot, realsense, both
         self.declare_parameter("enable_camera", True)
-        self.declare_parameter("enable_audio", True)
+        self.declare_parameter("enable_audio", False)
         self.declare_parameter("enable_pointcloud", True)
         self.declare_parameter("pointcloud_topic", "/points_downsampled")
         self.declare_parameter("pointcloud_rate_hz", 30.0)
-        self.declare_parameter("pointcloud_max_points", 100000)
+        self.declare_parameter("pointcloud_max_points", 50000)
         self.declare_parameter("pointcloud_flip_world_z", True)
         self.declare_parameter("mocap_flip_world_z", True)
         self.declare_parameter("realsense_image_topic", "/camera/camera/color/image_raw")
@@ -92,6 +92,7 @@ class VPStreamer(Node):
         )
         self.declare_parameter("gripper_source_joint", "")
         self.declare_parameter("gripper_model_joints", [""])
+        self.declare_parameter("gripper_model_joint_multipliers", [1.0])
         self.declare_parameter("gripper_source_min", 0.0)
         self.declare_parameter("gripper_source_max", 1.0)
         self.declare_parameter("gripper_model_open", 0.04)
@@ -105,7 +106,15 @@ class VPStreamer(Node):
             str(default_xml),
             descriptor=ParameterDescriptor(description="MuJoCo scene to stream."),
         )
+        self.declare_parameter(
+            "usdz_path",
+            "",
+            descriptor=ParameterDescriptor(
+                description="Prebuilt USDZ scene; bypasses runtime conversion."
+            ),
+        )
         self.declare_parameter("update_simulation_hz", 60.0)
+        self.declare_parameter("pose_streaming_hz", 60.0)
 
         # Parameters for publishing a TeleopTarget when MuJoCo is reset
         self.declare_parameter("ee_target_on_reset_position", [0.109, -0.063, 0.314])
@@ -168,6 +177,7 @@ class VPStreamer(Node):
         self._expected_joint_names = params["expected_joint_names"]
         self._gripper_source_joint = params["gripper_source_joint"]
         self._gripper_model_joints = params["gripper_model_joints"]
+        self._gripper_model_joint_multipliers = params["gripper_model_joint_multipliers"]
         self._gripper_source_min = params["gripper_source_min"]
         self._gripper_source_max = params["gripper_source_max"]
         self._gripper_model_open = params["gripper_model_open"]
@@ -231,6 +241,8 @@ class VPStreamer(Node):
                 relative_to=params["attach_to"],
                 grpc_port=params["port"],
                 force_reload=params["force_reload"],
+                streaming_hz=int(params["pose_streaming_hz"]),
+                usdz_path=params["usdz_path"],
             )
         
         elif params["viewer"] == "mujoco":
@@ -314,7 +326,9 @@ class VPStreamer(Node):
         joint_topic = self.get_parameter("joint_state_topic").get_parameter_value().string_value
         attach_to = list(self.get_parameter("attach_to").get_parameter_value().double_array_value)
         xml_path = self.get_parameter("xml_path").get_parameter_value().string_value
+        usdz_path = self.get_parameter("usdz_path").get_parameter_value().string_value
         rate = self.get_parameter("update_simulation_hz").get_parameter_value().double_value
+        pose_streaming_hz = self.get_parameter("pose_streaming_hz").get_parameter_value().double_value
         force_reload = self.get_parameter("force_reload").get_parameter_value().bool_value
         camera_device = self.get_parameter("camera_device").value
         camera_resolution = self.get_parameter("camera_resolution").value
@@ -343,6 +357,9 @@ class VPStreamer(Node):
         gripper_model_joints = [
             name for name in self.get_parameter("gripper_model_joints").value if name
         ]
+        gripper_model_joint_multipliers = list(
+            self.get_parameter("gripper_model_joint_multipliers").value
+        )
         gripper_source_min = float(self.get_parameter("gripper_source_min").value)
         gripper_source_max = float(self.get_parameter("gripper_source_max").value)
         gripper_model_open = float(self.get_parameter("gripper_model_open").value)
@@ -357,7 +374,9 @@ class VPStreamer(Node):
             "joint_state_topic": joint_topic,
             "attach_to": attach_to,
             "xml_path": xml_path,
+            "usdz_path": usdz_path,
             "update_simulation_hz": rate,
+            "pose_streaming_hz": pose_streaming_hz,
             "force_reload": force_reload,
             "camera_device": camera_device,
             "camera_resolution": camera_resolution,
@@ -382,6 +401,7 @@ class VPStreamer(Node):
             "expected_joint_names": expected_joint_names,
             "gripper_source_joint": gripper_source_joint,
             "gripper_model_joints": gripper_model_joints,
+            "gripper_model_joint_multipliers": gripper_model_joint_multipliers,
             "gripper_source_min": gripper_source_min,
             "gripper_source_max": gripper_source_max,
             "gripper_model_open": gripper_model_open,
@@ -581,10 +601,15 @@ class VPStreamer(Node):
                     self._gripper_model_open
                     + fraction * (self._gripper_model_closed - self._gripper_model_open)
                 )
-                for model_joint in self._gripper_model_joints:
+                for joint_number, model_joint in enumerate(self._gripper_model_joints):
                     model_idx = self.joint_name_to_qpos.get(model_joint)
                     if model_idx is not None:
-                        self.data.qpos[model_idx] = model_position
+                        multiplier = (
+                            self._gripper_model_joint_multipliers[joint_number]
+                            if joint_number < len(self._gripper_model_joint_multipliers)
+                            else 1.0
+                        )
+                        self.data.qpos[model_idx] = multiplier * model_position
                 continue
 
             idx = self.joint_name_to_qpos.get(name)

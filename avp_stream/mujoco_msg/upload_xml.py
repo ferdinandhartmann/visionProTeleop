@@ -50,7 +50,13 @@ def zip_scene_dir(scene_xml: Path) -> tuple[Path, str]:
         for p in base_dir.rglob("*"):
             if p.is_file():
                 arcname = p.relative_to(base_dir)
-                z.write(p, arcname)
+                try:
+                    z.write(p, arcname)
+                except PermissionError as exc:
+                    raise PermissionError(
+                        f"Cannot package scene asset {p}; stage the MJCF and its "
+                        "assets in a private directory before conversion"
+                    ) from exc
     return tmp_path, xml_relpath
 
 

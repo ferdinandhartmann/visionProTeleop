@@ -20,25 +20,26 @@ def generate_launch_description() -> LaunchDescription:
             "fr3_robotiq_2f85.xml",
         ]
     )
+    model_usdz_path = PathJoinSubstitution(
+        [
+            FindPackageShare("robot_description"),
+            "franka_mujoco",
+            "fr3_robotiq_2f85.usdz",
+        ]
+    )
 
-    franka_bringup = IncludeLaunchDescription(
+    controllers_config_path = PathJoinSubstitution(
+        [FindPackageShare("franka_controllers"), "config", "controllers.yaml"]
+    )
+
+    franka_ros2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [
-                    FindPackageShare("franka_utils"),
-                    "launch",
-                    "franka_robotiqgripperoption.launch.py",
-                ]
-            )
+            PathJoinSubstitution([FindPackageShare("franka_utils"), "launch", "franka_robotiqgripperoption.launch.py"])
         ),
         launch_arguments={
-            "arm_id": "fr3",
-            "robot_ip": LaunchConfiguration("robot_ip"),
-            "use_fake_hardware": LaunchConfiguration("use_fake_hardware"),
-            "load_gripper": "true",
+            "controllers_yaml": controllers_config_path,
+            "use_fake_hardware": "false",
             "ee_id": "robotiq_gripper_2f85",
-            "tcp_xyz": "0 0 0.174",
-            "rpy_ee": "0 0 0",
         }.items(),
         condition=IfCondition(LaunchConfiguration("start_robot")),
     )
@@ -75,7 +76,7 @@ def generate_launch_description() -> LaunchDescription:
             )
         ),
         launch_arguments={
-            "camera_names": "top",
+            "camera_names": "wrist",
             "camera_serial_numbers": LaunchConfiguration("camera_serial"),
             "color_profiles": LaunchConfiguration("camera_profile"),
             "depth_profiles": LaunchConfiguration("camera_profile"),
@@ -83,7 +84,7 @@ def generate_launch_description() -> LaunchDescription:
             "align_depth": "true",
             "enable_sync": "true",
             "pointcloud": "true",
-            "decimation_filter_value": "4",
+            "decimation_filter_value": "8",
             "tf_sliders": "false",
             "rviz": "false",
             "franka": "false",
@@ -107,7 +108,7 @@ def generate_launch_description() -> LaunchDescription:
             "--pitch",
             "0",
             "--yaw",
-            "-2.4434609528",
+            "0",
             "--frame-id",
             "vp_base_origin",
             "--child-frame-id",
@@ -132,7 +133,7 @@ def generate_launch_description() -> LaunchDescription:
             "--pitch",
             "0",
             "--yaw",
-            "0",
+            "-1.5708",
             "--frame-id",
             "fr3_link0",
             "--child-frame-id",
@@ -147,7 +148,13 @@ def generate_launch_description() -> LaunchDescription:
         name="vp_transform_publisher",
         output="screen",
         emulate_tty=True,
-        additional_env={"PYTHONUNBUFFERED": "1"},
+        additional_env={
+            "PYTHONUNBUFFERED": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENCV_FOR_THREADS_NUM": "1",
+        },
         parameters=[
             teleop_config,
             {"visionpro_ip": LaunchConfiguration("visionpro_ip")},
@@ -168,13 +175,20 @@ def generate_launch_description() -> LaunchDescription:
         name="vp_streamer",
         output="screen",
         emulate_tty=True,
-        additional_env={"PYTHONUNBUFFERED": "1"},
+        additional_env={
+            "PYTHONUNBUFFERED": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENCV_FOR_THREADS_NUM": "1",
+        },
         parameters=[
             teleop_config,
             {
                 "viewer": "ar",
                 "visionpro_ip": LaunchConfiguration("visionpro_ip"),
                 "xml_path": model_path,
+                "usdz_path": LaunchConfiguration("usdz_path"),
             },
         ],
     )
@@ -190,7 +204,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ],
         output="screen",
-        condition=IfCondition(LaunchConfiguration("rviz")),
+        # condition=IfCondition(LaunchConfiguration("rviz")),
     )
 
     return LaunchDescription(
@@ -202,18 +216,24 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "visionpro_ip",
-                default_value="192.168.50.153",
+                default_value="192.168.1.169",
                 description="Vision Pro IP address.",
             ),
             DeclareLaunchArgument(
                 "camera_serial",
-                default_value="950122070179",
+                # default_value="950122070179",
+                default_value="040322071188",
                 description="Top RealSense serial number.",
             ),
             DeclareLaunchArgument(
                 "camera_profile",
-                default_value="1280x720x30",
+                default_value="640x360x15",
                 description="RealSense color and depth profile.",
+            ),
+            DeclareLaunchArgument(
+                "usdz_path",
+                default_value=model_usdz_path,
+                description="Prebuilt FR3/Robotiq USDZ sent to Vision Pro.",
             ),
             DeclareLaunchArgument(
                 "use_fake_hardware",
@@ -221,11 +241,11 @@ def generate_launch_description() -> LaunchDescription:
                 description="Use Franka fake hardware.",
             ),
             DeclareLaunchArgument("start_robot", default_value="true"),
-            DeclareLaunchArgument("start_controller", default_value="true"),
-            DeclareLaunchArgument("start_gripper", default_value="true"),
+            DeclareLaunchArgument("start_controller", default_value="false"),
+            DeclareLaunchArgument("start_gripper", default_value="false"),
             DeclareLaunchArgument("start_camera", default_value="true"),
-            DeclareLaunchArgument("rviz", default_value="true"),
-            franka_bringup,
+            # DeclareLaunchArgument("rviz", default_value="true"),
+            franka_ros2_launch,
             cartesian_controller,
             robotiq_gripper,
             realsense,

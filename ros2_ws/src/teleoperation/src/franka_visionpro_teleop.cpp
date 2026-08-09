@@ -147,6 +147,10 @@ private:
     activation_release_distance_m_ = declare_parameter<double>(
       "activation_release_distance_m", 0.025);
     tracking_timeout_sec_ = declare_parameter<double>("tracking_timeout_sec", 0.25);
+    max_tracking_translation_jump_m_ = declare_parameter<double>(
+      "max_tracking_translation_jump_m", 0.03);
+    max_tracking_rotation_jump_deg_ = declare_parameter<double>(
+      "max_tracking_rotation_jump_deg", 5.0);
     translation_scale_ = declare_parameter<double>("translation_scale", 0.95);
     rotation_scale_ = declare_parameter<double>("rotation_scale", 1.0);
     position_filter_cutoff_hz_ = declare_parameter<double>(
@@ -164,6 +168,8 @@ private:
       "axis_map", {0, 1, 2});
     const auto axis_signs = declare_parameter<std::vector<double>>(
       "axis_signs", {1.0, 1.0, 1.0});
+    const auto rotation_axis_signs = declare_parameter<std::vector<double>>(
+      "rotation_axis_signs", {1.0, 1.0, 1.0});
     const auto workspace_min = declare_parameter<std::vector<double>>(
       "workspace_min_xyz", {0.0, -0.5, 0.02});
     const auto workspace_max = declare_parameter<std::vector<double>>(
@@ -178,10 +184,15 @@ private:
       throw std::invalid_argument(
               "activation_release_distance_m must exceed activation_distance_m");
     }
+    if (tracking_timeout_sec_ <= 0.0 || max_tracking_translation_jump_m_ <= 0.0 ||
+      max_tracking_rotation_jump_deg_ <= 0.0)
+    {
+      throw std::invalid_argument("Tracking safety parameters must be positive");
+    }
     if (right_pinch_max_m_ <= right_pinch_min_m_) {
       throw std::invalid_argument("right_pinch_max_m must exceed right_pinch_min_m");
     }
-    if (axis_map.size() != 3 || axis_signs.size() != 3 ||
+    if (axis_map.size() != 3 || axis_signs.size() != 3 || rotation_axis_signs.size() != 3 ||
       workspace_min.size() != 3 || workspace_max.size() != 3)
     {
       throw std::invalid_argument("Axis and workspace parameters must contain three values");
@@ -196,6 +207,7 @@ private:
       }
       used_axes[axis] = true;
       mapping_(row, axis) = axis_signs[row];
+      rotation_axis_signs_[row] = rotation_axis_signs[row];
       workspace_min_[row] = workspace_min[row];
       workspace_max_[row] = workspace_max[row];
       if (workspace_max_[row] <= workspace_min_[row]) {
@@ -266,20 +278,36 @@ private:
     std::lock_guard<std::mutex> lock(mutex_);
     if (!left_thumb || !left_index || !hand || !right_thumb || !right_index) {
       if (enabled_ && (stamp - last_tracking_stamp_).seconds() > tracking_timeout_sec_) {
-        disableLocked("hand tracking timeout");
+        disableLocked("hand tracking timeout", true);
       }
       return;
     }
 
-    last_tracking_stamp_ = stamp;
+    const rclcpp::Time tracking_stamp(hand->header.stamp);
+    if ((stamp - tracking_stamp).seconds() > tracking_timeout_sec_) {
+      if (enabled_) {
+        disableLocked("hand tracking timeout", true);
+      }
+      return;
+    }
+    last_tracking_stamp_ = tracking_stamp;
     const double left_pinch = (translation(*left_thumb) - translation(*left_index)).norm();
 
     if (!enabled_) {
+      if (clutch_release_required_) {
+        if (left_pinch >= activation_release_distance_m_) {
+          clutch_release_required_ = false;
+          RCLCPP_INFO(get_logger(), "Teleoperation safety latch cleared; pinch again to enable");
+        }
+        return;
+      }
       if (left_pinch > activation_distance_m_ || !have_robot_pose_) {
         return;
       }
-      hand_anchor_position_ = translation(*hand);
-      hand_anchor_orientation_ = rotation(*hand);
+      const Vector3 hand_position = translation(*hand);
+      const Quaternion hand_orientation = rotation(*hand);
+      hand_anchor_position_ = hand_position;
+      hand_anchor_orientation_ = hand_orientation;
       robot_anchor_position_ = current_robot_position_;
       robot_anchor_orientation_ = current_robot_orientation_;
       goal_position_ = robot_anchor_position_;
@@ -289,6 +317,9 @@ private:
       filtered_gripper_ = gripper_open_command_;
       filter_initialized_ = true;
       gripper_filter_initialized_ = false;
+      last_hand_position_ = hand_position;
+      last_hand_orientation_ = hand_orientation;
+      have_last_hand_pose_ = true;
       enabled_ = true;
       publishEnabled(true);
       RCLCPP_INFO(get_logger(), "Teleoperation enabled");
@@ -297,7 +328,32 @@ private:
       return;
     }
 
-    const Vector3 hand_delta = translation(*hand) - hand_anchor_position_;
+    const Vector3 hand_position = translation(*hand);
+    const Quaternion hand_orientation = rotation(*hand);
+    if (have_last_hand_pose_) {
+      const double translation_jump = (hand_position - last_hand_position_).norm();
+      const Quaternion rotation_delta = normalized(
+        last_hand_orientation_.conjugate() * hand_orientation);
+      const double rotation_jump_deg =
+        Eigen::AngleAxisd(rotation_delta).angle() * 180.0 / M_PI;
+      if (translation_jump > max_tracking_translation_jump_m_ ||
+        rotation_jump_deg > max_tracking_rotation_jump_deg_)
+      {
+        RCLCPP_WARN(
+          get_logger(),
+          "Tracking jump detected: translation=%.3f m (limit=%.3f), "
+          "rotation=%.1f deg (limit=%.1f)",
+          translation_jump, max_tracking_translation_jump_m_,
+          rotation_jump_deg, max_tracking_rotation_jump_deg_);
+        disableLocked("tracking pose jump", true);
+        return;
+      }
+    }
+    last_hand_position_ = hand_position;
+    last_hand_orientation_ = hand_orientation;
+    have_last_hand_pose_ = true;
+
+    const Vector3 hand_delta = hand_position - hand_anchor_position_;
     goal_position_ = robot_anchor_position_ + mapping_ * hand_delta * translation_scale_;
     for (std::size_t axis = 0; axis < 3; ++axis) {
       goal_position_[axis] = clamp(
@@ -305,15 +361,20 @@ private:
     }
 
     const Quaternion raw_delta = normalized(
-      hand_anchor_orientation_.conjugate() * rotation(*hand));
+      hand_anchor_orientation_.conjugate() * hand_orientation);
     Eigen::Matrix3d mapped_delta =
       mapping_ * raw_delta.toRotationMatrix() * mapping_.inverse();
     Quaternion delta_orientation(mapped_delta);
     delta_orientation = normalized(delta_orientation);
-    if (rotation_scale_ != 1.0) {
-      Eigen::AngleAxisd angle_axis(delta_orientation);
+    const Eigen::AngleAxisd angle_axis(delta_orientation);
+    Vector3 rotation_vector =
+      rotation_axis_signs_.cwiseProduct(angle_axis.axis() * angle_axis.angle()) * rotation_scale_;
+    const double rotation_angle = rotation_vector.norm();
+    if (rotation_angle > 1.0e-12) {
       delta_orientation = Quaternion(
-        Eigen::AngleAxisd(angle_axis.angle() * rotation_scale_, angle_axis.axis()));
+        Eigen::AngleAxisd(rotation_angle, rotation_vector / rotation_angle));
+    } else {
+      delta_orientation = Quaternion::Identity();
     }
     goal_orientation_ = normalized(robot_anchor_orientation_ * delta_orientation);
 
@@ -410,7 +471,7 @@ private:
     gripper_publisher_->publish(command);
   }
 
-  void disableLocked(const char * reason)
+  void disableLocked(const char * reason, bool require_clutch_release = false)
   {
     if (!enabled_) {
       return;
@@ -419,6 +480,8 @@ private:
     have_goal_ = false;
     filter_initialized_ = false;
     gripper_filter_initialized_ = false;
+    have_last_hand_pose_ = false;
+    clutch_release_required_ = require_clutch_release;
     publishEnabled(false);
     RCLCPP_INFO(get_logger(), "Teleoperation disabled: %s", reason);
   }
@@ -463,6 +526,8 @@ private:
   double activation_distance_m_{0.02};
   double activation_release_distance_m_{0.025};
   double tracking_timeout_sec_{0.25};
+  double max_tracking_translation_jump_m_{0.03};
+  double max_tracking_rotation_jump_deg_{5.0};
   double translation_scale_{0.95};
   double rotation_scale_{1.0};
   double position_filter_cutoff_hz_{12.0};
@@ -473,6 +538,7 @@ private:
   double gripper_open_command_{0.0};
   double gripper_closed_command_{0.95};
   Eigen::Matrix3d mapping_{Eigen::Matrix3d::Identity()};
+  Vector3 rotation_axis_signs_{1.0, 1.0, 1.0};
   Vector3 workspace_min_{0.0, -0.5, 0.02};
   Vector3 workspace_max_{0.75, 0.3, 0.70};
 
@@ -481,6 +547,8 @@ private:
   bool have_goal_{false};
   bool filter_initialized_{false};
   bool gripper_filter_initialized_{false};
+  bool have_last_hand_pose_{false};
+  bool clutch_release_required_{false};
   Vector3 current_robot_position_{Vector3::Zero()};
   Quaternion current_robot_orientation_{Quaternion::Identity()};
   Vector3 hand_anchor_position_{Vector3::Zero()};
@@ -491,6 +559,8 @@ private:
   Quaternion goal_orientation_{Quaternion::Identity()};
   Vector3 filtered_position_{Vector3::Zero()};
   Quaternion filtered_orientation_{Quaternion::Identity()};
+  Vector3 last_hand_position_{Vector3::Zero()};
+  Quaternion last_hand_orientation_{Quaternion::Identity()};
   double gripper_goal_{0.0};
   double filtered_gripper_{0.0};
   rclcpp::Time last_tracking_stamp_{0, 0, RCL_ROS_TIME};

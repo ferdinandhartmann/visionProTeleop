@@ -27,6 +27,8 @@ franka_visionpro_teleop:
     pose_publish_rate_hz: 250.0
     gripper_publish_rate_hz: 25.0
     tracking_timeout_sec: 0.25
+    max_tracking_translation_jump_m: 0.05
+    max_tracking_rotation_jump_deg: 10.0
 
     # Left pinch is a hold-to-enable clutch.
     activation_distance_m: 0.020
@@ -35,8 +37,9 @@ franka_visionpro_teleop:
     # Deltas are measured after the vp_base calibration transform.
     axis_map: [0, 1, 2]
     axis_signs: [1.0, 1.0, 1.0]
-    translation_scale: 0.95
-    rotation_scale: 1.0
+    rotation_axis_signs: [-1.0, 1.0, -1.0]
+    translation_scale: 0.8
+    rotation_scale: 0.5
     workspace_min_xyz: [0.00, -0.50, 0.02]
     workspace_max_xyz: [0.75, 0.30, 0.70]
 
@@ -45,9 +48,9 @@ franka_visionpro_teleop:
     gripper_open_command: 0.0
     gripper_closed_command: 0.95
 
-    position_filter_cutoff_hz: 12.0
-    orientation_filter_cutoff_hz: 12.0
-    gripper_filter_cutoff_hz: 2.0
+    position_filter_cutoff_hz: 5.0
+    orientation_filter_cutoff_hz: 5.0
+    gripper_filter_cutoff_hz: 12.0
 
 vp_streamer:
   ros__parameters:
@@ -57,8 +60,9 @@ vp_streamer:
     expected_joint_names:
       [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
     attach_to: [0.0, 0.3, 0.65, -55.0]
-    update_simulation_hz: 120.0
-    force_reload: true
+    update_simulation_hz: 30.0
+    pose_streaming_hz: 60.0
+    force_reload: false
 
     base_frame: fr3_link0
     current_tool_frame: franka_measured_ee
@@ -67,30 +71,33 @@ vp_streamer:
     ee_target_body_name: ee_target_frame
     publish_reset_teleop_target: false
 
-    # Map Robotiq feedback (0=open, ~0.725=closed) to the two MuJoCo finger slides.
+    # Map Robotiq feedback (0=open, ~0.725=closed) to the six linkage joints.
     gripper_source_joint: fr3_finger_joint
-    gripper_model_joints: [left_finger_joint, right_finger_joint]
+    gripper_model_joints:
+      [left_outer_knuckle_joint, left_inner_knuckle_joint, left_inner_finger_joint,
+       right_inner_knuckle_joint, right_inner_finger_joint, right_outer_knuckle_joint]
+    gripper_model_joint_multipliers: [1.0, 1.0, -1.0, -1.0, 1.0, -1.0]
     gripper_source_min: 0.0
     gripper_source_max: 0.725
-    gripper_model_open: 0.04
-    gripper_model_closed: 0.0
+    gripper_model_open: 0.0
+    gripper_model_closed: 0.725
 
     enable_camera: true
     camera_mode: realsense
-    camera_resolution: "1280x720"
-    camera_fps: 30
+    camera_resolution: "640x360"
+    camera_fps: 15
     format: v4l2
-    realsense_image_topic: /realsense/top/color/image_raw
+    realsense_image_topic: /realsense/wrist/color/image_raw
 
     enable_pointcloud: true
     # The RealSense launch already applies its hardware/SDK decimation filter.
-    pointcloud_topic: /realsense/top/depth/color/points
-    pointcloud_rate_hz: 30.0
+    pointcloud_topic: /realsense/wrist/depth/color/points
+    pointcloud_rate_hz: 10.0
     pointcloud_max_points: 100000
     pointcloud_flip_world_z: false
     mocap_flip_world_z: false
 
-    enable_audio: true
+    enable_audio: false
 
 robotiq_gripper_node:
   ros__parameters:

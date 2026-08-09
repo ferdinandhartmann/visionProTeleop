@@ -27,6 +27,7 @@ final class PointCloudRenderer {
     private var pendingFrame: PointCloudFrame?
 
     private var spriteRadius: Float
+    private var visible = true
 
     private var submittedFrames = 0
     private var gpuBusyDrops = 0
@@ -55,7 +56,7 @@ final class PointCloudRenderer {
         var descriptor = LowLevelMesh.Descriptor()
 
         descriptor.vertexCapacity =
-            Self.maximumPointCount * 3
+            Self.maximumPointCount * 4
 
         descriptor.vertexAttributes = [
             .init(
@@ -70,23 +71,17 @@ final class PointCloudRenderer {
                 layoutIndex: 0,
                 offset: 12
             ),
-            .init(
-                semantic: .uv0,
-                format: .float2,
-                layoutIndex: 0,
-                offset: 16
-            )
         ]
 
         descriptor.vertexLayouts = [
             .init(
                 bufferIndex: 0,
-                bufferStride: 24
+                bufferStride: 16
             )
         ]
 
         descriptor.indexCapacity =
-            Self.maximumPointCount * 3
+            Self.maximumPointCount * 12
 
         descriptor.indexType = .uint32
 
@@ -98,8 +93,18 @@ final class PointCloudRenderer {
             let indices =
                 rawIndices.bindMemory(to: UInt32.self)
 
-            for index in 0..<indices.count {
-                indices[index] = UInt32(index)
+            let tetrahedron: [UInt32] = [
+                0, 1, 2,
+                0, 3, 1,
+                0, 2, 3,
+                1, 3, 2,
+            ]
+            for pointIndex in 0..<Self.maximumPointCount {
+                let vertexBase = UInt32(pointIndex * 4)
+                let indexBase = pointIndex * tetrahedron.count
+                for (offset, localIndex) in tetrahedron.enumerated() {
+                    indices[indexBase + offset] = vertexBase + localIndex
+                }
             }
         }
 
@@ -169,6 +174,14 @@ final class PointCloudRenderer {
         spriteRadius = radius
     }
 
+    func setVisible(_ isVisible: Bool) {
+        visible = isVisible
+        entity.isEnabled = isVisible && submittedFrames > 0
+        if !isVisible {
+            pendingFrame = nil
+        }
+    }
+
     func setPlacement(
         attachPosition: SIMD3<Float>?,
         attachRotation: simd_quatf?
@@ -199,6 +212,9 @@ final class PointCloudRenderer {
     }
     
     func submit(_ frame: PointCloudFrame) {
+    guard visible else {
+        return
+    }
     guard frame.pointCount > 0,
     frame.pointCount <= Self.maximumPointCount,
     frame.packedPoints.count ==
@@ -261,12 +277,19 @@ final class PointCloudRenderer {
         index: 2
     )
 
+    var radius = spriteRadius
+    encoder.setBytes(
+        &radius,
+        length: MemoryLayout<Float>.size,
+        index: 3
+    )
+
     let threadWidth =
         expansionPipeline.threadExecutionWidth
 
-    let threadsPerGrid =
+    let threadgroupCount =
         MTLSize(
-            width: frame.pointCount,
+            width: (frame.pointCount + threadWidth - 1) / threadWidth,
             height: 1,
             depth: 1
         )
@@ -278,8 +301,8 @@ final class PointCloudRenderer {
             depth: 1
         )
 
-    encoder.dispatchThreads(
-        threadsPerGrid,
+    encoder.dispatchThreadgroups(
+        threadgroupCount,
         threadsPerThreadgroup: threadsPerGroup
     )
 
@@ -298,7 +321,7 @@ final class PointCloudRenderer {
     lowLevelMesh.parts.replaceAll([
         .init(
             indexOffset: 0,
-            indexCount: frame.pointCount * 3,
+            indexCount: frame.pointCount * 12,
             topology: .triangle,
             materialIndex: 0,
             bounds: bounds
@@ -326,7 +349,7 @@ final class PointCloudRenderer {
 
     commandBuffer.commit()
 
-    entity.isEnabled = true
+    entity.isEnabled = visible
 
     submittedFrames += 1
 

@@ -972,6 +972,8 @@ class VisionProStreamer:
         self._pointcloud_last_log = 0.0
         self._pointcloud_sent_frames = 0
         self._pointcloud_backpressure_drops = 0
+        self._usdz_send_lock = Lock()
+        self._usdz_sent = False
         
         # Video/Audio configuration (set by configure_video/configure_audio)
         self._video_config: Optional[Dict[str, Any]] = None
@@ -1384,16 +1386,11 @@ class VisionProStreamer:
         def _on_open():
             self._log("[WEBRTC] Sim-poses data channel opened", force=True)
             self._webrtc_sim_ready = True
-            # Force USDZ to be resent on each channel open so the model appears after reconnect/reset
-            self._usdz_sent = False
-            self._usdz_transfer_complete = False
             if self._sim_config is not None:
                 # Default to waiting for USDZ transfer before streaming to avoid “poses without model”
                 self._sim_config.setdefault("wait_for_usdz_transfer", True)
-                attach_to = self._sim_config.get("attach_to")
-                grpc_port = self._sim_config.get("grpc_port", 50051)
                 self._log("[WEBRTC] Triggering USDZ send on sim-poses open...", force=True)
-                self._load_and_send_mujoco_scene(attach_to, grpc_port)
+                self._load_and_send_scene()
             
             # Start pose streaming with thread-based approach
             import threading
@@ -1448,7 +1445,14 @@ class VisionProStreamer:
         def _on_open():
             self._log("[WEBRTC] Point-cloud data channel opened", force=True)
             self._webrtc_point_ready = True
+            channel.bufferedAmountLowThreshold = 128 * 1024
             self._start_pointcloud_streaming()
+
+        @channel.on("bufferedamountlow")
+        def _on_buffered_amount_low():
+            wakeup = self._pointcloud_wakeup
+            if wakeup is not None:
+                wakeup.set()
 
         @channel.on("close")
         def _on_close():
@@ -1637,12 +1641,10 @@ class VisionProStreamer:
             self._usdz_sent = False
 
             # Reload and send USDZ/scene the same way as initial load
-            attach_to = self._sim_config.get("attach_to")
-            grpc_port = self._sim_config.get("grpc_port", 50051)
             # Force reload to bypass caching on the visionOS side
             previous_force_reload = self._sim_config.get("force_reload", False)
             self._sim_config["force_reload"] = True
-            self._load_and_send_mujoco_scene(attach_to, grpc_port)
+            self._load_and_send_scene()
             self._sim_config["force_reload"] = previous_force_reload
 
             # Restart pose streaming if it was active
@@ -2887,6 +2889,7 @@ class VisionProStreamer:
         force_reload: bool = False,
         streaming_hz: int = 120,
         wait_for_usdz_transfer: bool = False,
+        usdz_path: Optional[str] = None,
     ):
         """
         Configure MuJoCo simulation streaming. Call this before serve().
@@ -2907,6 +2910,8 @@ class VisionProStreamer:
             wait_for_usdz_transfer: If True, delay pose streaming until USDZ transfer
                         completes. Useful for large scenes where you want the 3D model
                         to be fully loaded before poses start animating. (default: False)
+            usdz_path: Optional prebuilt USDZ file. When provided, runtime XML
+                        conversion is bypassed and this exact asset is transferred.
         
         Example::
         
@@ -2941,7 +2946,9 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(
+                [attach_to[4], attach_to[5], attach_to[6], attach_to[3]]
+            ).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Register model and data
@@ -2959,6 +2966,14 @@ class VisionProStreamer:
                 clean_name = body_name.replace('/', '').replace('-', '') if body_name else body_name
                 self._mujoco_clean_names[body_name] = clean_name
         
+        resolved_usdz_path = None
+        if usdz_path:
+            resolved_usdz_path = os.path.abspath(os.path.expanduser(usdz_path))
+            if not os.path.isfile(resolved_usdz_path):
+                raise FileNotFoundError(
+                    f"Configured USDZ file not found: {resolved_usdz_path}"
+                )
+
         self._sim_config = {
             "xml_path": xml_path,
             "attach_to": attach_to,
@@ -2966,6 +2981,7 @@ class VisionProStreamer:
             "force_reload": force_reload,
             "streaming_hz": streaming_hz,
             "wait_for_usdz_transfer": wait_for_usdz_transfer,
+            "usdz_path": resolved_usdz_path,
         }
         
         # Automatically switch to simulation-relative coordinates
@@ -3059,7 +3075,9 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(
+                [attach_to[4], attach_to[5], attach_to[6], attach_to[3]]
+            ).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Store the Isaac stage and scene
@@ -3794,7 +3812,6 @@ class VisionProStreamer:
 
                 with self._pointcloud_lock:
                     frame = self._pointcloud_frame if self._pointcloud_dirty else None
-                    self._pointcloud_dirty = False
 
                 if frame is None:
                     continue
@@ -3805,12 +3822,21 @@ class VisionProStreamer:
                 buffer_limit = 128 * 1024
                 if getattr(channel, "bufferedAmount", 0) > buffer_limit:
                     self._pointcloud_backpressure_drops += 1
+                    # Retain the newest pending frame and retry as soon as the
+                    # SCTP queue drains. New ROS frames replace it in-place.
+                    await asyncio.sleep(0.01)
+                    wakeup.set()
                     continue
 
                 try:
                     for chunk in frame.chunks:
                         channel.send(chunk)
                     self._pointcloud_sent_frames += 1
+                    with self._pointcloud_lock:
+                        if self._pointcloud_frame is frame:
+                            self._pointcloud_dirty = False
+                        else:
+                            wakeup.set()
                 except Exception as exc:
                     self._log(f"[WEBRTC] Failed to send point cloud: {exc}", force=True)
                     if self.verbose:
@@ -4106,6 +4132,23 @@ class VisionProStreamer:
 
     
     def _load_and_send_scene(self):
+        """Serialize scene transfers and collapse duplicate channel triggers."""
+        if self._sim_config is None:
+            return False
+        if self._usdz_sent:
+            return True
+        if not self._usdz_send_lock.acquire(blocking=False):
+            self._log("[USDZ] Transfer already in progress; ignoring duplicate trigger")
+            return False
+        try:
+            result = self._load_and_send_scene_unlocked()
+            if result:
+                self._usdz_sent = True
+            return result
+        finally:
+            self._usdz_send_lock.release()
+
+    def _load_and_send_scene_unlocked(self):
         """Load USDZ scene and send to VisionPro.
         
         Handles both MuJoCo and Isaac Lab scenes based on which configure_* was called.
@@ -4117,6 +4160,16 @@ class VisionProStreamer:
             return False
         
         attach_to = self._sim_config["attach_to"]
+
+        # A prebuilt asset is the reliable production path: no converter,
+        # temporary XML bundle, or external service is involved.
+        configured_usdz = self._sim_config.get("usdz_path")
+        if configured_usdz and not self._cross_network_mode:
+            return self._send_usdz_data(
+                configured_usdz,
+                attach_to,
+                self._sim_config["grpc_port"],
+            )
         
         # Cross-network mode: Use WebRTC data channel for USDZ transfer
         if self._cross_network_mode:
@@ -4127,7 +4180,7 @@ class VisionProStreamer:
         
         # Check if this is an Isaac Lab scene
         is_isaac = self._sim_config.get("type") == "isaac"
-        
+
         if is_isaac:
             # Isaac Lab: export stage to USDZ using our export utility
             return self._load_and_send_isaac_scene(attach_to, grpc_port)
@@ -4147,9 +4200,13 @@ class VisionProStreamer:
         import struct
         
         is_isaac = self._sim_config.get("type") == "isaac"
+        configured_usdz = self._sim_config.get("usdz_path")
         
         # Get or generate the USDZ file path (using existing caching logic)
-        if is_isaac:
+        if configured_usdz:
+            usdz_path = configured_usdz
+            force_reload = self._sim_config.get("force_reload", False)
+        elif is_isaac:
             # Isaac Lab: export to cached USDZ
             if self._isaac_stage is None or self._isaac_config is None:
                 self._log("[USDZ-WEBRTC] Error: No Isaac stage configured", force=True)
@@ -4343,8 +4400,7 @@ class VisionProStreamer:
                     import time
                     time.sleep(0.3)  # Small delay for channel stabilization
                     self._log("[USDZ-WEBRTC] Triggering USDZ transfer...", force=True)
-                    if self._load_and_send_scene_webrtc(self._sim_config.get("attach_to")):
-                        self._usdz_sent = True
+                    self._load_and_send_scene()
                 
                 threading.Thread(target=send_usdz_delayed, daemon=True).start()
         

@@ -531,6 +531,38 @@ struct StatusOverlay: View {
                     }
                     .buttonStyle(.plain)
 
+                    if appMode == .teleop {
+                        Button {
+                            dataManager.showRobotModel.toggle()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(dataManager.showRobotModel ? Color.purple.opacity(0.8) : Color.gray.opacity(0.6))
+                                    .frame(width: 60, height: 60)
+                                Image(systemName: dataManager.showRobotModel ? "cube.fill" : "cube")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(dataManager.showRobotModel ? "Hide robot model" : "Show robot model")
+
+                        Button {
+                            dataManager.showPointCloud.toggle()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(dataManager.showPointCloud ? Color.cyan.opacity(0.8) : Color.gray.opacity(0.6))
+                                    .frame(width: 60, height: 60)
+                                Image(systemName: dataManager.showPointCloud ? "circle.grid.3x3.fill" : "circle.grid.3x3")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(dataManager.showPointCloud ? "Hide point cloud" : "Show point cloud")
+                    }
+
                     // Recording button
                     Button {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {

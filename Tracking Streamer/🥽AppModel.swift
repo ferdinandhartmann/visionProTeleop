@@ -321,6 +321,19 @@ class DataManager: ObservableObject {
     @Published var controlChannelReady: Bool = false  // Whether control data channel is open
     @Published var crossNetworkRoomCode: String? = nil  // Room code for cross-network mode (nil = local mode)
     @Published var pointCloudSpriteSize: Float = 0.0043  // Size of rendered point sprites (meters)
+
+    // Robot visualization controls (persistent, default visible).
+    @Published var showRobotModel: Bool {
+        didSet {
+            UserDefaults.standard.set(showRobotModel, forKey: "showRobotModel")
+        }
+    }
+
+    @Published var showPointCloud: Bool {
+        didSet {
+            UserDefaults.standard.set(showPointCloud, forKey: "showPointCloud")
+        }
+    }
     
     // USDZ scene loaded via WebRTC (cross-network mode)
     @Published var loadedUsdzPath: String? = nil  // Path to the loaded USDZ file
@@ -489,6 +502,8 @@ class DataManager: ObservableObject {
     private init() {
         // Load saved video source or default to network
         self.videoSource = VideoSource(rawValue: UserDefaults.standard.string(forKey: "videoSource") ?? "") ?? .network
+        self.showRobotModel = UserDefaults.standard.object(forKey: "showRobotModel") as? Bool ?? true
+        self.showPointCloud = UserDefaults.standard.object(forKey: "showPointCloud") as? Bool ?? true
         
         // Use local vars for checks to avoid accessing self before full init
         if let savedZ = UserDefaults.standard.object(forKey: "videoPlaneZDistance") as? Float {

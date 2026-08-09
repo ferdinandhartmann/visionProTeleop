@@ -20,6 +20,10 @@ Hold the left pinch to enable motion. The right wrist commands relative
 Cartesian motion and the right pinch commands the gripper. Franka-specific
 parameters are in `config/franka_teleoperation.yaml`.
 
+If wrist tracking changes by more than the configured translation or rotation
+jump limit, or tracking becomes stale, teleoperation disables before publishing
+the unsafe target. Release the left pinch and pinch again to resume.
+
 
 ## myCobot data flow and key nodes
 

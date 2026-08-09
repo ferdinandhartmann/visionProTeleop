@@ -161,6 +161,7 @@ class VPTransformPublisher(Node):
 
         self.tf_broadcaster = TransformBroadcaster(self)
         self.marker_pub = self.create_publisher(MarkerArray, "/visionpro/hand_markers", qos_fast)
+        self._last_tracking_sample = None
         self.timer = self.create_timer(1.0 / rate_hz, self.update)
         
         self.get_logger().info("VP Transform Publisher started.")
@@ -187,8 +188,9 @@ class VPTransformPublisher(Node):
 
     def update(self):
         data = self.streamer.latest
-        if data is None:
+        if data is None or data is self._last_tracking_sample:
             return
+        self._last_tracking_sample = data
 
         stamp = self.get_clock().now().to_msg()
         tfs = []

@@ -702,7 +702,9 @@ struct CombinedStreamingView: View {
                     dlog("🔗 [CombinedStreamingView] Adding MuJoCo model to scene")
                     mujocoRoot.addChild(entity)
                 }
+                entity.isEnabled = dataManager.showRobotModel
             }
+            updateCache.pointCloudRenderer?.setVisible(dataManager.showPointCloud)
             
             // === HEAD BEAM UPDATE ===
             if let headBeamAnchor = findEntity(named: "headBeamAnchor", in: updateContent.entities),
@@ -1246,6 +1248,7 @@ struct CombinedStreamingView: View {
             let renderer = try await PointCloudRenderer(
                 spriteRadius: dataManager.pointCloudSpriteSize
             )
+            renderer.setVisible(dataManager.showPointCloud)
             renderer.entity.setParent(mujocoRoot)
             updateCache.pointCloudRenderer = renderer
         } catch {
@@ -1649,6 +1652,7 @@ struct CombinedStreamingView: View {
                 wrapper.addChild(loadedEntity)
                 newEntity = wrapper
             }
+            newEntity.isEnabled = DataManager.shared.showRobotModel
             
             await MainActor.run {
                 mujocoEntity = newEntity
