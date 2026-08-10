@@ -40,15 +40,15 @@ franka_visionpro_teleop:
     axis_map: [0, 1, 2]
     axis_signs: [1.0, 1.0, 1.0]
     rotation_axis_signs: [-1.0, 1.0, -1.0]
-    translation_scale: 1.2
-    rotation_scale: 0.6
+    translation_scale: 1.4
+    rotation_scale: 0.7
     # Local pose from visionpro/right/wrist to the RViz wrist target.
     # Rotation uses ROS roll-pitch-yaw order (X-Y-Z), in degrees.
     # This does not alter the commanded robot pose.
     wrist_target_offset_xyz: [-0.1, -0.06, 0.02]
     wrist_target_offset_rpy_deg: [25.0, 179.0, 15.0]
-    workspace_min_xyz: [-0.10, -0.50, 0.02]
-    workspace_max_xyz: [0.75, 0.30, 0.70]
+    workspace_min_xyz: [0.0, -0.40, -0.1]
+    workspace_max_xyz: [0.85, 0.30, 0.70]
 
     right_pinch_min_m: 0.015
     right_pinch_max_m: 0.150
@@ -66,7 +66,7 @@ vp_streamer:
     joint_state_topic: /joint_states
     expected_joint_names:
       [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
-    attach_to: [-0.3, 0.0, 0.65, 90.0]
+    attach_to: [-0.4, -0.35, 0.65, 90.0]
     update_simulation_hz: 30.0
     # 30 Hz is smooth in-headset and halves RealityKit transform updates.
     # Robot control publishing remains independently configured at 250 Hz.
@@ -94,9 +94,16 @@ vp_streamer:
     enable_camera: true
     camera_mode: realsense
     camera_resolution: "640x360"
-    camera_fps: 15
+    camera_fps: 20
+    # Rotate only the wrist view in the combined Vision Pro image.
+    wrist_camera_rotate_180: true
     format: v4l2
     realsense_image_topic: /realsense/wrist/color/image_raw
+    secondary_realsense_image_topic: /realsense/top/color/image_raw
+    # Send a single 640x720 image: top camera above wrist camera.
+    combine_realsense_images: true
+    # 1.0 keeps 640x720; 0.75 sends 480x540; 0.5 sends 320x360.
+    combined_image_downsample_scale: 0.5
 
     enable_pointcloud: true
     # The RealSense launch already applies its hardware/SDK decimation filter.
@@ -106,6 +113,20 @@ vp_streamer:
     pointcloud_rate_hz: 8.0
     pointcloud_max_points: 20000
     pointcloud_stride: 1
+    # Point-cloud TF/update mode. In both modes, every transmitted cloud is a
+    # complete snapshot that atomically replaces the previously rendered cloud;
+    # this parameter does not select partial versus complete point updates.
+    # false (previous behavior): transform the complete cloud with the latest
+    # TF available when vp_streamer sends it. This is sufficient for a fixed
+    # camera, but a moving wrist camera can use a newer pose than the pose at
+    # capture time, causing the cloud to appear in the wrong place.
+    # true (moving-camera behavior): prefer the wrist-camera TF at the cloud's
+    # ROS capture timestamp. Lookup is non-blocking. If robot TF is behind the
+    # camera timestamp, the newest available TF is used immediately so the
+    # display does not freeze; a throttled warning reports the measured lag.
+    # This corrects whole-frame pose lag when synchronized capture TF exists,
+    # but it cannot de-skew motion during one RealSense depth exposure.
+    pointcloud_fullupdate: true
     pointcloud_flip_world_z: false
     mocap_flip_world_z: false
 

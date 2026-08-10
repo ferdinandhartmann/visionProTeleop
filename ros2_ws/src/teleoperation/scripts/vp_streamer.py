@@ -11,10 +11,10 @@ from typing import Dict, List, Optional
 
 from ament_index_python.packages import get_package_share_directory
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rcl_interfaces.msg import ParameterDescriptor
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
-from rclpy.time import Duration
 from sensor_msgs.msg import JointState, PointCloud2
 from std_msgs.msg import Bool
 import cv2
@@ -69,6 +69,7 @@ class VPStreamer(Node):
         self.declare_parameter("camera_fps", 25)
         self.declare_parameter("format", "v4l2")
         self.declare_parameter("camera_mode", "realsense")  # robot, realsense, both
+        self.declare_parameter("wrist_camera_rotate_180", False)
         self.declare_parameter("enable_camera", True)
         self.declare_parameter("enable_audio", False)
         self.declare_parameter("enable_pointcloud", True)
@@ -77,8 +78,12 @@ class VPStreamer(Node):
         self.declare_parameter("pointcloud_max_points", 50000)
         self.declare_parameter("pointcloud_stride", 1)
         self.declare_parameter("pointcloud_flip_world_z", True)
+        self.declare_parameter("pointcloud_fullupdate", False)
         self.declare_parameter("mocap_flip_world_z", True)
         self.declare_parameter("realsense_image_topic", "/camera/camera/color/image_raw")
+        self.declare_parameter("secondary_realsense_image_topic", "")
+        self.declare_parameter("combine_realsense_images", False)
+        self.declare_parameter("combined_image_downsample_scale", 1.0)
         self.declare_parameter("base_frame", "mycobot_base")
         self.declare_parameter("current_tool_frame", "gripper_ee")
         self.declare_parameter(
@@ -146,8 +151,19 @@ class VPStreamer(Node):
         self.enable_pointcloud = params["enable_pointcloud"]
         self.pointcloud_topic = params["pointcloud_topic"]
         self._realsense_image_topic = params["realsense_image_topic"]
+        self._secondary_realsense_image_topic = params[
+            "secondary_realsense_image_topic"
+        ]
+        self._combine_realsense_images = bool(params["combine_realsense_images"])
+        self._combined_image_downsample_scale = min(
+            1.0,
+            max(0.1, float(params["combined_image_downsample_scale"])),
+        )
 
         self.camera_mode = str(params["camera_mode"]).lower()
+        self._wrist_camera_rotate_180 = bool(
+            params["wrist_camera_rotate_180"]
+        )
         if self.camera_mode not in ("robot", "realsense", "both"):
             self.get_logger().warning(f"Unknown camera_mode '{self.camera_mode}', defaulting to robot")
             self.camera_mode = "robot"
@@ -155,9 +171,35 @@ class VPStreamer(Node):
         self._use_realsense = self.camera_mode in ("realsense", "both")
         width, height = map(int, str(params["camera_resolution"]).split('x'))
         self._frame_size = (width, height)
+        if self._use_realsense and self._combine_realsense_images:
+            # Video encoders generally require even dimensions.
+            stream_width = max(
+                2,
+                int(round(width * self._combined_image_downsample_scale / 2.0))
+                * 2,
+            )
+            stream_height = max(
+                2,
+                int(
+                    round(
+                        height
+                        * 2
+                        * self._combined_image_downsample_scale
+                        / 2.0
+                    )
+                )
+                * 2,
+            )
+            self._video_stream_size = (stream_width, stream_height)
+            self._video_stream_resolution = f"{stream_width}x{stream_height}"
+        else:
+            self._video_stream_size = (width, height)
+            self._video_stream_resolution = params["camera_resolution"]
         self._camera_period = 1.0 / params["camera_fps"] if params["camera_fps"] > 0 else 0.0
         self._realsense_lock = None
         self._latest_realsense_frame = None
+        self._secondary_realsense_lock = None
+        self._latest_secondary_realsense_frame = None
         
         self._last_pointcloud_time = 0.0
         self._pointcloud_rate_hz_internal = params["pointcloud_rate_hz"]
@@ -169,6 +211,10 @@ class VPStreamer(Node):
         self._pointcloud_encoded_frames = 0
         self._pointcloud_rejected_frames = 0
         self._pointcloud_flip_world_z = params["pointcloud_flip_world_z"]
+        self._pointcloud_fullupdate = bool(
+            params["pointcloud_fullupdate"]
+        )
+        self.add_on_set_parameters_callback(self._on_set_parameters)
         self._mocap_flip_world_z = params["mocap_flip_world_z"]
         self._tf_target_frame = params["base_frame"]
         self._current_tool_frame = params["current_tool_frame"]
@@ -215,13 +261,44 @@ class VPStreamer(Node):
                 )
                 self.get_logger().info(f"Subscribed to RealSense color stream on {self._realsense_image_topic}")
 
-            if self._use_realsense and self._use_robot_camera:
+                if (
+                    self._combine_realsense_images
+                    and self._secondary_realsense_image_topic
+                ):
+                    self.camera_publisher_realsense_top = self.create_publisher(
+                        Image, "/camera_raw_realsense_top", 10
+                    )
+                    self.camera_publisher_combined = self.create_publisher(
+                        Image, "/camera_raw_combined", 10
+                    )
+                    self._secondary_realsense_lock = threading.Lock()
+                    self.secondary_realsense_subscription = self.create_subscription(
+                        Image,
+                        self._secondary_realsense_image_topic,
+                        self._secondary_realsense_image_cb,
+                        qos_sensor,
+                    )
+                    self.get_logger().info(
+                        "Subscribed to secondary RealSense color stream on "
+                        f"{self._secondary_realsense_image_topic}; Vision Pro output "
+                        "layout is top above wrist"
+                    )
+
+            if (
+                self._use_realsense
+                and self._use_robot_camera
+                and getattr(self, "camera_publisher_combined", None) is None
+            ):
                 self.camera_publisher_combined = self.create_publisher(Image, "/camera_raw_combined", 10)
                 
             self._camera_thread = threading.Thread(target=self._camera_loop, name="vp_camera", daemon=True)
             self._camera_thread.start()
             
-            self.get_logger().info(f"Camera(s) initialized (mode={self.camera_mode})")
+            self.get_logger().info(
+                f"Camera(s) initialized (mode={self.camera_mode}, "
+                f"wrist_rotate_180={self._wrist_camera_rotate_180}, "
+                f"stream_resolution={self._video_stream_resolution})"
+            )
 
 
         self._temporary_model_path = None
@@ -260,7 +337,7 @@ class VPStreamer(Node):
             self.streamer.configure_video(
                 device=None, # Set frames manually to also be able to publish to ROS2
                 format=params["format"],
-                size=params["camera_resolution"],
+                size=self._video_stream_resolution,
                 fps=params["camera_fps"],
             )
             self.get_logger().info("Vision Pro camera streaming enabled")
@@ -318,7 +395,15 @@ class VPStreamer(Node):
         self._reset_state = "idle"
         self._skip_joint_apply_frames = 0
         
-        self.get_logger().info("VPStreamer initialized and listening for reset events.")
+        pointcloud_tf_mode = (
+            "capture-time TF (moving camera)"
+            if self._pointcloud_fullupdate
+            else "latest TF (stationary camera)"
+        )
+        self.get_logger().info(
+            "VPStreamer initialized and listening for reset events. "
+            f"Point-cloud mode: {pointcloud_tf_mode}."
+        )
         
 
     def _load_params(self) -> Dict[str, object]:
@@ -336,6 +421,9 @@ class VPStreamer(Node):
         camera_resolution = self.get_parameter("camera_resolution").value
         camera_fps = self.get_parameter("camera_fps").value
         camera_mode = self.get_parameter("camera_mode").value
+        wrist_camera_rotate_180 = bool(
+            self.get_parameter("wrist_camera_rotate_180").value
+        )
         enable_camera = self.get_parameter("enable_camera").value
         format = self.get_parameter("format").value
         enable_audio = self.get_parameter("enable_audio").value
@@ -345,8 +433,20 @@ class VPStreamer(Node):
         pointcloud_max_points = int(self.get_parameter("pointcloud_max_points").value)
         pointcloud_stride = int(self.get_parameter("pointcloud_stride").value)
         pointcloud_flip_world_z = bool(self.get_parameter("pointcloud_flip_world_z").value)
+        pointcloud_fullupdate = bool(
+            self.get_parameter("pointcloud_fullupdate").value
+        )
         mocap_flip_world_z = bool(self.get_parameter("mocap_flip_world_z").value)
         realsense_image_topic = self.get_parameter("realsense_image_topic").value
+        secondary_realsense_image_topic = self.get_parameter(
+            "secondary_realsense_image_topic"
+        ).value
+        combine_realsense_images = bool(
+            self.get_parameter("combine_realsense_images").value
+        )
+        combined_image_downsample_scale = float(
+            self.get_parameter("combined_image_downsample_scale").value
+        )
         base_frame = self.get_parameter("base_frame").value
         current_tool_frame = self.get_parameter("current_tool_frame").value
         target_visual_tf_frame = self.get_parameter("target_visual_tf_frame").value
@@ -385,6 +485,7 @@ class VPStreamer(Node):
             "camera_resolution": camera_resolution,
             "camera_fps": camera_fps,
             "camera_mode": camera_mode,
+            "wrist_camera_rotate_180": wrist_camera_rotate_180,
             "enable_camera": enable_camera,
             "format": format,
             "enable_audio": enable_audio,
@@ -394,8 +495,12 @@ class VPStreamer(Node):
             "pointcloud_max_points": pointcloud_max_points,
             "pointcloud_stride": pointcloud_stride,
             "pointcloud_flip_world_z": pointcloud_flip_world_z,
+            "pointcloud_fullupdate": pointcloud_fullupdate,
             "mocap_flip_world_z": mocap_flip_world_z,
             "realsense_image_topic": realsense_image_topic,
+            "secondary_realsense_image_topic": secondary_realsense_image_topic,
+            "combine_realsense_images": combine_realsense_images,
+            "combined_image_downsample_scale": combined_image_downsample_scale,
             "base_frame": base_frame,
             "current_tool_frame": current_tool_frame,
             "target_visual_tf_frame": target_visual_tf_frame,
@@ -476,6 +581,19 @@ class VPStreamer(Node):
         with self._pointcloud_msg_lock:
             self._latest_pointcloud_msg = msg
 
+    def _on_set_parameters(self, parameters) -> SetParametersResult:
+        """Apply point-cloud TF mode changes without restarting the node."""
+        for parameter in parameters:
+            if parameter.name == "pointcloud_fullupdate":
+                self._pointcloud_fullupdate = bool(parameter.value)
+                mode = (
+                    "capture-time TF (moving camera)"
+                    if self._pointcloud_fullupdate
+                    else "latest TF (stationary camera)"
+                )
+                self.get_logger().info(f"Point-cloud mode changed to {mode}")
+        return SetParametersResult(successful=True)
+
     def _pointcloud_loop(self) -> None:
         period = 1.0 / max(1.0, float(self._pointcloud_rate_hz_internal))
         next_tick = time.monotonic()
@@ -492,43 +610,100 @@ class VPStreamer(Node):
                 msg = self._latest_pointcloud_msg
             if msg is None or msg is self._last_pointcloud_msg:
                 continue
-            self._last_pointcloud_msg = msg
-            self._process_pointcloud(msg)
+            if self._process_pointcloud(msg):
+                self._last_pointcloud_msg = msg
 
-    def _process_pointcloud(self, msg: PointCloud2) -> None:
+    def _process_pointcloud(self, msg: PointCloud2) -> bool:
+        """Process one complete cloud without blocking the streaming worker.
+
+        False means that a transient dependency (normally capture-time TF) is
+        not ready yet, so the newest cloud should be retried on the next tick.
+        """
         transform = None
         if msg.header.frame_id != self._tf_target_frame:
-            if not self.tf_buffer.can_transform(
-                    self._tf_target_frame,
-                    msg.header.frame_id,
-                    rclpy.time.Time(seconds=0),
-                    timeout=Duration(seconds=0.0),
-                ):
-                self._periodic_log(
-                    "pc_tf_check",
-                    2.0,
-                    f"Point cloud TF not available from {msg.header.frame_id} "
-                    f"to {self._tf_target_frame}",
-                )
-                return
+            transform_time = rclpy.time.Time(seconds=0)
+            if self._pointcloud_fullupdate:
+                stamp = msg.header.stamp
+                if stamp.sec != 0 or stamp.nanosec != 0:
+                    # Use the wrist-camera pose from the instant this complete
+                    # cloud was captured, not the pose from a later send tick.
+                    transform_time = rclpy.time.Time.from_msg(stamp)
+
+            tf_time_description = (
+                "capture time"
+                if self._pointcloud_fullupdate
+                else "latest available time"
+            )
 
             try:
+                # A zero-timeout lookup is important here. Waiting for TF in
+                # this single worker delayed every later cloud and made a
+                # moving-camera stream visibly stale. Capture-time
+                # extrapolation is handled immediately below.
                 transform = self.tf_buffer.lookup_transform(
                     self._tf_target_frame,
                     msg.header.frame_id,
-                    rclpy.time.Time(seconds=0),
-                    timeout=Duration(seconds=0.1),
+                    transform_time,
                 )
                 if self._pointcloud_flip_world_z:
                     self._apply_world_z_flip(transform)
-            except (LookupException, ConnectivityException, ExtrapolationException) as exc:
+            except ExtrapolationException as exc:
+                if not self._pointcloud_fullupdate:
+                    self._periodic_log(
+                        "pc_tf",
+                        2.0,
+                        f"Point cloud TF lookup failed at {tf_time_description}: {exc}",
+                        level="warn",
+                    )
+                    return False
+
+                # Prefer capture-time TF for a moving wrist camera. If the
+                # robot TF stream falls behind the RealSense clock, use the
+                # newest complete transform instead of freezing the cloud.
+                try:
+                    transform = self.tf_buffer.lookup_transform(
+                        self._tf_target_frame,
+                        msg.header.frame_id,
+                        rclpy.time.Time(seconds=0),
+                    )
+                    requested_ns = (
+                        int(msg.header.stamp.sec) * 1_000_000_000
+                        + int(msg.header.stamp.nanosec)
+                    )
+                    available_ns = (
+                        int(transform.header.stamp.sec) * 1_000_000_000
+                        + int(transform.header.stamp.nanosec)
+                    )
+                    tf_lag_sec = max(0.0, (requested_ns - available_ns) / 1.0e9)
+                    self._periodic_log(
+                        "pc_tf_fallback",
+                        2.0,
+                        "Capture-time point-cloud TF is not available; using "
+                        f"latest TF without blocking (TF lag={tf_lag_sec:.3f}s)",
+                        level="warn",
+                    )
+                    if self._pointcloud_flip_world_z:
+                        self._apply_world_z_flip(transform)
+                except (
+                    LookupException,
+                    ConnectivityException,
+                    ExtrapolationException,
+                ) as fallback_exc:
+                    self._periodic_log(
+                        "pc_tf",
+                        2.0,
+                        f"Point cloud latest-TF fallback failed: {fallback_exc}",
+                        level="warn",
+                    )
+                    return False
+            except (LookupException, ConnectivityException) as exc:
                 self._periodic_log(
                     "pc_tf",
                     2.0,
-                    f"Point cloud TF lookup failed: {exc}",
+                    f"Point cloud TF lookup failed at {tf_time_description}: {exc}",
                     level="warn",
                 )
-                return
+                return False
 
         try:
             positions, colors = extract_xyz_rgb(msg)
@@ -545,11 +720,11 @@ class VPStreamer(Node):
                 f"Point cloud decode/transform failed: {exc}",
                 level="warn",
             )
-            return
+            return True
 
         point_count = int(positions.shape[0])
         if point_count == 0:
-            return
+            return True
         if point_count > self._pointcloud_max_points:
             self._pointcloud_rejected_frames += 1
             self._periodic_log(
@@ -559,7 +734,7 @@ class VPStreamer(Node):
                 f"{self._pointcloud_max_points}. Upstream decimation must be increased.",
                 level="warn",
             )
-            return
+            return True
 
         timestamp_ns = (
             int(msg.header.stamp.sec) * 1_000_000_000
@@ -581,6 +756,9 @@ class VPStreamer(Node):
                 f"Point cloud encoding failed: {exc}",
                 level="warn",
             )
+            return False
+
+        return True
 
 
     def _apply_joint_state(self) -> None:
@@ -1013,7 +1191,17 @@ class VPStreamer(Node):
     def _camera_cb(self) -> None:
         robot_frame = self._read_robot_frame()
         realsense_frame = self._read_realsense_frame()
-        frame = self._compose_frame(robot_frame, realsense_frame)
+        secondary_realsense_frame = self._read_secondary_realsense_frame()
+        wrist_stream_frame = (
+            cv2.rotate(realsense_frame, cv2.ROTATE_180)
+            if self._wrist_camera_rotate_180 and realsense_frame is not None
+            else realsense_frame
+        )
+        frame = self._compose_frame(
+            robot_frame,
+            wrist_stream_frame,
+            secondary_realsense_frame,
+        )
 
         # --- Publish robot camera ---
         if self._use_robot_camera and robot_frame is not None:
@@ -1033,8 +1221,34 @@ class VPStreamer(Node):
             except Exception as exc:  # noqa: BLE001
                 self._periodic_log("camera_pub_rs", 1.0, f"Failed to publish RealSense camera image: {exc}", level="warn")
 
+        # --- Publish top RealSense camera ---
+        if secondary_realsense_frame is not None:
+            try:
+                publisher = getattr(self, "camera_publisher_realsense_top", None)
+                if rclpy.ok() and publisher is not None:
+                    img_msg_top = self.bridge.cv2_to_imgmsg(
+                        secondary_realsense_frame, encoding="bgr8"
+                    )
+                    publisher.publish(img_msg_top)
+            except Exception as exc:  # noqa: BLE001
+                self._periodic_log(
+                    "camera_pub_rs_top",
+                    1.0,
+                    f"Failed to publish top RealSense camera image: {exc}",
+                    level="warn",
+                )
+
         # --- Publish combined ---
-        if self.camera_mode == "both" and frame is not None:
+        if (
+            frame is not None
+            and (
+                self.camera_mode == "both"
+                or (
+                    self._combine_realsense_images
+                    and secondary_realsense_frame is not None
+                )
+            )
+        ):
             try:
                 if rclpy.ok() and getattr(self, "camera_publisher_combined", None) is not None:
                     img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
@@ -1046,7 +1260,18 @@ class VPStreamer(Node):
         # and self.streamer.is_video_channel_open()
         if self.streamer is not None and frame is not None:
             try:
-                self.streamer.update_frame(frame)
+                stream_frame = frame
+                if (
+                    self.camera_mode == "realsense"
+                    and self._combine_realsense_images
+                    and frame.shape[1::-1] != self._video_stream_size
+                ):
+                    stream_frame = cv2.resize(
+                        frame,
+                        self._video_stream_size,
+                        interpolation=cv2.INTER_AREA,
+                    )
+                self.streamer.update_frame(stream_frame)
             except Exception as exc:  # noqa: BLE001
                 self._periodic_log("streamer_update_frame", 1.0, f"Failed to update streamer frame: {exc}", level="warn")
         
@@ -1071,6 +1296,14 @@ class VPStreamer(Node):
                 return None
             return self._latest_realsense_frame.copy()
 
+    def _read_secondary_realsense_frame(self) -> Optional[np.ndarray]:
+        if self._secondary_realsense_lock is None:
+            return None
+        with self._secondary_realsense_lock:
+            if self._latest_secondary_realsense_frame is None:
+                return None
+            return self._latest_secondary_realsense_frame.copy()
+
     def _realsense_image_cb(self, msg: Image) -> None:
         if not self._use_realsense:
             return
@@ -1086,15 +1319,40 @@ class VPStreamer(Node):
         with self._realsense_lock:
             self._latest_realsense_frame = frame
 
+    def _secondary_realsense_image_cb(self, msg: Image) -> None:
+        if self._secondary_realsense_lock is None:
+            return
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:  # noqa: BLE001
+            self._periodic_log(
+                "secondary_realsense_frame_convert",
+                5.0,
+                f"Failed to convert secondary RealSense image: {exc}",
+                level="warn",
+            )
+            return
+
+        if frame is None:
+            return
+
+        with self._secondary_realsense_lock:
+            self._latest_secondary_realsense_frame = frame
+
     def _compose_frame(
         self,
         robot_frame: Optional[np.ndarray],
         realsense_frame: Optional[np.ndarray],
+        secondary_realsense_frame: Optional[np.ndarray] = None,
     ) -> Optional[np.ndarray]:
 
         if self.camera_mode == "robot":
             return robot_frame
         if self.camera_mode == "realsense":
+            if self._combine_realsense_images:
+                return self._compose_realsense_pair(
+                    realsense_frame, secondary_realsense_frame
+                )
             return realsense_frame
         if robot_frame is None or realsense_frame is None:
             return None
@@ -1123,6 +1381,26 @@ class VPStreamer(Node):
         canvas[y0 : y0 + rs_h, 0:rs_w] = rs
 
         return canvas
+
+    @staticmethod
+    def _compose_realsense_pair(
+        wrist_frame: Optional[np.ndarray],
+        top_frame: Optional[np.ndarray],
+    ) -> Optional[np.ndarray]:
+        """Return a stable vertical top-over-wrist image."""
+        if wrist_frame is None and top_frame is None:
+            return None
+        if wrist_frame is None:
+            wrist_frame = np.zeros_like(top_frame)
+        if top_frame is None:
+            top_frame = np.zeros_like(wrist_frame)
+
+        wrist = wrist_frame.astype(np.uint8, copy=False)
+        top = top_frame.astype(np.uint8, copy=False)
+        wrist_h, wrist_w = wrist.shape[:2]
+        if top.shape[:2] != (wrist_h, wrist_w):
+            top = cv2.resize(top, (wrist_w, wrist_h))
+        return np.vstack((top, wrist))
 
 
     def _camera_loop(self) -> None:
@@ -1358,11 +1636,18 @@ class MotorSoundModel:
 def main(args: Optional[List[str]] = None) -> None:
     rclpy.init(args=args)
     node = VPStreamer()
+    # The TransformListener uses a reentrant callback group, while the node's
+    # MuJoCo, camera, and joint callbacks remain in the mutually-exclusive
+    # default group. Multiple executor threads therefore let /tf stay current
+    # even when scene or image processing occupies the main callback thread.
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         cv2.destroyAllWindows()
 

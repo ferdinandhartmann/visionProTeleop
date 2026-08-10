@@ -6,6 +6,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -84,12 +85,44 @@ def generate_launch_description() -> LaunchDescription:
             "align_depth": "true",
             "enable_sync": "true",
             "pointcloud": "true",
-            "decimation_filter_value": "5",
+            "decimation_filter_value": "4",
             "tf_sliders": "false",
             "rviz": "false",
             "franka": "false",
         }.items(),
         condition=IfCondition(LaunchConfiguration("start_camera")),
+    )
+
+    # The fixed top camera contributes RGB video only. Keeping it in a
+    # separate driver avoids starting an unused depth pipeline and point cloud.
+    top_realsense = Node(
+        package="realsense2_camera",
+        executable="realsense2_camera_node",
+        namespace="realsense",
+        name="top",
+        output="screen",
+        parameters=[
+            {
+                "camera_name": "top",
+                "base_frame_id": "top_link",
+                "serial_no": ParameterValue(
+                    LaunchConfiguration("top_camera_serial"), value_type=str
+                ),
+                "enable_color": True,
+                "enable_depth": False,
+                "pointcloud.enable": False,
+                "align_depth.enable": False,
+                "enable_sync": False,
+                "enable_gyro": False,
+                "enable_accel": False,
+                "enable_motion": False,
+                "enable_infra": False,
+                "enable_infra1": False,
+                "enable_infra2": False,
+                "rgb_camera.color_profile": LaunchConfiguration("camera_profile"),
+            }
+        ],
+        condition=IfCondition(LaunchConfiguration("start_top_camera")),
     )
 
     vp_base_calibration = Node(
@@ -221,14 +254,18 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "camera_serial",
-                # default_value="950122070179",
                 default_value="040322071188",
-                description="Top RealSense serial number.",
+                description="Wrist RealSense serial number.",
             ),
             DeclareLaunchArgument(
                 "camera_profile",
-                default_value="640x360x15",
+                default_value="424x240x15", # 640x360x15
                 description="RealSense color and depth profile.",
+            ),
+            DeclareLaunchArgument(
+                "top_camera_serial",
+                default_value="950122070179",
+                description="Top RGB-only RealSense serial number.",
             ),
             DeclareLaunchArgument(
                 "usdz_path",
@@ -244,11 +281,13 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("start_controller", default_value="true"),
             DeclareLaunchArgument("start_gripper", default_value="true"),
             DeclareLaunchArgument("start_camera", default_value="true"),
+            DeclareLaunchArgument("start_top_camera", default_value="true"),
             # DeclareLaunchArgument("rviz", default_value="true"),
             franka_ros2_launch,
             cartesian_controller,
             robotiq_gripper,
             realsense,
+            top_realsense,
             vp_origin,
             vp_base_calibration,
             vp_transforms,

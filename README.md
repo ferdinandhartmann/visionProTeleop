@@ -1,12 +1,14 @@
 <!-- omit in toc -->
 VisionProTeleop
-===========
+===============
 
-### This is an enhanced version of the VisionProTeleop Streamer Repo which integrates ROS2 for: MyCobot 280 M5 with Gripper and Camera for Teleoperation, ROS2 Realsense RGB Pointlcoud and additional features in the TrackingStreamer App
+This is an enhanced version of the VisionProTeleop Streamer repository. It
+adds ROS 2 integration for the myCobot 280 M5 and a separate Franka FR3 with
+Robotiq 2F-85 workflow, plus additional features in the Tracking Streamer app.
 
 <p align="center">
   <a href="https://ferdinandhartmann.github.io/visionProTeleop/">
-    <strong>🌐 View the Project Website</strong><br>
+    <strong>🌐 Project website</strong><br>
     https://ferdinandhartmann.github.io/visionProTeleop/
   </a>
 </p>
@@ -16,76 +18,297 @@ VisionProTeleop
   <img src="https://github.com/user-attachments/assets/c9bcaa12-baa9-47e8-8e9b-2f3063b5613a" width="48%" />
 </p>
 
-#### ROS2 package features
-- Publishing ROS2 /tf and MarkerArray of the hand tracking data  
-- Inverse kinematics node in C++ for MyCobot 280
-- Setting wrist frame of the human hand to the end of link 6 of MyCobot frame upon enabling teleoperation for intuitive control. 
-- ROS2 robot_description package for MyCobot 280 with MyCobot280M5+camera+adaptive_gripper 
-    - urdf
-    - mujoco xml and mujoco scene xml
-- ROS2 node which sends joint values, gripper value and LED commands to MyCobot M5 at up to 12 Hz (higher not possible due to python API and internal use of ESP32 of MyCobot M5)
-- Vision Pro Streaming Node which Streams:
-    - Camera Images
-    - Audio (Enable, Disable, Motor sound)
-    - Mujoco Simulation
-    - RGB Pointlcoud
-    - Reset Command
-- RGB pointcloud downsampling (from Realsense camera)
+## myCobot 280 workflow
 
-#### Enhanced Streaming app
-- Lock camera stream to world button in control bar
-- Lock controlbar to worl button in control bar
-- Reset button in control bar to reset mujoco simulation, reset mycobot position and restart the simulation stream
-- Display a rgb pointlcloud in the simulation frame 
-- Exit button directly exits app wihout needing to confirm
-- Skipping TrackingView add pop-up 
+### ROS 2 package features
 
+- Publishes ROS 2 TF and `MarkerArray` messages from Vision Pro hand tracking.
+- Provides a C++ inverse-kinematics node for the myCobot 280.
+- Latches the human wrist frame to the myCobot tool when teleoperation is
+  enabled, providing intuitive relative control.
+- Includes URDF and MuJoCo descriptions for the myCobot 280 M5 with camera and
+  adaptive gripper.
+- Sends joint, gripper, and LED commands through the myCobot Python API at up
+  to roughly 12 Hz, limited by the M5/ESP32 interface.
+- Streams camera images, optional audio, the MuJoCo scene, RGB point clouds,
+  and reset commands to Vision Pro.
+- Provides RGB point-cloud downsampling for the RealSense camera.
 
-### System Architecture
+The myCobot processing chain remains unchanged:
+
+```text
+Vision Pro TF -> teleop_control_cpp -> inverse_kinematics_node
+              -> joint_state_to_mycobot.py -> myCobot M5
+```
+
+### Enhanced Tracking Streamer app
+
+- Lock the camera stream or control bar to the world.
+- Reset the MuJoCo stream and robot visualization from the control bar.
+- Display a colored RGB point cloud together with the robot scene.
+- Toggle the robot model and point cloud independently.
+- Resize and reposition the video plane.
+- Exit directly without an additional confirmation dialog.
+
+These app features are shared by the myCobot and Franka workflows where the
+corresponding stream is enabled.
+
+### System architecture
 
 <img width="4350" height="1608" alt="visionpro_teleop_diagram" src="https://github.com/user-attachments/assets/4de6fa19-7826-4027-bdd1-0b3a8fefa9bc" />
 
-### Demo Video 
+### Demo video
 
 https://github.com/user-attachments/assets/639cb9b6-6371-441f-803b-f7388d67403c
 
-### RVIZ Visualization
+### RViz visualization
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/abe7bbe5-85a7-42f2-ae77-dcdde5514e95" width="40%" />
 </p>
 
-### Configuration
+### myCobot configuration and launch
 
-Parameters for the teleoperation nodes can be set in the config file [`teleoperation.yaml`](ros2_ws/src/teleoperation/config/teleoperation.yaml)
-
-### Build and Launch
+Configure this workflow in
+[`teleoperation.yaml`](ros2_ws/src/teleoperation/config/teleoperation.yaml).
+The existing launch remains:
 
 ```bash
 cd ros2_ws
 colcon build --symlink-install
-```
-
-To launch the full teleoperation system, use the launch file [`launch_teleoperation.launch.py`](ros2_ws/src/teleoperation/launch/launch_teleoperation.launch.py) and set at the top which modalities to to use
-
-```bash
-enable_camera = True
-camera_mode = "both" # robot, realsense, both
-enable_pointcloud = True
-enable_audio = True
-```
-
-```bash
+source install/setup.bash
 ros2 launch teleoperation launch_teleoperation.launch.py
 ```
 
+The keyboard-only fallback also remains available:
 
-&nbsp;
-&nbsp;
-&nbsp;
-&nbsp;
+```bash
+ros2 launch teleoperation keyboard_launch_teleoperation.launch.py
+ros2 run teleoperation keyboard_ee_teleop
+```
+
+More node-level details are in the
+[`teleoperation` package README](ros2_ws/src/teleoperation/README.md).
+
+## Franka FR3 workflow
+
+The Franka path controls a physical FR3 through a Cartesian impedance
+controller. It does not use the myCobot inverse-kinematics or serial-command
+nodes.
+
+### What it can do
+
+- Hold the left-hand pinch as a dead-man clutch to enable robot motion.
+- Use relative right-wrist translation and rotation to command the FR3. The
+  wrist and robot poses are latched when the clutch engages, so the robot does
+  not jump to the absolute Vision Pro coordinate frame.
+- Map the right-hand pinch distance to the Robotiq 2F-85 opening.
+- Publish Cartesian targets at 250 Hz and gripper commands at 25 Hz.
+- Reject stale hand tracking and large translation or rotation jumps, filter
+  commands, clamp them to a configured workspace, and hold the current robot
+  pose after a controller command timeout.
+- Show the measured end-effector, commanded target, and a separately
+  configurable wrist-offset frame in RViz.
+- Stream a high-detail FR3/Robotiq USDZ model to Vision Pro and update its
+  joints at 30 Hz.
+- Stream a colored wrist-camera point cloud using a compact 9-byte-per-point
+  format: float16 XYZ plus uint8 RGB.
+- Render the cloud as camera-facing circular splats. The visionOS renderer can
+  automatically use full, half, or quarter density when GPU latency, buffer
+  pressure, or thermal pressure increases.
+- Toggle the robot model and point cloud independently from the visionOS
+  control bar.
+- Show a combined two-camera video: the RGB-only top camera is in the upper
+  half and the wrist camera is in the lower half. Only the wrist RGB image is
+  rotated by 180 degrees. An optional final downsample reduces WebRTC encoder
+  and network load without changing either ROS camera topic.
+- Resize the video plane from 5% to 100%; its default and reset size are 10%.
+
+### Franka data flow
+
+```text
+Vision Pro hand/head tracking
+             |
+             | gRPC (local mode)
+             v
+vp_transform_publisher -> ROS TF hand frames
+             |
+             v
+franka_visionpro_teleop
+  - latch wrist + measured robot pose on clutch
+  - compute filtered/scaled relative Cartesian target
+  - apply jump, timeout, and workspace safety limits
+             |
+             +--> /cartesian_impedance_controller/pose_command (250 Hz)
+             +--> /factr_teleop/gripper_pos_cmd (25 Hz)
+
+FR3 joint state + cameras -> vp_streamer
+             |
+             | WebRTC video and data channels
+             v
+Vision Pro: video plane + USDZ robot + colored point cloud
+```
+
+Tracking and visual feedback use separate transport paths in local mode. A
+temporary WebRTC/ICE interruption can therefore freeze video, robot graphics,
+and point-cloud graphics while gRPC hand tracking and teleoperation remain
+alive. The controller's clutch and command-timeout behavior remain the final
+safety boundary; never rely on the AR visualization as a safety system.
+
+### ROS TF frames
+
+| Frame | Meaning |
+|---|---|
+| `visionpro/right/wrist` | Tracked right-wrist frame under the calibrated Vision Pro TF tree |
+| `franka_visionpro_target` | Actual Cartesian target computed for the robot controller |
+| `franka_measured_ee` | Measured FR3 end-effector pose |
+| `franka_visionpro_wrist_target` | Wrist frame plus `wrist_target_offset_xyz` and `wrist_target_offset_rpy_deg`; visualization only, not the commanded pose |
+
+The Franka parameters are in
+[`franka_teleoperation.yaml`](ros2_ws/src/teleoperation/config/franka_teleoperation.yaml).
+The wrist visualization offset is intentionally independent of the commanded
+target.
+
+### Cameras and point cloud
+
+The default Franka launch starts:
+
+| Device | Serial | Streams | Default profile |
+|---|---|---|---|
+| Wrist RealSense | `040322071188` | RGB, aligned depth, colored point cloud | 640x360 at 15 Hz |
+| Top RealSense | `950122070179` | RGB only | 640x360 at 15 Hz |
+
+Before WebRTC transmission, `vp_streamer` rotates only the wrist image, places
+the unchanged top image above it, and produces one 640x720 BGR frame. It then
+optionally downsamples only that final composite. The current scale of 0.75
+sends 480x540 to WebRTC. The top camera does not start a depth pipeline. The
+point cloud continues to come only from
+`/realsense/wrist/depth/color/points`.
+
+Relevant settings:
+
+```yaml
+camera_resolution: "640x360"
+camera_fps: 15
+wrist_camera_rotate_180: true
+realsense_image_topic: /realsense/wrist/color/image_raw
+secondary_realsense_image_topic: /realsense/top/color/image_raw
+combine_realsense_images: true
+# 1.0 = 640x720, 0.75 = 480x540, 0.5 = 320x360
+combined_image_downsample_scale: 0.75
+
+pointcloud_rate_hz: 8.0
+pointcloud_max_points: 20000
+pointcloud_stride: 1
+pointcloud_fullupdate: true
+```
+
+The RealSense launch performs depth decimation before ROS publishes the wrist
+cloud. `pointcloud_max_points` is a hard validation limit: an oversized cloud
+is rejected rather than silently truncated. The visionOS renderer then adapts
+draw density without changing the source ROS cloud. Every transmitted update
+atomically replaces the complete rendered cloud in both modes.
+`pointcloud_fullupdate` controls TF timing, not partial versus complete point
+updates. When it is `true`, the complete cloud uses the wrist-camera TF at the
+cloud's capture timestamp when that TF is available. If robot TF is behind the
+camera timestamp, the streamer immediately uses the newest available TF and
+reports its lag rather than freezing the cloud. Set it to `false` to always use
+the latest TF for a stationary camera. Capture-time TF corrects whole-frame
+pose lag, but it cannot de-skew motion that occurs during one depth exposure.
+
+The mode can be changed while `vp_streamer` is running:
+
+```bash
+
+### Build and launch the Franka stack
+
+The surrounding ROS 2 workspace must already contain and build the Franka
+dependencies listed in
+[Reused upstream code and external dependencies](#reused-upstream-code-and-external-dependencies).
+For a targeted rebuild of the packages changed in this repository:
+
+```bash
+cd /home/oda/franka_ws
+
+PYTHONNOUSERSITE=1 colcon build \
+  --base-paths /home/oda/franka_ws/src/visionProTeleop/ros2_ws/src \
+  --packages-select interfaces robot_description teleoperation \
+  --symlink-install
+
+source install/setup.bash
+```
+
+Use `PYTHONNOUSERSITE=1` only on the build command. Do not export it for the
+runtime shell: `vp_streamer` must still be able to import user-installed Python
+packages such as `grpcio` and `mujoco`.
+
+Unlock and activate the physical FR3 according to Franka's normal operating
+procedure, verify the workspace limits, keep the emergency stop accessible,
+and then launch:
+
+```bash
+ros2 launch teleoperation franka_teleoperation.launch.py \
+  robot_ip:=172.168.0.1 \
+  visionpro_ip:=192.168.1.190
+```
+
+Useful launch overrides include:
+
+```text
+camera_serial:=040322071188
+top_camera_serial:=950122070179
+camera_profile:=640x360x15
+start_camera:=true
+start_top_camera:=true
+start_robot:=true
+start_controller:=true
+start_gripper:=true
+```
+
+The custom visionOS renderer and control-bar changes require building the
+`Tracking Streamer.xcodeproj` target from this repository in Xcode. An App
+Store build of the upstream app does not contain these fork-specific UI and
+point-cloud changes.
+
+### Reused upstream code and external dependencies
+
+This repository is a fork, not a from-scratch Vision Pro streaming stack.
+Attribution and boundaries are as follows:
+
+- [Improbable-AI/VisionProTeleop](https://github.com/Improbable-AI/VisionProTeleop)
+  is the upstream project. This fork retains its `avp_stream` Python API, gRPC
+  hand/head tracking, WebRTC video/audio/data transport, MuJoCo and Isaac Lab
+  scene streaming, USD/USDZ transfer, calibration and recording facilities,
+  and the base Tracking Streamer visionOS application. The upstream README and
+  citation are preserved below.
+- [frankarobotics/franka_ros2](https://github.com/frankarobotics/franka_ros2)
+  provides the official ROS 2/libfranka hardware integration and Franka robot
+  description used by the surrounding workspace.
+- [keio-crl/franka_stack](https://github.com/keio-crl/franka_stack) provides
+  workspace packages used by the Franka launch, including `franka_utils`,
+  `franka_controllers`, `factr_teleop`, and `cameras`. They remain external ROS
+  dependencies rather than being duplicated inside this repository.
+- `realsense2_camera` provides the Intel RealSense ROS driver. This fork adds
+  the wrist/top launch configuration and combines their ROS RGB frames before
+  passing one frame to the inherited WebRTC video stream.
+- The FR3 and Robotiq MuJoCo scene in
+  [`fr3_robotiq_2f85.xml`](ros2_ws/src/robot_description/franka_mujoco/fr3_robotiq_2f85.xml)
+  resolves meshes from the same `franka_description` package used by ROS. The
+  generated USDZ is a transport/rendering asset; it is not sent on every pose
+  update.
+- The asynchronous point rendering example in
+  [haoyu-x/vision-in-action](https://github.com/haoyu-x/vision-in-action/tree/main/async_point_cloud_render)
+  informed the decision to batch the cloud as point-like GPU primitives. This
+  fork does not use its Open3D/Vuer renderer: it implements a separate compact
+  WebRTC protocol, Swift reassembly, Metal expansion, RealityKit low-level
+  mesh, RGB texture, backpressure policy, and adaptive draw density.
+
+Follow the license and citation requirements of this repository and each
+external dependency. If you use the VisionProTeleop components in research,
+retain the upstream citation shown in the appendix below.
 
 ---
+
 # VisionProTeleop Original README
 
 
