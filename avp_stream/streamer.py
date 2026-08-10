@@ -28,6 +28,10 @@ from avp_stream.mujoco_msg import mujoco_ar_pb2, mujoco_ar_pb2_grpc
 from scipy.spatial.transform import Rotation as R
 
 from aiortc.exceptions import InvalidStateError
+from avp_stream.pointcloud_protocol import (
+    EncodedPointCloudFrame,
+    encode_point_cloud_frame,
+)
 
 # Suppress noisy aioice TURN channel bind errors (non-fatal, connection still works via STUN)
 logging.getLogger("aioice.turn").setLevel(logging.ERROR)
@@ -956,13 +960,20 @@ class VisionProStreamer:
         self._benchmark_condition = Condition()
         self._benchmark_events = {}
         self._reset_callbacks: List[Callable[[Any, Any], None]] = []
-        self._pointcloud_payload = None
+        self._pointcloud_frame: Optional[EncodedPointCloudFrame] = None
         self._pointcloud_lock = Lock()
-        self._pointcloud_thread = None
+        self._pointcloud_send_future = None
+        self._pointcloud_wakeup = None
         self._pointcloud_running = False
+        self._pointcloud_sender_generation = 0
         self._pointcloud_hz = 10.0
         self._pointcloud_dirty = False
+        self._pointcloud_sequence = 0
         self._pointcloud_last_log = 0.0
+        self._pointcloud_sent_frames = 0
+        self._pointcloud_backpressure_drops = 0
+        self._usdz_send_lock = Lock()
+        self._usdz_sent = False
         
         # Video/Audio configuration (set by configure_video/configure_audio)
         self._video_config: Optional[Dict[str, Any]] = None
@@ -1044,6 +1055,7 @@ class VisionProStreamer:
         VisionOS receives a proper disconnect notification.
         """
         self._log("[CLEANUP] Cleaning up streamer resources...", force=True)
+        self._stop_pointcloud_streaming()
         
         # Send explicit leave message via signaling
         if self._cross_network_mode and self._signaling_ws and self._signaling_connected:
@@ -1374,16 +1386,11 @@ class VisionProStreamer:
         def _on_open():
             self._log("[WEBRTC] Sim-poses data channel opened", force=True)
             self._webrtc_sim_ready = True
-            # Force USDZ to be resent on each channel open so the model appears after reconnect/reset
-            self._usdz_sent = False
-            self._usdz_transfer_complete = False
             if self._sim_config is not None:
                 # Default to waiting for USDZ transfer before streaming to avoid “poses without model”
                 self._sim_config.setdefault("wait_for_usdz_transfer", True)
-                attach_to = self._sim_config.get("attach_to")
-                grpc_port = self._sim_config.get("grpc_port", 50051)
                 self._log("[WEBRTC] Triggering USDZ send on sim-poses open...", force=True)
-                self._load_and_send_mujoco_scene(attach_to, grpc_port)
+                self._load_and_send_scene()
             
             # Start pose streaming with thread-based approach
             import threading
@@ -1438,7 +1445,14 @@ class VisionProStreamer:
         def _on_open():
             self._log("[WEBRTC] Point-cloud data channel opened", force=True)
             self._webrtc_point_ready = True
+            channel.bufferedAmountLowThreshold = 128 * 1024
             self._start_pointcloud_streaming()
+
+        @channel.on("bufferedamountlow")
+        def _on_buffered_amount_low():
+            wakeup = self._pointcloud_wakeup
+            if wakeup is not None:
+                wakeup.set()
 
         @channel.on("close")
         def _on_close():
@@ -1627,12 +1641,10 @@ class VisionProStreamer:
             self._usdz_sent = False
 
             # Reload and send USDZ/scene the same way as initial load
-            attach_to = self._sim_config.get("attach_to")
-            grpc_port = self._sim_config.get("grpc_port", 50051)
             # Force reload to bypass caching on the visionOS side
             previous_force_reload = self._sim_config.get("force_reload", False)
             self._sim_config["force_reload"] = True
-            self._load_and_send_mujoco_scene(attach_to, grpc_port)
+            self._load_and_send_scene()
             self._sim_config["force_reload"] = previous_force_reload
 
             # Restart pose streaming if it was active
@@ -2877,6 +2889,7 @@ class VisionProStreamer:
         force_reload: bool = False,
         streaming_hz: int = 120,
         wait_for_usdz_transfer: bool = False,
+        usdz_path: Optional[str] = None,
     ):
         """
         Configure MuJoCo simulation streaming. Call this before serve().
@@ -2897,6 +2910,8 @@ class VisionProStreamer:
             wait_for_usdz_transfer: If True, delay pose streaming until USDZ transfer
                         completes. Useful for large scenes where you want the 3D model
                         to be fully loaded before poses start animating. (default: False)
+            usdz_path: Optional prebuilt USDZ file. When provided, runtime XML
+                        conversion is bypassed and this exact asset is transferred.
         
         Example::
         
@@ -2931,7 +2946,9 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(
+                [attach_to[4], attach_to[5], attach_to[6], attach_to[3]]
+            ).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Register model and data
@@ -2949,6 +2966,14 @@ class VisionProStreamer:
                 clean_name = body_name.replace('/', '').replace('-', '') if body_name else body_name
                 self._mujoco_clean_names[body_name] = clean_name
         
+        resolved_usdz_path = None
+        if usdz_path:
+            resolved_usdz_path = os.path.abspath(os.path.expanduser(usdz_path))
+            if not os.path.isfile(resolved_usdz_path):
+                raise FileNotFoundError(
+                    f"Configured USDZ file not found: {resolved_usdz_path}"
+                )
+
         self._sim_config = {
             "xml_path": xml_path,
             "attach_to": attach_to,
@@ -2956,6 +2981,7 @@ class VisionProStreamer:
             "force_reload": force_reload,
             "streaming_hz": streaming_hz,
             "wait_for_usdz_transfer": wait_for_usdz_transfer,
+            "usdz_path": resolved_usdz_path,
         }
         
         # Automatically switch to simulation-relative coordinates
@@ -3049,7 +3075,9 @@ class VisionProStreamer:
             
             # Build transformation matrix
             self._attach_to_mat = np.eye(4)
-            self._attach_to_mat[:3, :3] = R.from_quat(attach_to[3:]).as_matrix()
+            self._attach_to_mat[:3, :3] = R.from_quat(
+                [attach_to[4], attach_to[5], attach_to[6], attach_to[3]]
+            ).as_matrix()
             self._attach_to_mat[:3, 3] = attach_to[:3]
         
         # Store the Isaac stage and scene
@@ -3604,17 +3632,25 @@ class VisionProStreamer:
         
         return body_dict
 
-    def update_pointcloud(self, positions: np.ndarray, colors: np.ndarray, rate_hz: float = 10.0):
-        """Store the latest point cloud to be pushed over WebRTC.
+    def update_pointcloud(
+        self,
+        positions: np.ndarray,
+        colors: np.ndarray,
+        rate_hz: float = 10.0,
+        timestamp_ns: int = 0,
+    ):
+        """Encode and store the latest point cloud to be pushed over WebRTC.
 
         Parameters
         ----------
         positions : np.ndarray
-            Nx3 float32 array in meters (already transformed to mycobot_base).
+            Nx3 float32 array in meters in the configured simulation frame.
         colors : np.ndarray
-            Nx3 uint8 or float32 array of RGB values.
+            Nx3 uint8 array of exact RGB values.
         rate_hz : float, optional
-            Desired streaming rate (default 10 Hz, clamped to 1–30 Hz).
+            Desired streaming rate.
+        timestamp_ns : int, optional
+            Source timestamp copied from the ROS message.
         """
         if positions.size == 0 or colors.size == 0:
             self._log("[POINTCLOUD] Warning: Empty positions or colors array, skipping point cloud update", force=True)
@@ -3624,39 +3660,40 @@ class VisionProStreamer:
             self._log("[POINTCLOUD] Warning: No points in positions array, skipping point cloud update", force=True)
             return
         
-        # Clamp rate to a sane range
-        self._pointcloud_hz = rate_hz
-
-        # Ensure dtype/shape
+        self._pointcloud_hz = max(1.0, float(rate_hz))
         pos = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
-        col = np.asarray(colors)
-        if col.dtype != np.uint8:
-            col = np.clip(col, 0.0, 255.0).astype(np.uint8)
-        col = col.reshape(-1, 3)
-
-        # Truncate to smallest length to avoid mismatch
-        n = min(pos.shape[0], col.shape[0])
-        pos = pos[:n]
-        col = col[:n]
-
-        # # Lightweight downsample to keep payloads small
-        # if n > 12000:
-        #     stride = int(np.ceil(n / 12000))
-        #     pos = pos[::stride]
-        #     col = col[::stride]
-        #     n = pos.shape[0]
-
-        header = struct.pack("<I", n)
-        payload = header + pos.tobytes() + col.tobytes()
+        col = np.asarray(colors, dtype=np.uint8).reshape(-1, 3)
+        if pos.shape != col.shape:
+            raise ValueError("point-cloud positions and colors must have matching shapes")
 
         with self._pointcloud_lock:
-            self._pointcloud_payload = payload
+            sequence = self._pointcloud_sequence
+            self._pointcloud_sequence = (self._pointcloud_sequence + 1) & 0xFFFFFFFF
+
+        frame = encode_point_cloud_frame(
+            pos,
+            col,
+            sequence=sequence,
+            timestamp_ns=timestamp_ns,
+        )
+
+        with self._pointcloud_lock:
+            self._pointcloud_frame = frame
             self._pointcloud_dirty = True
-        
+
+        loop = self._webrtc_loop
+        wakeup = self._pointcloud_wakeup
+        if loop is not None and wakeup is not None:
+            loop.call_soon_threadsafe(wakeup.set)
+
         now = time.time()
         if now - self._pointcloud_last_log > 1.0:
             self._pointcloud_last_log = now
-            self._log(f"[POINTCLOUD] Queued {n} pts (payload {len(payload)/1024:.1f} KB)", force=True)
+            self._log(
+                f"[POINTCLOUD] Queued seq={frame.sequence} {frame.point_count} pts "
+                f"({frame.payload_bytes / 1024:.1f} KiB, {len(frame.chunks)} chunks)",
+                force=True,
+            )
     
     def _get_isaac_poses_from_stage(self) -> Dict[str, Dict[str, Any]]:
         """Get poses from USD stage using PhysX runtime data (Isaac Lab only)."""
@@ -3737,92 +3774,108 @@ class VisionProStreamer:
             self._log("[SIM] Waiting for WebRTC sim-poses channel to open...", force=True)
 
     def _start_pointcloud_streaming(self):
-        """Start background thread that pushes the latest point cloud."""
+        """Start the point-cloud sender on the WebRTC asyncio loop."""
         if self._pointcloud_running or not self._webrtc_point_ready:
             return
-        if self._pointcloud_thread and self._pointcloud_thread.is_alive():
+        if self._webrtc_loop is None:
+            self._log("[POINTCLOUD] Cannot start without a WebRTC event loop", force=True)
             return
         self._pointcloud_running = True
+        self._pointcloud_sender_generation += 1
+        generation = self._pointcloud_sender_generation
 
-        def _loop():
-            self._log(f"[POINTCLOUD] Point-cloud streaming thread started (hz={self._pointcloud_hz:.2f})", force=True)
-            target_period = 1.0 / max(1.0, float(self._pointcloud_hz))
-            last_send = 0.0
-            last_stats_log = 0.0
-            try:
-                while self._pointcloud_running:
-                    now = time.time()
-                    if now - last_send < target_period:
-                        time.sleep(min(target_period - (now - last_send), 0.01))
-                        continue
+        self._pointcloud_send_future = asyncio.run_coroutine_threadsafe(
+            self._pointcloud_send_loop(generation),
+            self._webrtc_loop,
+        )
 
-                    channel = self._webrtc_point_channel if self._webrtc_point_ready else None
-                    if channel is None:
-                        time.sleep(0.05)
-                        continue
+    async def _pointcloud_send_loop(self, generation: int):
+        """Send complete PCD2 frames without allowing stale-frame backlog."""
+        wakeup = asyncio.Event()
+        if generation != self._pointcloud_sender_generation:
+            return
+        self._pointcloud_wakeup = wakeup
+        wakeup.set()
+        last_stats_log = 0.0
+        self._log("[POINTCLOUD] Async sender started", force=True)
+        try:
+            while (
+                self._pointcloud_running
+                and generation == self._pointcloud_sender_generation
+            ):
+                await wakeup.wait()
+                wakeup.clear()
 
-                    if getattr(channel, "readyState", "") != "open":
-                        self._log("[POINTCLOUD] Channel closed; stopping point-cloud loop", force=True)
-                        break
+                channel = self._webrtc_point_channel if self._webrtc_point_ready else None
+                if channel is None or getattr(channel, "readyState", "") != "open":
+                    break
 
-                    if getattr(channel, "bufferedAmount", 0) > 1_000_000:
-                        time.sleep(0.01)
-                        continue
+                with self._pointcloud_lock:
+                    frame = self._pointcloud_frame if self._pointcloud_dirty else None
 
-                    payload = None
+                if frame is None:
+                    continue
+
+                # Start a frame only when the SCTP queue is nearly drained. A
+                # 100k-point frame is ~0.9 MB, so allowing another full frame
+                # into the queue would add visible latency.
+                buffer_limit = 128 * 1024
+                if getattr(channel, "bufferedAmount", 0) > buffer_limit:
+                    self._pointcloud_backpressure_drops += 1
+                    # Retain the newest pending frame and retry as soon as the
+                    # SCTP queue drains. New ROS frames replace it in-place.
+                    await asyncio.sleep(0.01)
+                    wakeup.set()
+                    continue
+
+                try:
+                    for chunk in frame.chunks:
+                        channel.send(chunk)
+                    self._pointcloud_sent_frames += 1
                     with self._pointcloud_lock:
-                        if self._pointcloud_dirty:
-                            payload = self._pointcloud_payload
+                        if self._pointcloud_frame is frame:
                             self._pointcloud_dirty = False
-
-                    if not payload:
-                        time.sleep(0.01)
-                        continue
-
-                    try:
-                        if self._webrtc_loop is not None:
-                            future = asyncio.run_coroutine_threadsafe(
-                                self._async_datachannel_send(channel, payload),
-                                self._webrtc_loop,
-                            )
-                            future.result()
                         else:
-                            channel.send(payload)
-                        last_send = now
+                            wakeup.set()
+                except Exception as exc:
+                    self._log(f"[WEBRTC] Failed to send point cloud: {exc}", force=True)
+                    if self.verbose:
+                        traceback.print_exc()
+                    break
 
-                        if now - last_stats_log >= 1.0:
-                            point_count = struct.unpack_from("<I", payload, 0)[0] if len(payload) >= 4 else 0
-                            buffer_amt = getattr(channel, "bufferedAmount", 0)
-                            self._log(
-                                f"[POINTCLOUD] Sent {point_count} pts ({len(payload)/1024:.1f} KB), buffer={buffer_amt}",
-                                force=True,
-                            )
-                            last_stats_log = now
-
-                    except Exception as exc:
-                        self._log(f"[WEBRTC] Failed to send point cloud: {exc}", force=True)
-                        if self.verbose:
-                            traceback.print_exc()
-                        break
-            finally:
+                now = time.monotonic()
+                if now - last_stats_log >= 1.0:
+                    self._log(
+                        f"[POINTCLOUD] Sent seq={frame.sequence} {frame.point_count} pts, "
+                        f"buffer={getattr(channel, 'bufferedAmount', 0)}, "
+                        f"sent={self._pointcloud_sent_frames}, "
+                        f"backpressure_drops={self._pointcloud_backpressure_drops}",
+                        force=True,
+                    )
+                    last_stats_log = now
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if generation == self._pointcloud_sender_generation:
+                self._pointcloud_wakeup = None
                 self._pointcloud_running = False
-                self._log("[WEBRTC] Point-cloud streaming thread exited", force=True)
-
-        self._pointcloud_thread = Thread(target=_loop, name="pointcloud_stream", daemon=True)
-        self._pointcloud_thread.start()
-
-    async def _async_datachannel_send(self, channel, payload):
-        """Send datachannel payload inside the WebRTC event loop."""
-        channel.send(payload)
+                self._log("[POINTCLOUD] Async sender stopped", force=True)
 
     def _stop_pointcloud_streaming(self):
-        """Stop the point cloud streaming thread."""
-        if not self._pointcloud_running:
-            return
+        """Stop the point-cloud sender and invalidate any reconnect race."""
         self._pointcloud_running = False
-        if self._pointcloud_thread:
-            self._pointcloud_thread.join(timeout=2.0)
-        self._pointcloud_thread = None
+        self._pointcloud_sender_generation += 1
+        future = self._pointcloud_send_future
+        self._pointcloud_send_future = None
+        if future is not None:
+            future.cancel()
+        loop = self._webrtc_loop
+        wakeup = self._pointcloud_wakeup
+        if loop is not None and wakeup is not None:
+            loop.call_soon_threadsafe(wakeup.set)
+        with self._pointcloud_lock:
+            self._pointcloud_frame = None
+            self._pointcloud_dirty = False
     
     def _start_pose_streaming_webrtc(self):
         """Start the actual pose streaming loop via WebRTC.
@@ -4079,6 +4132,23 @@ class VisionProStreamer:
 
     
     def _load_and_send_scene(self):
+        """Serialize scene transfers and collapse duplicate channel triggers."""
+        if self._sim_config is None:
+            return False
+        if self._usdz_sent:
+            return True
+        if not self._usdz_send_lock.acquire(blocking=False):
+            self._log("[USDZ] Transfer already in progress; ignoring duplicate trigger")
+            return False
+        try:
+            result = self._load_and_send_scene_unlocked()
+            if result:
+                self._usdz_sent = True
+            return result
+        finally:
+            self._usdz_send_lock.release()
+
+    def _load_and_send_scene_unlocked(self):
         """Load USDZ scene and send to VisionPro.
         
         Handles both MuJoCo and Isaac Lab scenes based on which configure_* was called.
@@ -4090,6 +4160,16 @@ class VisionProStreamer:
             return False
         
         attach_to = self._sim_config["attach_to"]
+
+        # A prebuilt asset is the reliable production path: no converter,
+        # temporary XML bundle, or external service is involved.
+        configured_usdz = self._sim_config.get("usdz_path")
+        if configured_usdz and not self._cross_network_mode:
+            return self._send_usdz_data(
+                configured_usdz,
+                attach_to,
+                self._sim_config["grpc_port"],
+            )
         
         # Cross-network mode: Use WebRTC data channel for USDZ transfer
         if self._cross_network_mode:
@@ -4100,7 +4180,7 @@ class VisionProStreamer:
         
         # Check if this is an Isaac Lab scene
         is_isaac = self._sim_config.get("type") == "isaac"
-        
+
         if is_isaac:
             # Isaac Lab: export stage to USDZ using our export utility
             return self._load_and_send_isaac_scene(attach_to, grpc_port)
@@ -4120,9 +4200,13 @@ class VisionProStreamer:
         import struct
         
         is_isaac = self._sim_config.get("type") == "isaac"
+        configured_usdz = self._sim_config.get("usdz_path")
         
         # Get or generate the USDZ file path (using existing caching logic)
-        if is_isaac:
+        if configured_usdz:
+            usdz_path = configured_usdz
+            force_reload = self._sim_config.get("force_reload", False)
+        elif is_isaac:
             # Isaac Lab: export to cached USDZ
             if self._isaac_stage is None or self._isaac_config is None:
                 self._log("[USDZ-WEBRTC] Error: No Isaac stage configured", force=True)
@@ -4316,8 +4400,7 @@ class VisionProStreamer:
                     import time
                     time.sleep(0.3)  # Small delay for channel stabilization
                     self._log("[USDZ-WEBRTC] Triggering USDZ transfer...", force=True)
-                    if self._load_and_send_scene_webrtc(self._sim_config.get("attach_to")):
-                        self._usdz_sent = True
+                    self._load_and_send_scene()
                 
                 threading.Thread(target=send_usdz_delayed, daemon=True).start()
         

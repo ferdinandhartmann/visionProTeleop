@@ -6,6 +6,12 @@ import Accelerate
 import AVFAudio
 import RealityKitContent
 
+@MainActor
+private final class ImmersiveViewUpdateCache: ObservableObject {
+    var videoAspectRatio: Float? = nil
+    var videoScale: Float? = nil
+}
+
 struct ImmersiveView: View {
     @EnvironmentObject var imageData: ImageData
     @StateObject private var videoStreamManager = VideoStreamManager()
@@ -19,14 +25,13 @@ struct ImmersiveView: View {
     @State private var previewActive = false  // Track if preview should be shown
     @State private var hasAutoMinimized = false  // Track if we've already auto-minimized
     @State private var userInteracted = false  // Track if user has manually changed minimized state
-    @State private var currentAspectRatio: Float? = nil  // Track current video aspect ratio
+    @StateObject private var updateCache = ImmersiveViewUpdateCache()
     @State private var videoMinimized = false  // Track if video view is minimized
     @State private var previewStatusPosition: (x: Float, y: Float)? = nil  // Track preview status position
     @State private var previewStatusActive = false  // Track if status preview should be shown
     @State private var stereoMaterialEntity: Entity? = nil  // Store reference to RealityKit stereo material entity
     @State private var fixedWorldTransform: Transform? = nil  // Preserve world transform when locked
     @State private var statusFixedWorldTransform: Transform? = nil  // Preserve status transform when locked
-    @State private var lastStatusFixedToWorld: Bool = false  // Track toggle edges for status anchoring
     
     var body: some View {
         RealityView { content, attachments in
@@ -106,10 +111,10 @@ struct ImmersiveView: View {
             let _ = updateTrigger  // Explicitly depend on updateTrigger
             let _ = dataManager.videoPlaneZDistance  // React to z-distance changes
             let _ = dataManager.videoPlaneYPosition  // React to y-position changes
+            let _ = dataManager.videoPlaneScale  // React to width/height changes
             let _ = dataManager.videoPlaneAutoPerpendicular  // React to tilt setting changes
             let _ = dataManager.videoPlaneFixedToWorld  // React to anchor mode changes
             let _ = previewZDistance  // React to preview changes
-            let _ = currentAspectRatio  // React to aspect ratio changes
             let _ = dataManager.statusMinimizedXPosition  // React to status position changes
             let _ = dataManager.statusMinimizedYPosition  // React to status position changes
             let _ = previewStatusPosition  // React to status preview changes
@@ -167,7 +172,6 @@ struct ImmersiveView: View {
                 if videoRoot.parent !== headAnchor {
                     videoRoot.setParent(headAnchor, preservingWorldTransform: true)
                 }
-                fixedWorldTransform = nil
                 var offsetTransform = Transform()
                 offsetTransform.translation = SIMD3<Float>(0.0, targetY, targetZ)
                 if dataManager.videoPlaneAutoPerpendicular {
@@ -188,17 +192,11 @@ struct ImmersiveView: View {
             
             // Update status container position based on minimized state (do this BEFORE early return)
             let statusFixed = dataManager.statusFixedToWorld
-            let statusFixedChanged = statusFixed != lastStatusFixedToWorld
             let statusHeadAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity
             
             if let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor {
-                        if statusFixedChanged {
-                            // Capture the current world transform before switching anchors to prevent jumps
-                            let worldMatrix = statusContainer.transformMatrix(relativeTo: nil)
-                            statusFixedWorldTransform = Transform(matrix: worldMatrix)
-                        }
                         if statusContainer.parent !== worldAnchor {
                             statusContainer.setParent(worldAnchor, preservingWorldTransform: true)
                         }
@@ -229,8 +227,6 @@ struct ImmersiveView: View {
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
             }
-            lastStatusFixedToWorld = statusFixed
-            
             if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor, statusPreviewContainer.parent !== worldAnchor {
@@ -264,7 +260,12 @@ struct ImmersiveView: View {
                 // No images yet - keep video plane hidden
                 dlog("DEBUG: No images yet, keeping video hidden")
                 skyBoxEntity?.isEnabled = false
-                hasFrames = false
+                return
+            }
+
+            guard let leftCG = imageLeft.cgImage,
+                  let rightCG = imageRight.cgImage else {
+                skyBoxEntity?.isEnabled = false
                 return
             }
             
@@ -278,15 +279,18 @@ struct ImmersiveView: View {
             let imageWidth = imageRight.size.width
             let imageHeight = imageRight.size.height
             let aspectRatio = Float(imageWidth / imageHeight)
+            let scale = max(dataManager.videoPlaneScale, 0.05)
             
-            // Update plane geometry if aspect ratio changed
-            if currentAspectRatio == nil || abs(currentAspectRatio! - aspectRatio) > 0.01 {
-                dlog("DEBUG: Updating plane geometry for aspect ratio: \(aspectRatio) (was: \(currentAspectRatio ?? 0))")
-                currentAspectRatio = aspectRatio
+            // Update plane geometry if aspect ratio or uniform size changed.
+            if updateCache.videoAspectRatio == nil ||
+                abs(updateCache.videoAspectRatio! - aspectRatio) > 0.01 ||
+                updateCache.videoScale != scale {
+                dlog("DEBUG: Updating plane geometry for aspect ratio: \(aspectRatio) (was: \(updateCache.videoAspectRatio ?? 0))")
+                updateCache.videoAspectRatio = aspectRatio
+                updateCache.videoScale = scale
                 
-                // Use a fixed height and calculate width based on aspect ratio
-                // This preserves the original aspect ratio of the video
-                let planeHeight: Float = 9.6
+                // Uniform scaling keeps the original width/height ratio.
+                let planeHeight: Float = 9.6 * scale
                 let planeWidth = planeHeight * aspectRatio
                 
                 let newMesh = MeshResource.generatePlane(width: planeWidth, height: planeHeight)
@@ -300,25 +304,6 @@ struct ImmersiveView: View {
             
             // Show video only if not minimized
             skyBox.isEnabled = !videoMinimized
-            
-            // Auto-minimize when frames first arrive (only once, and never if user has interacted)
-            if !hasFrames {
-                hasFrames = true
-                // Only auto-minimize if user hasn't manually changed the state
-                if !hasAutoMinimized && !userInteracted {
-                    // Delay minimization slightly for smooth transition
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-                        // Only minimize if user hasn't already interacted with it
-                        if !hasAutoMinimized && !userInteracted {
-                            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                                isMinimized = true
-                                hasAutoMinimized = true
-                            }
-                        }
-                    }
-                }
-            }
             
             // Check if stereo mode is enabled
             let isStereo = DataManager.shared.stereoEnabled
@@ -335,7 +320,7 @@ struct ImmersiveView: View {
                         var skyBoxMaterial = UnlitMaterial()
                         var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
                         textureOptions.mipmapsMode = .none
-                        let texture = try TextureResource.generate(from: imageRight.cgImage!, options: textureOptions)
+                        let texture = try TextureResource.generate(from: rightCG, options: textureOptions)
                         skyBoxMaterial.color = .init(texture: .init(texture))
                         skyBox.components[ModelComponent.self]?.materials = [skyBoxMaterial]
                         return
@@ -347,11 +332,11 @@ struct ImmersiveView: View {
                     
                     // Generate textures directly from CGImages (skip UIImage wrapper overhead)
                     let leftTexture = try TextureResource.generate(
-                        from: imageLeft.cgImage!,
+                        from: leftCG,
                         options: textureOptions
                     )
                     let rightTexture = try TextureResource.generate(
-                        from: imageRight.cgImage!,
+                        from: rightCG,
                         options: textureOptions
                     )
                     
@@ -375,7 +360,7 @@ struct ImmersiveView: View {
                     textureOptions.mipmapsMode = .none  // No mipmaps to avoid filtering artifacts
                     
                     let texture = try TextureResource.generate(
-                        from: imageRight.cgImage!,
+                        from: rightCG,
                         options: textureOptions
                     )
                     skyBoxMaterial.color = .init(texture: .init(texture))
@@ -418,6 +403,39 @@ struct ImmersiveView: View {
         .onReceive(imageData.$left) { newImage in
             dlog("DEBUG: onReceive triggered, new image: \(newImage != nil)")
             updateTrigger.toggle()
+            let framesNowAvailable = imageData.left != nil && imageData.right != nil
+            if hasFrames != framesNowAvailable {
+                hasFrames = framesNowAvailable
+                if framesNowAvailable && !hasAutoMinimized && !userInteracted {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        if !hasAutoMinimized && !userInteracted {
+                            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                                isMinimized = true
+                                hasAutoMinimized = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onReceive(imageData.$right) { _ in
+            updateTrigger.toggle()
+            let framesNowAvailable = imageData.left != nil && imageData.right != nil
+            if hasFrames != framesNowAvailable {
+                hasFrames = framesNowAvailable
+                if framesNowAvailable && !hasAutoMinimized && !userInteracted {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        if !hasAutoMinimized && !userInteracted {
+                            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                                isMinimized = true
+                                hasAutoMinimized = true
+                            }
+                        }
+                    }
+                }
+            }
         }
         .task { appModel.run() }
         .task { await appModel.processDeviceAnchorUpdates() }
@@ -556,7 +574,7 @@ private func createSkyBox() -> Entity {
     let skyBoxEntity = Entity()
     // Start with a default 16:9 aspect ratio plane
     // This will be updated dynamically based on the incoming video's actual aspect ratio
-    let defaultHeight: Float = 9.6
+    let defaultHeight: Float = 2.0
     let defaultWidth: Float = defaultHeight * (16.0 / 9.0)  // 16:9 aspect ratio
     let largePlane = MeshResource.generatePlane(width: defaultWidth, height: defaultHeight)
     var skyBoxMaterial = UnlitMaterial()
@@ -571,7 +589,7 @@ private func createPreviewPlane() -> Entity {
     let previewEntity = Entity()
     // Start with a default 16:9 aspect ratio plane
     // This will be updated dynamically based on the incoming video's actual aspect ratio
-    let defaultHeight: Float = 9.6
+    let defaultHeight: Float = 2.0
     let defaultWidth: Float = defaultHeight * (16.0 / 9.0)  // 16:9 aspect ratio
     let largePlane = MeshResource.generatePlane(width: defaultWidth, height: defaultHeight)
     var previewMaterial = UnlitMaterial()
@@ -602,7 +620,7 @@ class VideoStreamManager: ObservableObject {
     }
     
     /// Callback for point cloud snapshots
-    var onPointCloudReceived: (([SIMD3<Float>], [SIMD3<Float>]) -> Void)? {
+    var onPointCloudReceived: ((PointCloudFrame) -> Void)? {
         didSet {
             webrtcClient?.onPointCloudReceived = onPointCloudReceived
         }

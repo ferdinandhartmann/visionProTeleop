@@ -1,0 +1,141 @@
+<mujoco model="FR3 with Robotiq 2F-85">
+  <compiler angle="radian" autolimits="true"/>
+  <option gravity="0 0 0" timestep="0.002"/>
+
+  <!--
+    The package token is resolved by vp_streamer at runtime. The arm collision
+    meshes and Robotiq visual meshes come from the same franka_description
+    package used to generate the ROS robot_description.
+  -->
+  <asset>
+    <material name="franka_white" rgba="0.92 0.92 0.90 1"/>
+    <material name="franka_dark" rgba="0.12 0.12 0.13 1"/>
+    <material name="robotiq" rgba="0.18 0.18 0.20 1"/>
+    <mesh name="fr3_link0" file="${franka_description}/meshes/robot_arms/fr3/collision/link0.stl" smoothnormal="true"/>
+    <mesh name="fr3_link1" file="${franka_description}/meshes/robot_arms/fr3/collision/link1.stl" smoothnormal="true"/>
+    <mesh name="fr3_link2" file="${franka_description}/meshes/robot_arms/fr3/collision/link2.stl" smoothnormal="true"/>
+    <mesh name="fr3_link3" file="${franka_description}/meshes/robot_arms/fr3/collision/link3.stl" smoothnormal="true"/>
+    <mesh name="fr3_link4" file="${franka_description}/meshes/robot_arms/fr3/collision/link4.stl" smoothnormal="true"/>
+    <mesh name="fr3_link5" file="${franka_description}/meshes/robot_arms/fr3/collision/link5.stl" smoothnormal="true"/>
+    <mesh name="fr3_link6" file="${franka_description}/meshes/robot_arms/fr3/collision/link6.stl" smoothnormal="true"/>
+    <mesh name="fr3_link7" file="${franka_description}/meshes/robot_arms/fr3/collision/link7.stl" smoothnormal="true"/>
+    <mesh name="robotiq_base" file="${franka_description}/meshes/robot_ee/robotiq_gripper_2f85/visual/base_link_fine.STL" smoothnormal="true"/>
+    <mesh name="robotiq_outer_knuckle" file="${franka_description}/meshes/robot_ee/robotiq_gripper_2f85/visual/outer_knuckle_fine.STL" smoothnormal="true"/>
+    <mesh name="robotiq_outer_finger" file="${franka_description}/meshes/robot_ee/robotiq_gripper_2f85/visual/outer_finger_fine.STL" smoothnormal="true"/>
+    <mesh name="robotiq_inner_knuckle" file="${franka_description}/meshes/robot_ee/robotiq_gripper_2f85/visual/inner_knuckle_fine.STL" smoothnormal="true"/>
+    <mesh name="robotiq_inner_finger" file="${franka_description}/meshes/robot_ee/robotiq_gripper_2f85/visual/inner_finger_fine.STL" smoothnormal="true"/>
+  </asset>
+
+  <default>
+    <joint damping="1" armature="0.05"/>
+    <geom type="mesh" contype="0" conaffinity="0" group="1"/>
+  </default>
+
+  <worldbody>
+    <light pos="1 -1 2" dir="-0.5 0.5 -1" directional="true"/>
+
+    <body name="fr3_link0">
+      <geom mesh="fr3_link0" material="franka_dark"/>
+      <body name="fr3_link1" pos="0 0 0.333">
+        <joint name="fr3_joint1" axis="0 0 1" range="-2.7437 2.7437"/>
+        <geom mesh="fr3_link1" material="franka_white"/>
+        <body name="fr3_link2" euler="-1.57079632679 0 0">
+          <joint name="fr3_joint2" axis="0 0 1" range="-1.7837 1.7837"/>
+          <geom mesh="fr3_link2" material="franka_white"/>
+          <body name="fr3_link3" pos="0 -0.316 0" euler="1.57079632679 0 0">
+            <joint name="fr3_joint3" axis="0 0 1" range="-2.9007 2.9007"/>
+            <geom mesh="fr3_link3" material="franka_white"/>
+            <body name="fr3_link4" pos="0.0825 0 0" euler="1.57079632679 0 0">
+              <joint name="fr3_joint4" axis="0 0 1" range="-3.0421 -0.1518"/>
+              <geom mesh="fr3_link4" material="franka_white"/>
+              <body name="fr3_link5" pos="-0.0825 0.384 0" euler="-1.57079632679 0 0">
+                <joint name="fr3_joint5" axis="0 0 1" range="-2.8065 2.8065"/>
+                <geom mesh="fr3_link5" material="franka_white"/>
+                <body name="fr3_link6" euler="1.57079632679 0 0">
+                  <joint name="fr3_joint6" axis="0 0 1" range="0.5445 4.5169"/>
+                  <geom mesh="fr3_link6" material="franka_white"/>
+                  <body name="fr3_link7" pos="0.088 0 0" euler="1.57079632679 0 0">
+                    <joint name="fr3_joint7" axis="0 0 1" range="-3.0159 3.0159"/>
+                    <geom mesh="fr3_link7" material="franka_white"/>
+                    <body name="fr3_link8" pos="0 0 0.107">
+                      <body name="robotiq_gripper_2f85">
+                        <!-- The Robotiq STL frame is rotated +90 degrees in the ROS model. -->
+                        <body name="robotiq_visual_offset" euler="0 0 1.57079632679">
+                          <geom mesh="robotiq_base" material="robotiq"/>
+
+                          <body name="left_outer_knuckle" pos="0.0306011444260539 0 0.0627920162695395">
+                            <joint name="left_outer_knuckle_joint" axis="0 -1 0" range="0 0.725"/>
+                            <geom mesh="robotiq_outer_knuckle" material="robotiq"/>
+                            <body name="left_outer_finger" pos="0.0316910442266543 0 -0.00193396375724605">
+                              <geom mesh="robotiq_outer_finger" material="franka_dark"/>
+                            </body>
+                          </body>
+                          <body name="left_inner_knuckle" pos="0.0127000000001501 0 0.0693074999999639">
+                            <joint name="left_inner_knuckle_joint" axis="0 -1 0" range="0 0.725"/>
+                            <geom mesh="robotiq_inner_knuckle" material="franka_dark"/>
+                            <body name="left_inner_finger" pos="0.034585310861294 0 0.0454970193817975">
+                              <joint name="left_inner_finger_joint" axis="0 -1 0" range="-0.725 0"/>
+                              <geom mesh="robotiq_inner_finger" material="robotiq"/>
+                            </body>
+                          </body>
+
+                          <body name="right_inner_knuckle" pos="-0.0126999999998499 0 0.0693075000000361" euler="0 0 3.14159265358979">
+                            <joint name="right_inner_knuckle_joint" axis="0 1 0" range="-0.725 0"/>
+                            <geom mesh="robotiq_inner_knuckle" material="franka_dark"/>
+                            <body name="right_inner_finger" pos="0.0341060475457406 0 0.0458573878541688">
+                              <joint name="right_inner_finger_joint" axis="0 1 0" range="0 0.725"/>
+                              <geom mesh="robotiq_inner_finger" material="robotiq"/>
+                            </body>
+                          </body>
+                          <body name="right_outer_knuckle" pos="-0.0306011444258893 0 0.0627920162695395" euler="0 0 3.14159265358979">
+                            <joint name="right_outer_knuckle_joint" axis="0 1 0" range="-0.725 0"/>
+                            <geom mesh="robotiq_outer_knuckle" material="robotiq"/>
+                            <body name="right_outer_finger" pos="0.0317095909367246 0 -0.0016013564954687">
+                              <geom mesh="robotiq_outer_finger" material="franka_dark"/>
+                            </body>
+                          </body>
+                        </body>
+                        <body name="fr3_robotiq_gripper_2f85_tcp" pos="0 0 0.174">
+                          <body name="robot_tcp_frame">
+                            <site name="ee_fk_site" type="sphere" size="0.008" rgba="0 0.4 1 1"/>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <body name="ee_fk_frame" mocap="true">
+      <body name="ee_fk_xb" pos="0.03 0 0" quat="0.7071068 0 -0.7071068 0">
+        <geom name="ee_fk_x" type="capsule" size="0.003 0.03" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_fk_yb" pos="0 0.03 0" quat="0.7071068 0.7071068 0 0">
+        <geom name="ee_fk_y" type="capsule" size="0.003 0.03" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_fk_zb" pos="0 0 0.03">
+        <geom name="ee_fk_z" type="capsule" size="0.003 0.03" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+      </body>
+    </body>
+    <body name="ee_target_frame" mocap="true">
+      <body name="ee_target_xb" pos="0.03 0 0" quat="0.7071068 0 -0.7071068 0">
+        <geom name="ee_target_x" type="capsule" size="0.003 0.03" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_target_yb" pos="0 0.03 0" quat="0.7071068 0.7071068 0 0">
+        <geom name="ee_target_y" type="capsule" size="0.003 0.03" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="ee_target_zb" pos="0 0 0.03">
+        <geom name="ee_target_z" type="capsule" size="0.003 0.03" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <key name="home" qpos="0 0 0 -1.5708 0 1.5708 0 0 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

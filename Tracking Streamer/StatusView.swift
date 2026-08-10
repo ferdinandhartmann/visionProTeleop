@@ -531,6 +531,38 @@ struct StatusOverlay: View {
                     }
                     .buttonStyle(.plain)
 
+                    if appMode == .teleop {
+                        Button {
+                            dataManager.showRobotModel.toggle()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(dataManager.showRobotModel ? Color.purple.opacity(0.8) : Color.gray.opacity(0.6))
+                                    .frame(width: 60, height: 60)
+                                Image(systemName: dataManager.showRobotModel ? "cube.fill" : "cube")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(dataManager.showRobotModel ? "Hide robot model" : "Show robot model")
+
+                        Button {
+                            dataManager.showPointCloud.toggle()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(dataManager.showPointCloud ? Color.cyan.opacity(0.8) : Color.gray.opacity(0.6))
+                                    .frame(width: 60, height: 60)
+                                Image(systemName: dataManager.showPointCloud ? "circle.grid.3x3.fill" : "circle.grid.3x3")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(dataManager.showPointCloud ? "Hide point cloud" : "Show point cloud")
+                    }
+
                     // Recording button
                     Button {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
@@ -2204,7 +2236,7 @@ struct StatusOverlay: View {
                             if !Task.isCancelled { previewActive = false }
                         }
                     }
-                ), in: 0.2...3.0, step: 0.1)
+                ), in: 0.05...1.0, step: 0.05)
                 .tint(.purple)
             }
             
@@ -2296,7 +2328,7 @@ struct StatusOverlay: View {
                 .buttonStyle(.plain)
                 
                 Button {
-                    dataManager.videoPlaneScale = 0.8
+                    dataManager.videoPlaneScale = 0.1
                     dataManager.videoPlaneZDistance = -10.0
                     dataManager.videoPlaneYPosition = 0.0
                     dataManager.videoPlaneAutoPerpendicular = false
@@ -2879,7 +2911,7 @@ struct StatusOverlay: View {
                                 if !Task.isCancelled { previewActive = false }
                             }
                         }
-                    ), in: 0.5...2.0, step: 0.1)
+                    ), in: 0.05...1.0, step: 0.05)
                     .tint(.purple)
                 }
                 
@@ -2971,6 +3003,7 @@ struct StatusOverlay: View {
                         .buttonStyle(.plain)
                         
                         Button {
+                            dataManager.videoPlaneScale = 0.1
                             dataManager.videoPlaneZDistance = -10.0
                             dataManager.videoPlaneYPosition = 0.0
                             dataManager.videoPlaneAutoPerpendicular = false

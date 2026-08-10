@@ -1,7 +1,31 @@
 # Teleoperation
 
+## Franka FR3
 
-## Data flow and key nodes
+The Franka launch sends Vision Pro wrist deltas directly to the FACTR Cartesian
+impedance controller. It does not run the myCobot IK or serial-command nodes.
+
+```bash
+ros2 launch teleoperation franka_teleoperation.launch.py \
+  robot_ip:=172.168.0.1 \
+  visionpro_ip:=192.168.50.153
+```
+
+By default this starts the FR3, Cartesian impedance controller, Robotiq 2F-85
+driver, top RealSense (`950122070179`), Vision Pro streamer, and RViz. The
+RealSense driver publishes its own decimated point cloud; no separate
+depth-to-cloud or point-cloud downsampler is used.
+
+Hold the left pinch to enable motion. The right wrist commands relative
+Cartesian motion and the right pinch commands the gripper. Franka-specific
+parameters are in `config/franka_teleoperation.yaml`.
+
+If wrist tracking changes by more than the configured translation or rotation
+jump limit, or tracking becomes stale, teleoperation disables before publishing
+the unsafe target. Release the left pinch and pinch again to resume.
+
+
+## myCobot data flow and key nodes
 
 1. **Vision Pro transforms** – `vp_transform_publisher.py` listens to the Vision Pro stream and publishes TF frames such as `visionpro/right/wrist` and fingertip frames under the configurable `vp_base` tree.
 2. **Target computation** – `teleop_control_cpp` reads the TF frames, applies calibration offsets, converts the wrist pose into an end-effector goal, and derives a gripper percentage from the right-hand pinch distance. It publishes `teleoperation/TeleopTarget` on `/teleop/ee_target_` and the frame `ee_target_offset_mycobot_base`.

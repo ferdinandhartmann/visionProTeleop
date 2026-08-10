@@ -47,6 +47,7 @@ setup(
         ('share/' + package_name + '/urdf/mycobot_280_m5', glob('urdf/mycobot_280_m5/*')),
         ('share/' + package_name + '/urdf/adaptive_gripper', glob('urdf/adaptive_gripper/*')),
         ('share/' + package_name + '/mycobot_mujoco', package_files('mycobot_mujoco')),
+        ('share/' + package_name + '/franka_mujoco', package_files('franka_mujoco')),
         # ('share/' + package_name + '/mycobot_mujoco', glob('mycobot_mujoco/')),
         
     ],

@@ -11,15 +11,6 @@ import GRPCNIOTransportHTTP2
 import GRPCProtobuf
 import simd
 
-struct PointCloudPayload {
-    let positions: [SIMD3<Float>]
-    let colors: [SIMD3<Float>]
-    let spriteSize: Float
-    let attachToPosition: SIMD3<Float>?
-    let attachToRotation: simd_quatf?
-    let signature: UInt64
-}
-
 @MainActor
 final class CombinedStreamingUpdateCache: ObservableObject {
     var fixedMarkerTransforms: [Int: Transform] = [:]
@@ -32,9 +23,12 @@ final class CombinedStreamingUpdateCache: ObservableObject {
     var cachedRightJointMaterial: RealityKit.Material? = nil
     var cachedLeftBoneMaterial: RealityKit.Material? = nil
     var cachedRightBoneMaterial: RealityKit.Material? = nil
-    var pointCloudUpdateInFlight: Bool = false
-    var pendingPointCloudPayload: PointCloudPayload? = nil
-    var lastPointCloudSignature: UInt64? = nil
+    var pointCloudRenderer: PointCloudRenderer? = nil
+    var lastVideoImageIdentifier: ObjectIdentifier? = nil
+    var lastVideoScale: Float = -.infinity
+    var lastVideoBaseline: Float = -.infinity
+    var lastVideoStereo = false
+    var lastVideoWasUVC = false
 }
 
 // MARK: - Marker Label View (SwiftUI attachment for real-time text updates)
@@ -219,7 +213,6 @@ struct CombinedStreamingView: View {
     @State private var stereoMaterialEntity: Entity? = nil
     @State private var fixedWorldTransform: Transform? = nil
     @State private var statusFixedWorldTransform: Transform? = nil
-    @State private var lastStatusFixedToWorld: Bool = false
     @State private var uvcFrame: UIImage? = nil  // UVC camera frame
     
     // MuJoCo state
@@ -234,7 +227,6 @@ struct CombinedStreamingView: View {
     @State private var attachToRotation: simd_quatf? = nil
     @State private var mujocoFinalTransforms: [String: simd_float4x4] = [:]
     @State private var mujocoPoseUpdateTrigger: UUID = UUID()
-    @State private var pointCloudEntity: ModelEntity? = nil
     @State private var mujocoUsdzURL: String? = nil
     @State private var cachedSortedBodyNames: [String] = []  // Cached sorted body names for consistent iteration
     
@@ -322,7 +314,6 @@ struct CombinedStreamingView: View {
                 mujocoFinalTransforms: $mujocoFinalTransforms,
                 mujocoPoseUpdateTrigger: $mujocoPoseUpdateTrigger,
                 mujocoBodyEntities: $mujocoBodyEntities,
-                pointCloudEntity: $pointCloudEntity,
                 computeMuJoCoFinalTransformsFromWebRTC: computeMuJoCoFinalTransformsFromWebRTC,
                 computeMuJoCoFinalTransforms: computeMuJoCoFinalTransforms,
                 tryAutoMinimize: tryAutoMinimize
@@ -375,7 +366,10 @@ struct CombinedStreamingView: View {
     @ViewBuilder
     private var baseRealityView: some View {
         RealityView { content, attachments in
-            setupRealityViewContent(content: content, attachments: attachments)
+            await setupRealityViewContent(
+                content: content,
+                attachments: attachments
+            )
         } update: { updateContent, attachments in
             let _ = updateTrigger
             let _ = dataManager.videoPlaneZDistance
@@ -470,168 +464,117 @@ struct CombinedStreamingView: View {
                 // Hide video plane when calibration wizard is active (video goes to wizard instead)
                 let hideForCalibration = dataManager.isCalibrationWizardActive
                 
-                // Update video texture based on source
-                if hasVideoFrame && !hideForCalibration, let skyBox = skyBoxEntity {
-                    let displayImage: UIImage
-                    let imageWidth: CGFloat
-                    let imageHeight: CGFloat
-                    
-                    if isUVCMode, let uvc = uvcFrame {
-                        // Use UVC camera frame
-                        displayImage = uvc
-                        imageWidth = displayImage.size.width
-                        imageHeight = displayImage.size.height
-                    } else if let imageRight = imageData.right {
-                        // Use network stream frame
-                        displayImage = imageRight
-                        imageWidth = imageRight.size.width
-                        imageHeight = imageRight.size.height
-                    } else {
-                        skyBoxEntity?.isEnabled = false
-                        return
-                    }
-                    
-                    // Record frame if recording is active (video-driven recording)
-                    // Each new video frame captures the latest tracking data
-                    if recordingManager.isRecording {
-                        recordingManager.recordVideoFrame(displayImage)
-                    }
-                    
-                    // Calculate aspect ratio - for stereo UVC, the displayed image is half width (side-by-side split)
-                    let isUVCStereo = isUVCMode && UVCCameraManager.shared.stereoEnabled
-                    let effectiveWidth = isUVCStereo ? imageWidth / 2 : imageWidth
-                    let aspectRatio = Float(effectiveWidth / imageHeight)
-                    let scale = dataManager.videoPlaneScale
-                    // Apply scale factor to plane dimensions
-                    let planeHeight: Float = 9.6 * scale
-                    var planeWidth = planeHeight * aspectRatio
-                    
-                    // Adjust plane width for stereo baseline cropping (crop not stretch)
-                    let baselineOffset = abs(dataManager.stereoBaselineOffset)
-                    if baselineOffset > 0.001 {
-                        planeWidth *= Float(1.0 - baselineOffset)
-                    }
-                    
-                    let newMesh = MeshResource.generatePlane(width: planeWidth, height: planeHeight)
-                    skyBox.components[ModelComponent.self]?.mesh = newMesh
-                    previewEntity?.components[ModelComponent.self]?.mesh = newMesh
-                    
+                // Texture and mesh creation are expensive. RealityView can update at
+                // hand-tracking rate, so process video only for a new frame or a
+                // display-setting change. Plane movement still updates above.
+                if hasVideoFrame && !hideForCalibration,
+                   let skyBox = skyBoxEntity,
+                   let displayImage = isUVCMode ? uvcFrame : imageData.right,
+                   let displayCG = displayImage.cgImage,
+                   displayImage.size.height > 0 {
+                    let isStereo = isUVCMode
+                        ? UVCCameraManager.shared.stereoEnabled
+                        : dataManager.stereoEnabled
+                    let scale = max(dataManager.videoPlaneScale, 0.05)
+                    let signedBaseline = min(max(dataManager.stereoBaselineOffset, -0.45), 0.45)
+                    let imageIdentifier = ObjectIdentifier(displayImage)
+                    let needsContentUpdate =
+                        updateCache.lastVideoImageIdentifier != imageIdentifier ||
+                        updateCache.lastVideoScale != scale ||
+                        updateCache.lastVideoBaseline != signedBaseline ||
+                        updateCache.lastVideoStereo != isStereo ||
+                        updateCache.lastVideoWasUVC != isUVCMode
+
                     skyBox.isEnabled = !videoMinimized
-                    
-                    // Check stereo mode: UVC uses UVCCameraManager.stereoEnabled, network uses DataManager.stereoEnabled
-                    let isStereo = isUVCMode ? UVCCameraManager.shared.stereoEnabled : DataManager.shared.stereoEnabled
-                    
-                    if isStereo {
-                        // Stereo mode: need left and right images
-                        let leftImage: CGImage?
-                        let rightImage: CGImage?
-                        
-                        if isUVCMode, let uvc = uvcFrame, let cgImage = uvc.cgImage {
-                            // Split UVC side-by-side frame into left and right halves
-                            let width = cgImage.width
-                            let height = cgImage.height
-                            let halfWidth = width / 2
-                            
-                            let leftRect = CGRect(x: 0, y: 0, width: halfWidth, height: height)
-                            let rightRect = CGRect(x: halfWidth, y: 0, width: halfWidth, height: height)
-                            
-                            leftImage = cgImage.cropping(to: leftRect)
-                            rightImage = cgImage.cropping(to: rightRect)
-                        } else if let imgLeft = imageData.left, let imgRight = imageData.right {
-                            // Network stream already has separate left/right
-                            leftImage = imgLeft.cgImage
-                            rightImage = imgRight.cgImage
-                        } else {
-                            leftImage = nil
-                            rightImage = nil
-                        }
-                        
-                        if let leftCG = leftImage, let rightCG = rightImage {
-                            // Apply baseline offset cropping if needed
-                            let offset = CGFloat(dataManager.stereoBaselineOffset)
-                            let finalLeftImage: CGImage?
-                            let finalRightImage: CGImage?
-                            
-                            if abs(offset) > 0.001 {
-                                let width = CGFloat(leftCG.width)
-                                let height = CGFloat(leftCG.height)
-                                let cropWidth = width * (1.0 - abs(offset))
-                                
-                                // Calculate crop rects based on offset direction
-                                // Negative offset (Narrower): Crop outer sides (Left: Crop Left, Right: Crop Right) -> Visual shift inward
-                                // Positive offset (Wider): Crop inner sides (Left: Crop Right, Right: Crop Left) -> Visual shift outward
-                                
-                                let leftRect: CGRect
-                                let rightRect: CGRect
-                                
-                                if offset < 0 {
-                                    // Narrower: Left eye crops left side (keeps right), Right eye crops right side (keeps left)
-                                    leftRect = CGRect(x: abs(offset) * width, y: 0, width: cropWidth, height: height)
-                                    rightRect = CGRect(x: 0, y: 0, width: cropWidth, height: height)
-                                } else {
-                                    // Wider: Left eye crops right side (keeps left), Right eye crops left side (keeps right)
-                                    leftRect = CGRect(x: 0, y: 0, width: cropWidth, height: height)
-                                    rightRect = CGRect(x: abs(offset) * width, y: 0, width: cropWidth, height: height)
-                                }
-                                
-                                finalLeftImage = leftCG.cropping(to: leftRect)
-                                finalRightImage = rightCG.cropping(to: rightRect)
-                            } else {
-                                finalLeftImage = leftCG
-                                finalRightImage = rightCG
-                            }
-                            
-                            do {
-                                guard let sphereEntity = stereoMaterialEntity,
-                                      var stereoMaterial = sphereEntity.components[ModelComponent.self]?.materials.first as? ShaderGraphMaterial else {
-                                    var skyBoxMaterial = UnlitMaterial()
-                                    var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                                    textureOptions.mipmapsMode = .none
-                                    if let img = finalRightImage {
-                                        let texture = try TextureResource.generate(from: img, options: textureOptions)
-                                        skyBoxMaterial.color = .init(texture: .init(texture))
-                                        skyBox.components[ModelComponent.self]?.materials = [skyBoxMaterial]
-                                    }
-                                    return
-                                }
-                                
-                                var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                                textureOptions.mipmapsMode = .none
-                                
-                                if let lImg = finalLeftImage, let rImg = finalRightImage {
-                                    let leftTexture = try TextureResource.generate(from: lImg, options: textureOptions)
-                                    let rightTexture = try TextureResource.generate(from: rImg, options: textureOptions)
-                                    try stereoMaterial.setParameter(name: "left", value: .textureResource(leftTexture))
-                                    try stereoMaterial.setParameter(name: "right", value: .textureResource(rightTexture))
-                                    skyBox.components[ModelComponent.self]?.materials = [stereoMaterial]
-                                }
-                            } catch {
-                                dlog("❌ ERROR: Failed to load stereo textures: \(error)")
-                            }
-                        } else {
-                            // Fallback to mono if stereo split fails
-                            var skyBoxMaterial = UnlitMaterial()
-                            do {
-                                var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                                textureOptions.mipmapsMode = .none
-                                let texture = try TextureResource.generate(from: displayImage.cgImage!, options: textureOptions)
-                                skyBoxMaterial.color = .init(texture: .init(texture))
-                                skyBox.components[ModelComponent.self]?.materials = [skyBoxMaterial]
-                            } catch {
-                                dlog("❌ ERROR: Failed to load fallback mono texture: \(error)")
-                            }
-                        }
-                    } else {
-                        // Mono mode (either UVC or network mono)
-                        var skyBoxMaterial = UnlitMaterial()
+
+                    if needsContentUpdate {
+                        updateCache.lastVideoImageIdentifier = imageIdentifier
+                        updateCache.lastVideoScale = scale
+                        updateCache.lastVideoBaseline = signedBaseline
+                        updateCache.lastVideoStereo = isStereo
+                        updateCache.lastVideoWasUVC = isUVCMode
+
+                        let effectiveWidth = isStereo && isUVCMode
+                            ? displayImage.size.width / 2
+                            : displayImage.size.width
+                        let aspectRatio = Float(effectiveWidth / displayImage.size.height)
+                        let planeHeight: Float = 9.6 * scale
+                        let planeWidth = planeHeight * aspectRatio * (1.0 - abs(signedBaseline))
+                        let newMesh = MeshResource.generatePlane(
+                            width: max(planeWidth, 0.01),
+                            height: max(planeHeight, 0.01)
+                        )
+                        skyBox.components[ModelComponent.self]?.mesh = newMesh
+                        previewEntity?.components[ModelComponent.self]?.mesh = newMesh
+
+                        var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
+                        textureOptions.mipmapsMode = .none
+
                         do {
-                            var textureOptions = TextureResource.CreateOptions(semantic: .hdrColor)
-                            textureOptions.mipmapsMode = .none
-                            let texture = try TextureResource.generate(from: displayImage.cgImage!, options: textureOptions)
-                            skyBoxMaterial.color = .init(texture: .init(texture))
-                            skyBox.components[ModelComponent.self]?.materials = [skyBoxMaterial]
+                            if isStereo {
+                                let sourceLeft: CGImage?
+                                let sourceRight: CGImage?
+                                if isUVCMode {
+                                    let halfWidth = displayCG.width / 2
+                                    guard halfWidth > 0 else {
+                                        skyBox.isEnabled = false
+                                        return
+                                    }
+                                    sourceLeft = displayCG.cropping(
+                                        to: CGRect(x: 0, y: 0, width: halfWidth, height: displayCG.height)
+                                    )
+                                    sourceRight = displayCG.cropping(
+                                        to: CGRect(x: halfWidth, y: 0, width: halfWidth, height: displayCG.height)
+                                    )
+                                } else {
+                                    sourceLeft = imageData.left?.cgImage
+                                    sourceRight = imageData.right?.cgImage
+                                }
+
+                                if let leftCG = sourceLeft, let rightCG = sourceRight {
+                                    let offset = CGFloat(signedBaseline)
+                                    let cropFraction = CGFloat(1.0 - abs(signedBaseline))
+                                    let cropWidth = max(1.0, CGFloat(leftCG.width) * cropFraction)
+                                    let height = CGFloat(leftCG.height)
+                                    let leftRect = CGRect(
+                                        x: offset < 0 ? abs(offset) * CGFloat(leftCG.width) : 0,
+                                        y: 0,
+                                        width: cropWidth,
+                                        height: height
+                                    )
+                                    let rightRect = CGRect(
+                                        x: offset > 0 ? abs(offset) * CGFloat(rightCG.width) : 0,
+                                        y: 0,
+                                        width: cropWidth,
+                                        height: CGFloat(rightCG.height)
+                                    )
+                                    let finalLeft = leftCG.cropping(to: leftRect)
+                                    let finalRight = rightCG.cropping(to: rightRect)
+
+                                    if let left = finalLeft,
+                                       let right = finalRight,
+                                       let materialEntity = stereoMaterialEntity,
+                                       var material = materialEntity.components[ModelComponent.self]?.materials.first as? ShaderGraphMaterial {
+                                        let leftTexture = try TextureResource.generate(from: left, options: textureOptions)
+                                        let rightTexture = try TextureResource.generate(from: right, options: textureOptions)
+                                        try material.setParameter(name: "left", value: .textureResource(leftTexture))
+                                        try material.setParameter(name: "right", value: .textureResource(rightTexture))
+                                        skyBox.components[ModelComponent.self]?.materials = [material]
+                                    } else if let right = finalRight {
+                                        var material = UnlitMaterial()
+                                        let texture = try TextureResource.generate(from: right, options: textureOptions)
+                                        material.color = .init(texture: .init(texture))
+                                        skyBox.components[ModelComponent.self]?.materials = [material]
+                                    }
+                                }
+                            } else {
+                                var material = UnlitMaterial()
+                                let texture = try TextureResource.generate(from: displayCG, options: textureOptions)
+                                material.color = .init(texture: .init(texture))
+                                skyBox.components[ModelComponent.self]?.materials = [material]
+                            }
                         } catch {
-                            dlog("❌ ERROR: Failed to load mono texture: \(error)")
+                            dlog("❌ [VideoPlane] Failed to update texture: \(error)")
                         }
                     }
                 } else {
@@ -641,17 +584,11 @@ struct CombinedStreamingView: View {
             
             // === STATUS UPDATE ===
             let statusFixed = dataManager.statusFixedToWorld
-            let statusFixedChanged = statusFixed != lastStatusFixedToWorld
             let statusHeadAnchor = findEntity(named: "statusHeadAnchor", in: updateContent.entities) as? AnchorEntity
             
             if let statusContainer = findEntity(named: "statusContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor {
-                        if statusFixedChanged {
-                            // Capture the current world transform before switching anchors to prevent jumps
-                            let worldMatrix = statusContainer.transformMatrix(relativeTo: nil)
-                            statusFixedWorldTransform = Transform(matrix: worldMatrix)
-                        }
                         if statusContainer.parent !== worldAnchor {
                             statusContainer.setParent(worldAnchor, preservingWorldTransform: true)
                         }
@@ -678,8 +615,6 @@ struct CombinedStreamingView: View {
                     statusContainer.move(to: transform, relativeTo: statusContainer.parent, duration: 0.5, timingFunction: .easeInOut)
                 }
             }
-            lastStatusFixedToWorld = statusFixed
-            
             if let statusPreviewContainer = findEntity(named: "statusPreviewContainer", in: updateContent.entities) {
                 if statusFixed {
                     if let worldAnchor, statusPreviewContainer.parent !== worldAnchor {
@@ -712,7 +647,9 @@ struct CombinedStreamingView: View {
                     dlog("🔗 [CombinedStreamingView] Adding MuJoCo model to scene")
                     mujocoRoot.addChild(entity)
                 }
+                entity.isEnabled = dataManager.showRobotModel
             }
+            updateCache.pointCloudRenderer?.setVisible(dataManager.showPointCloud)
             
             // === HEAD BEAM UPDATE ===
             if let headBeamAnchor = findEntity(named: "headBeamAnchor", in: updateContent.entities),
@@ -1217,7 +1154,11 @@ struct CombinedStreamingView: View {
     
     // MARK: - RealityView Setup
     
-    private func setupRealityViewContent(content: RealityViewContent, attachments: RealityViewAttachments) {
+    @MainActor
+    private func setupRealityViewContent(
+        content: RealityViewContent,
+        attachments: RealityViewAttachments
+    ) async {
         dlog("🟢 [CombinedStreamingView] RealityView content block called")
         
         // === VIDEO SETUP (from ImmersiveView) ===
@@ -1248,11 +1189,17 @@ struct CombinedStreamingView: View {
         mujocoRoot.name = "mujocoRoot"
         content.add(mujocoRoot)
         
-        let pointCloudEntity = ModelEntity()
-        pointCloudEntity.name = "pointCloudEntity"
-        pointCloudEntity.isEnabled = false
-        pointCloudEntity.setParent(mujocoRoot)
-        self.pointCloudEntity = pointCloudEntity
+        do {
+            let renderer = try await PointCloudRenderer(
+                spriteRadius: dataManager.pointCloudSpriteSize
+            )
+            renderer.setVisible(dataManager.showPointCloud)
+            renderer.entity.setParent(mujocoRoot)
+            updateCache.pointCloudRenderer = renderer
+        } catch {
+            dlog("❌ [PointCloud] Failed to initialize GPU renderer: \(error)")
+            updateCache.pointCloudRenderer = nil
+        }
         
         // === HEAD BEAM SETUP ===
         let headBeamAnchor = AnchorEntity(.head)
@@ -1650,6 +1597,7 @@ struct CombinedStreamingView: View {
                 wrapper.addChild(loadedEntity)
                 newEntity = wrapper
             }
+            newEntity.isEnabled = DataManager.shared.showRobotModel
             
             await MainActor.run {
                 mujocoEntity = newEntity
@@ -2148,7 +2096,7 @@ struct CombinedStreamingView: View {
 
 private func createSkyBox() -> Entity {
     let skyBoxEntity = Entity()
-    let defaultHeight: Float = 9.6
+    let defaultHeight: Float = 2.0
     let defaultWidth: Float = defaultHeight * (16.0 / 9.0)
     let largePlane = MeshResource.generatePlane(width: defaultWidth, height: defaultHeight)
     var skyBoxMaterial = UnlitMaterial()
@@ -2159,7 +2107,7 @@ private func createSkyBox() -> Entity {
 
 private func createPreviewPlane() -> Entity {
     let previewEntity = Entity()
-    let defaultHeight: Float = 9.6
+    let defaultHeight: Float = 2.0
     let defaultWidth: Float = defaultHeight * (16.0 / 9.0)
     let largePlane = MeshResource.generatePlane(width: defaultWidth, height: defaultHeight)
     var previewMaterial = UnlitMaterial()
@@ -2168,227 +2116,6 @@ private func createPreviewPlane() -> Entity {
     return previewEntity
 }
 
-@MainActor
-private func enqueuePointCloudUpdate(
-    cache: CombinedStreamingUpdateCache,
-    entityProvider: () -> ModelEntity?,
-    positions: [SIMD3<Float>],
-    colors: [SIMD3<Float>],
-    spriteSize: Float,
-    attachToPosition: SIMD3<Float>?,
-    attachToRotation: simd_quatf?
-) {
-    guard !positions.isEmpty, positions.count == colors.count else {
-        return
-    }
-    let signature = computePointCloudSignature(
-        positions: positions,
-        colors: colors
-    )
-    if cache.lastPointCloudSignature == signature {
-        return
-    }
-    let payload = PointCloudPayload(
-        positions: positions,
-        colors: colors,
-        spriteSize: spriteSize,
-        attachToPosition: attachToPosition,
-        attachToRotation: attachToRotation,
-        signature: signature
-    )
-    if cache.pointCloudUpdateInFlight {
-        cache.pendingPointCloudPayload = payload
-        return
-    }
-    cache.pointCloudUpdateInFlight = true
-    processPointCloudPayload(
-        cache: cache,
-        entityProvider: entityProvider,
-        payload: payload
-    )
-}
-
-@MainActor
-private func processPointCloudPayload(
-    cache: CombinedStreamingUpdateCache,
-    entityProvider: () -> ModelEntity?,
-    payload: PointCloudPayload
-) {
-    guard let entity = entityProvider() else {
-        cache.pendingPointCloudPayload = payload
-        cache.pointCloudUpdateInFlight = false
-        return
-    }
-    updatePointCloudEntity(
-        entity,
-        points: payload.positions,
-        colors: payload.colors,
-        spriteSize: payload.spriteSize,
-        attachToPosition: payload.attachToPosition,
-        attachToRotation: payload.attachToRotation
-    )
-    cache.lastPointCloudSignature = payload.signature
-    if let pending = cache.pendingPointCloudPayload {
-        cache.pendingPointCloudPayload = nil
-        processPointCloudPayload(
-            cache: cache,
-            entityProvider: entityProvider,
-            payload: pending
-        )
-    } else {
-        cache.pointCloudUpdateInFlight = false
-    }
-}
-
-private func computePointCloudSignature(
-    positions: [SIMD3<Float>],
-    colors: [SIMD3<Float>]
-) -> UInt64 {
-    var hasher = Hasher()
-    hasher.combine(positions.count)
-    hasher.combine(colors.count)
-    if !positions.isEmpty {
-        let samples = min(positions.count, 16)
-        let step = max(1, positions.count / samples)
-        var idx = 0
-        var taken = 0
-        while idx < positions.count && taken < samples {
-            let p = positions[idx]
-            hasher.combine(p.x.bitPattern)
-            hasher.combine(p.y.bitPattern)
-            hasher.combine(p.z.bitPattern)
-            let colorIdx = min(idx, colors.count - 1)
-            let c = colors[colorIdx]
-            hasher.combine(c.x.bitPattern)
-            hasher.combine(c.y.bitPattern)
-            hasher.combine(c.z.bitPattern)
-            idx += step
-            taken += 1
-        }
-    }
-    return UInt64(bitPattern: Int64(hasher.finalize()))
-}
-
-@MainActor
-private func updatePointCloudEntity(
-    _ entity: ModelEntity?,
-    points: [SIMD3<Float>],
-    colors: [SIMD3<Float>],
-    spriteSize: Float,
-    attachToPosition: SIMD3<Float>?,
-    attachToRotation: simd_quatf?
-) {
-    guard let entity = entity else { return }
-    guard !points.isEmpty, points.count == colors.count else {
-        entity.isEnabled = false
-        return
-    }
-
-    // Hide and clear the previous cloud immediately so stale geometry never overlaps the new one
-    entity.isEnabled = false
-    entity.children.forEach { $0.removeFromParent() }
-    
-    // Bucket points by color (0-1 range) and build one mesh per bucket for better performance and tinting.
-    let bucketSteps: Float = 4.0  // 4x4x4 buckets = 64 groups
-    let axisCorrection = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
-    
-    struct Bucket { var positions: [SIMD3<Float>] = []; var colorSum: SIMD3<Float> = .zero }
-    
-    var buckets: [Int: Bucket] = [:]
-    func bucketIndex(for color: SIMD3<Float>) -> Int {
-        // Incoming colors are 0-1 floats; bucket in that range
-        let c = max(SIMD3<Float>(repeating: 0), min(SIMD3<Float>(repeating: 1), color))
-        let step = 256.0 / bucketSteps
-        let r = Int((c.x * 255) / step)
-        let g = Int((c.y * 255) / step)
-        let b = Int((c.z * 255) / step)
-        return (r << 8) | (g << 4) | b
-    }
-    
-    for i in 0..<points.count {
-        // Apply attach_to and axis correction to match MuJoCo transforms in RealityKit
-        var p = points[i]
-        if let attachPos = attachToPosition, let attachRot = attachToRotation {
-            p = attachRot.act(p) + attachPos
-        }
-        p = axisCorrection.act(p)
-        
-        let idx = bucketIndex(for: colors[i])
-        if buckets[idx] == nil { buckets[idx] = Bucket() }
-        buckets[idx]?.positions.append(p)
-        buckets[idx]?.colorSum += colors[i]
-    }
-    
-    var pendingChildren: [ModelEntity] = []
-    pendingChildren.reserveCapacity(buckets.count)
-    
-    // Precompute a low-poly sphere (icosahedron) to duplicate for each point
-    // Use a precomputed golden ratio to keep this expression simple for the compiler
-    let t: Float = 1.618033988749895
-    let baseVerts: [SIMD3<Float>] = [
-        SIMD3<Float>(-1,  t, 0), SIMD3<Float>( 1,  t, 0), SIMD3<Float>(-1, -t, 0), SIMD3<Float>( 1, -t, 0),
-        SIMD3<Float>(0, -1,  t), SIMD3<Float>(0,  1,  t), SIMD3<Float>(0, -1, -t), SIMD3<Float>(0,  1, -t),
-        SIMD3<Float>( t, 0, -1), SIMD3<Float>( t, 0, 1), SIMD3<Float>(-t, 0, -1), SIMD3<Float>(-t, 0, 1)
-    ].map { simd_normalize($0) }
-    // let baseVerts: [SIMD3<Float>] = {
-    //     var result: [SIMD3<Float>] = []
-    //     result.reserveCapacity(unnormBaseVerts.count)
-    //     for v in unnormBaseVerts {
-    //         result.append(simd_normalize(v))
-    //     }
-    //     return result
-    // }()
-    let baseIndices: [UInt32] = [
-        0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11,
-        1,5,9, 5,11,4, 11,10,2, 10,7,6, 7,1,8,
-        3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9,
-        4,9,5, 2,4,11, 6,2,10, 8,6,7, 9,8,1
-    ]
-    
-    for (bucket, data) in buckets {
-        let bucketPoints = data.positions
-        if bucketPoints.isEmpty { continue }
-        var vertices: [SIMD3<Float>] = []
-        var indices: [UInt32] = []
-        vertices.reserveCapacity(bucketPoints.count * baseVerts.count)
-        indices.reserveCapacity(bucketPoints.count * baseIndices.count)
-        
-        for position in bucketPoints {
-            let startIndex = UInt32(vertices.count)
-            vertices.append(contentsOf: baseVerts.map { position + $0 * spriteSize })
-            indices.append(contentsOf: baseIndices.map { $0 + startIndex })
-        }
-        
-        var descriptor = MeshDescriptor()
-        descriptor.positions = .init(vertices)
-        descriptor.primitives = .triangles(indices)
-        guard let mesh = try? MeshResource.generate(from: [descriptor]) else { continue }
-        
-        // Average tint for this bucket
-        let count = Float(bucketPoints.count)
-        let avg = data.colorSum / max(1, count)
-        var material = UnlitMaterial()
-        let tintColor = UIColor(
-            red: CGFloat(avg.x),
-            green: CGFloat(avg.y),
-            blue: CGFloat(avg.z),
-            alpha: 1.0
-        )
-        material.color = .init(tint: tintColor)
-        
-        let child = ModelEntity(mesh: mesh, materials: [material])
-        pendingChildren.append(child)
-    }
-
-    guard !pendingChildren.isEmpty else {
-        dlog("⚠️ [PointCloud] No geometry generated for \(points.count) points")
-        return
-    }
-
-    pendingChildren.forEach { entity.addChild($0) }
-    entity.isEnabled = true
-    dlog("🌫️ [PointCloud] Updated \(buckets.count) color buckets totaling \(points.count) points (size=\(String(format: "%.4f", spriteSize)))")
-}
 
 /// Creates a "light beam" ray that extends from the head anchor towards -Z axis
 private func createHeadBeam() -> Entity {
@@ -2965,8 +2692,6 @@ private struct LifecycleModifiers: ViewModifier {
     @Binding var mujocoFinalTransforms: [String: simd_float4x4]
     @Binding var mujocoPoseUpdateTrigger: UUID
     @Binding var mujocoBodyEntities: [String: ModelEntity]
-    @Binding var pointCloudEntity: ModelEntity?
-    
     var computeMuJoCoFinalTransformsFromWebRTC: ([String: [Float]]) -> [String: simd_float4x4]
     var computeMuJoCoFinalTransforms: ([String: MujocoAr_BodyPose]) -> [String: simd_float4x4]
     var tryAutoMinimize: () -> Void
@@ -3041,18 +2766,21 @@ private struct LifecycleModifiers: ViewModifier {
             }
         }
         
-        videoStreamManager.onPointCloudReceived = { positions, colors in
+        videoStreamManager.onPointCloudReceived = { frame in
             Task { @MainActor in
-                enqueuePointCloudUpdate(
-                    cache: self.updateCache,
-                    entityProvider: { self.pointCloudEntity },
-                    positions: positions,
-                    colors: colors,
-                    spriteSize: dataManager.pointCloudSpriteSize,
-                    attachToPosition: attachToPosition,
-                    attachToRotation: attachToRotation
+                guard let renderer = self.updateCache.pointCloudRenderer else {
+                    return
+                }
+                renderer.setSpriteRadius(dataManager.pointCloudSpriteSize)
+                renderer.setPlacement(
+                    attachPosition: attachToPosition,
+                    attachRotation: attachToRotation
                 )
-                // dlog("🌫️ [CombinedStreamingView] Point cloud received with \(positions.count) points")
+                renderer.submit(
+                    frame,
+                    headWorldTransform:
+                        DataManager.shared.latestHandTrackingData.Head
+                )
             }
         }
         
@@ -3341,9 +3069,7 @@ private struct StateChangeModifiers: ViewModifier {
         mujocoUsdzURL = nil
         attachToPosition = nil
         attachToRotation = nil
-        updateCache.pointCloudUpdateInFlight = false
-        updateCache.pendingPointCloudPayload = nil
-        updateCache.lastPointCloudSignature = nil
+        updateCache.pointCloudRenderer?.reset()
     }
     
     private func handleVideoPlaneFixedChange(isFixed: Bool) {

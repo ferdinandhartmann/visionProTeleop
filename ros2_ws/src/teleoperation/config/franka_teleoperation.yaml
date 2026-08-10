@@ -1,0 +1,139 @@
+# Franka FR3 + Vision Pro teleoperation.
+# Runtime-specific addresses can be overridden by launch arguments.
+
+vp_transform_publisher:
+  ros__parameters:
+    visionpro_ip: "192.168.50.153"
+    pinch_threshold: 0.02
+    rate_hz: 50.0
+
+franka_visionpro_teleop:
+  ros__parameters:
+    robot_state_topic: /franka_robot_state_broadcaster/robot_state
+    pose_command_topic: /cartesian_impedance_controller/pose_command
+    gripper_command_topic: /factr_teleop/gripper_pos_cmd
+    enabled_topic: /teleop/teleop_enabled
+
+    base_frame: fr3_link0
+    hand_frame: visionpro/right/wrist
+    left_thumb_frame: visionpro/left/thumb_4
+    left_index_frame: visionpro/left/index_4
+    right_thumb_frame: visionpro/right/thumb_4
+    right_index_frame: visionpro/right/index_4
+    target_tf_frame: franka_visionpro_target
+    # RViz frame parented directly to the tracked wrist.
+    wrist_target_tf_frame: franka_visionpro_wrist_target
+    measured_ee_tf_frame: franka_measured_ee
+
+    tracking_rate_hz: 100.0
+    pose_publish_rate_hz: 250.0
+    gripper_publish_rate_hz: 25.0
+    tracking_timeout_sec: 0.25
+    max_tracking_translation_jump_m: 0.05
+    max_tracking_rotation_jump_deg: 15.0
+
+    # Left pinch is a hold-to-enable clutch.
+    activation_distance_m: 0.020
+    activation_release_distance_m: 0.025
+
+    # Deltas are measured after the vp_base calibration transform.
+    axis_map: [0, 1, 2]
+    axis_signs: [1.0, 1.0, 1.0]
+    rotation_axis_signs: [-1.0, 1.0, -1.0]
+    translation_scale: 1.4
+    rotation_scale: 0.7
+    # Local pose from visionpro/right/wrist to the RViz wrist target.
+    # Rotation uses ROS roll-pitch-yaw order (X-Y-Z), in degrees.
+    # This does not alter the commanded robot pose.
+    wrist_target_offset_xyz: [-0.1, -0.06, 0.02]
+    wrist_target_offset_rpy_deg: [25.0, 179.0, 15.0]
+    workspace_min_xyz: [0.0, -0.40, -0.1]
+    workspace_max_xyz: [0.85, 0.30, 0.70]
+
+    right_pinch_min_m: 0.015
+    right_pinch_max_m: 0.150
+    gripper_open_command: 0.0
+    gripper_closed_command: 0.95
+
+    position_filter_cutoff_hz: 5.0
+    orientation_filter_cutoff_hz: 5.0
+    gripper_filter_cutoff_hz: 12.0
+
+vp_streamer:
+  ros__parameters:
+    visionpro_ip: "192.168.50.153"
+    port: 50051
+    joint_state_topic: /joint_states
+    expected_joint_names:
+      [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
+    attach_to: [-0.4, -0.35, 0.65, 90.0]
+    update_simulation_hz: 30.0
+    # 30 Hz is smooth in-headset and halves RealityKit transform updates.
+    # Robot control publishing remains independently configured at 250 Hz.
+    pose_streaming_hz: 30.0
+    force_reload: false
+
+    base_frame: fr3_link0
+    current_tool_frame: franka_measured_ee
+    target_visual_tf_frame: franka_visionpro_target
+    ee_fk_body_name: ee_fk_frame
+    ee_target_body_name: ee_target_frame
+    publish_reset_teleop_target: false
+
+    # Map Robotiq feedback (0=open, ~0.725=closed) to the six linkage joints.
+    gripper_source_joint: fr3_finger_joint
+    gripper_model_joints:
+      [left_outer_knuckle_joint, left_inner_knuckle_joint, left_inner_finger_joint,
+       right_inner_knuckle_joint, right_inner_finger_joint, right_outer_knuckle_joint]
+    gripper_model_joint_multipliers: [1.0, 1.0, -1.0, -1.0, 1.0, -1.0]
+    gripper_source_min: 0.0
+    gripper_source_max: 0.725
+    gripper_model_open: 0.0
+    gripper_model_closed: 0.725
+
+    enable_camera: true
+    camera_mode: realsense
+    camera_resolution: "640x360"
+    camera_fps: 20
+    # Rotate only the wrist view in the combined Vision Pro image.
+    wrist_camera_rotate_180: true
+    format: v4l2
+    realsense_image_topic: /realsense/wrist/color/image_raw
+    secondary_realsense_image_topic: /realsense/top/color/image_raw
+    # Send a single 640x720 image: top camera above wrist camera.
+    combine_realsense_images: true
+    # 1.0 keeps 640x720; 0.75 sends 480x540; 0.5 sends 320x360.
+    combined_image_downsample_scale: 0.5
+
+    enable_pointcloud: true
+    # The RealSense launch already applies its hardware/SDK decimation filter.
+    pointcloud_topic: /realsense/wrist/depth/color/points
+    # Send every valid point from the hardware-decimated RealSense stream.
+    # The visionOS renderer adapts local draw density only under GPU pressure.
+    pointcloud_rate_hz: 8.0
+    pointcloud_max_points: 20000
+    pointcloud_stride: 1
+    # Point-cloud TF/update mode. In both modes, every transmitted cloud is a
+    # complete snapshot that atomically replaces the previously rendered cloud;
+    # this parameter does not select partial versus complete point updates.
+    # false (previous behavior): transform the complete cloud with the latest
+    # TF available when vp_streamer sends it. This is sufficient for a fixed
+    # camera, but a moving wrist camera can use a newer pose than the pose at
+    # capture time, causing the cloud to appear in the wrong place.
+    # true (moving-camera behavior): prefer the wrist-camera TF at the cloud's
+    # ROS capture timestamp. Lookup is non-blocking. If robot TF is behind the
+    # camera timestamp, the newest available TF is used immediately so the
+    # display does not freeze; a throttled warning reports the measured lag.
+    # This corrects whole-frame pose lag when synchronized capture TF exists,
+    # but it cannot de-skew motion during one RealSense depth exposure.
+    pointcloud_fullupdate: true
+    pointcloud_flip_world_z: false
+    mocap_flip_world_z: false
+
+    enable_audio: false
+
+robotiq_gripper_node:
+  ros__parameters:
+    command_position_threshold: 1
+    slow_speed: 20
+    fast_speed: 85

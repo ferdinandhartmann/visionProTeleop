@@ -16,6 +16,7 @@ build/
 **/Payload/
 
 *.usdz
+!ros2_ws/src/robot_description/franka_mujoco/fr3_robotiq_2f85.usdz
 *.usda
 build/
 *.mp4
