@@ -13,6 +13,22 @@ Robotiq 2F-85 workflow, plus additional features in the Tracking Streamer app.
   </a>
 </p>
 
+## Run the website locally
+
+From the repository root, start a local web server with:
+
+```bash
+python3 -m http.server 8000 --directory website
+```
+
+Then open [http://localhost:8000](http://localhost:8000) in a browser. Stop the
+server with `Ctrl+C`. If port 8000 is already in use, select another port, for
+example:
+
+```bash
+python3 -m http.server 8080 --directory website
+```
+
 <p align="center">
   <img src="https://github.com/user-attachments/assets/8b692573-c12a-40b2-9d62-499ccbfc2f51" width="48%" />
   <img src="https://github.com/user-attachments/assets/c9bcaa12-baa9-47e8-8e9b-2f3063b5613a" width="48%" />

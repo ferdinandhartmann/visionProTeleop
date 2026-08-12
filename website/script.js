@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const observer = new IntersectionObserver((entries) => {
             const visible = entries
                 .filter((entry) => entry.isIntersecting)
-                .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+                .sort((a, b) => b.boundingClientRect.top - a.boundingClientRect.top);
             if (visible[0]) setActiveLink(visible[0].target.id);
         }, { rootMargin: '-18% 0px -70% 0px', threshold: 0 });
 
