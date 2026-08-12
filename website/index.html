@@ -19,12 +19,12 @@
             <a href="#contributions">Main Features</a>
             <a href="#pipeline">Control Pipeline</a>
             <a href="#feedback">Operator Feedback</a>
-            <a href="#franka">Franka Research 3</a>
-            <a href="#franka-overview">Franka Research 3 Overview</a>
-            <a href="#franka-demonstrations">Franka Research 3 Media</a>
-            <a href="#mycobot">MyCobot 280</a>
-            <a href="#overview">MyCobot Overview</a>
-            <a href="#demonstrations">MyCobot Media</a>
+            <a class="toc-section" href="#franka">Franka Research 3</a>
+            <a class="toc-subsection" href="#franka-overview">Overview</a>
+            <a class="toc-subsection" href="#franka-demonstrations">Media</a>
+            <a class="toc-section" href="#mycobot">MyCobot 280</a>
+            <a class="toc-subsection" href="#overview">Overview</a>
+            <a class="toc-subsection" href="#demonstrations">Media</a>
             <a href="#limitations">Current Limitations</a>
             <a href="#acknowledgements">Acknowledgements</a>
         </nav>
@@ -55,12 +55,16 @@
                 <a href="#contributions">Main features</a>
                 <a href="#pipeline">Control pipeline</a>
                 <a href="#feedback">Operator feedback</a>
-                <a href="#franka">Franka Research 3</a>
-                <a href="#franka-overview">Franka Research 3 overview</a>
-                <a href="#franka-demonstrations">Franka Research 3 media</a>
-                <a href="#mycobot">MyCobot 280</a>
-                <a href="#overview">MyCobot overview</a>
-                <a href="#demonstrations">MyCobot media</a>
+                <div class="mobile-toc-group">
+                    <a class="toc-section" href="#franka">Franka Research 3</a>
+                    <a class="toc-subsection" href="#franka-overview">Overview</a>
+                    <a class="toc-subsection" href="#franka-demonstrations">Media</a>
+                </div>
+                <div class="mobile-toc-group">
+                    <a class="toc-section" href="#mycobot">MyCobot 280</a>
+                    <a class="toc-subsection" href="#overview">Overview</a>
+                    <a class="toc-subsection" href="#demonstrations">Media</a>
+                </div>
                 <a href="#limitations">Current limitations</a>
                 <a href="#acknowledgements">Acknowledgements</a>
             </div>
@@ -70,7 +74,7 @@
     <main id="main-content" class="shell">
         <section class="tldr" aria-labelledby="tldr-title">
             <h2 id="tldr-title" class="visually-hidden">Project summary</h2>
-            <p>This project extends VisionProTeleop with ROS 2 pipelines that map Apple Vision Pro hand tracking to physical collaborative robots. It currently supports the Franka Research 3 (FR3) and MyCobot 280 while returning camera, point-cloud, audio, and digital-twin feedback to the operator.</p>
+            <p>This project extends VisionProTeleop with ROS 2 pipelines that map Apple Vision Pro hand tracking to collaborative robots (Franka Research 3 (FR3) and MyCobot 280) and returns camera, point-cloud, audio, digital-twin and pose command feedback to the operator.</p>
         </section>
 
         <figure id="franka-gif-demo" class="hero-media hero-gif-media">
@@ -82,7 +86,7 @@
                 <p class="section-number">01</p>
                 <h2>Motivation</h2>
             </div>
-            <p>Good teleoperation demands continuous perceptual feedback and low-latency control mapping. This project presents a teleoperation architecture for cobots using the Apple Vision Pro and ROS 2. Demonstrated on both the low-cost MyCobot 280 and the high-performance FR3, the system integrates hand and head tracking with low-latency video pass-through and operator feedback to establish real-time telepresence. A synchronized 3D virtual representation of each robot is displayed within the spatial environment as a digital twin for trajectory monitoring and state visualization. The modular ROS 2 pipeline shows how the same Vision Pro interface can scale from an accessible desktop cobot to a research-grade manipulator.</p>
+            <p>Good teleoperation demands continuous perceptual feedback and an easy interface. This project presents a teleoperation architecture for cobots using the Apple Vision Pro. Demonstrated on both the low-cost MyCobot 280 and the high-performance FR3, the system integrates hand tracking with video pass-through and operator feedback to establish real-time telepresence. A synchronized 3D virtual representation of each robot is displayed within the spatial environment as a digital twin for state monitoring and visualization. The modular ROS 2 pipeline shows how the same Vision Pro interface can scale from an accessible desktop cobot to a research-grade manipulator.</p>
         </section>
 
         <section id="contributions" class="content-section">
@@ -92,35 +96,29 @@
             </div>
             <div class="card-grid contributions-grid">
                 <article class="info-card">
-                    <p class="card-label">Immersive 3D</p>
                     <h3>Commanded pose and virtual robot in 3D</h3>
                     <p>Custom MuJoCo models of the MyCobot 280 and FR3 are streamed to Vision Pro with commanded and actual end-effector poses, improving teleoperation and enabling robot-state visualization when the physical robot is out of sight.</p>
                 </article>
-                <article class="info-card">
-                    <p class="card-label">Robot control</p>
+                <!-- <article class="info-card">
                     <h3>Robot-specific control from shared tracking</h3>
                     <p>The same relative wrist interaction drives a C++ inverse-kinematics and hardware pipeline for MyCobot, or a filtered Cartesian impedance target at up to 250 Hz for Franka.</p>
-                </article>
+                </article> -->
                 <article class="info-card">
-                    <p class="card-label">Hand interaction and safety</p>
                     <h3>Clutch, gripper, and tracking protection</h3>
-                    <p>Left-hand pinch enables motion and right-hand pinch controls the gripper. The Franka path also rejects stale tracking and pose jumps, filters commands, and clamps targets to a configured workspace.</p>
+                    <p>Left-hand pinch toggles motion, while right-hand pinch controls the gripper. End-effector pose is controlled by the right wrist frame, offset to align between the fingers. The Franka path also rejects stale tracking and pose jumps, filters commands, and clamps targets to a configured workspace.</p>
                 </article>
                 <article class="info-card">
-                    <p class="card-label">Sensor feedback</p>
                     <h3>Sensor data inside Vision Pro</h3>
-                    <p>Robot and RealSense cameras, downsampled RGB point clouds, audio, and synchronized digital twins return spatial context to the operator.</p>
+                    <p>Robot and RealSense cameras, downsampled RGB point cloud, audio, and synchronized digital twins return spatial context to the operator.</p>
                 </article>
                 <article class="info-card">
-                    <p class="card-label">Added app features</p>
                     <h3>Teleoperation-focused interface</h3>
                     <p>World locking for the camera and control bar, direct reset and exit actions, independent robot and point-cloud visibility, and a faster path into the tracking view.</p>
                 </article>
-                <article class="info-card">
-                    <p class="card-label">Two robot classes</p>
+                <!-- <article class="info-card">
                     <h3>Low-cost and high-performance cobots</h3>
                     <p>MyCobot provides an accessible low-cost platform, while the FR3 demonstrates higher-rate, research-grade Cartesian control using the same Vision Pro interaction concept.</p>
-                </article>
+                </article> -->
             </div>
         </section>
 
@@ -140,7 +138,7 @@
                 </li>
                 <li>
                     <span class="step-index">3</span>
-                    <div><h3>Map</h3><p>ROS 2 converts wrist motion through MyCobot inverse kinematics or a direct Franka Cartesian target.</p></div>
+                    <div><h3>Map</h3><p>ROS 2 converts wrist motion through MyCobot inverse kinematics or a direct Cartesian target for FR3.</p></div>
                 </li>
                 <li>
                     <span class="step-index">4</span>
@@ -158,20 +156,20 @@
                 <p class="section-number">04</p>
                 <h2>Operator Feedback</h2>
             </div>
-            <p>Teleoperation is bidirectional for both robots: the headset sends motion intent and receives spatial context from the robot workspace. Available modalities depend on the robot configuration and can be enabled in the ROS 2 launch settings.</p>
+            <p>Teleoperation is bidirectional for both robots: the headset sends motion intent and receives spatial context from the robot workspace.</p>
             <div class="modality-list">
-                <article><span aria-hidden="true">◉</span><div><h3>Video</h3><p>Robot-mounted and external RealSense camera streams, including combined wrist and top views for Franka.</p></div></article>
-                <article><span aria-hidden="true">◉</span><div><h3>Point cloud</h3><p>Downsampled RGB geometry placed in the corresponding robot or simulation frame.</p></div></article>
-                <article><span aria-hidden="true">◉</span><div><h3>Virtual Robot</h3><p>MuJoCo state rendered as a spatial reference in Vision Pro for either robot.</p></div></article>
-                <article><span aria-hidden="true">◉</span><div><h3>Audio</h3><p>Enable, disable, and motor-state feedback for the operator where configured.</p></div></article>
+                <article><span aria-hidden="true">◉</span><div><h3>Video</h3><p>Robot-mounted and external RealSense camera streams.</p></div></article>
+                <article><span aria-hidden="true">◉</span><div><h3>Point cloud</h3><p>Downsampled RGB pointcloud placed in the corresponding simulation frame.</p></div></article>
+                <article><span aria-hidden="true">◉</span><div><h3>Virtual Robot</h3><p>MuJoCo state rendered as a spatial reference in Vision Pro.</p></div></article>
+                <article><span aria-hidden="true">◉</span><div><h3>Audio</h3><p>Enable sound, disable sound, and motor-state feedback.</p></div></article>
             </div>
         </section>
 
         <section id="franka" class="robot-section" aria-labelledby="franka-title">
             <div class="robot-heading">
-                <p class="robot-kicker">High-performance research cobot</p>
+                <p class="robot-kicker">High-performance cobot</p>
                 <h2 id="franka-title">Franka Research 3</h2>
-                <p>Vision Pro wrist motion drives the FR3 through direct Cartesian impedance control, while hand gestures provide an explicit safety clutch and proportional control of the Robotiq 2F-85 gripper.</p>
+                <p>Vision Pro wrist motion drives the FR3 through direct Cartesian impedance control, while hand gestures provide an explicit safety clutch and control of the Robotiq 2F-85 gripper.</p>
             </div>
 
             <section id="franka-overview" class="content-section" aria-labelledby="franka-overview-title">
@@ -192,7 +190,7 @@
                     <p class="section-number">02</p>
                     <h2 id="franka-demonstrations-title">Franka Research 3 Demonstrations</h2>
                 </div>
-                <p>Watch the full Vision Pro and FR3 demonstration on YouTube, or play the short project video directly on this page.</p>
+                <p>Play a short highlight video directly on this page or watch the full FR3 teleoperation demonstration on YouTube.</p>
                 <div class="franka-media-grid">
                     <figure id="franka-video-demo" class="media-placeholder-card">
                         <div class="video-frame">
@@ -275,10 +273,9 @@
                 <h2>Current Limitations</h2>
             </div>
             <ul class="limitations-list">
-                <li>The MyCobot Python API and its internal ESP32 communication limit physical command updates to approximately 12 Hz.</li>
-                <li>The Franka colored wrist-camera point cloud is currently streamed at approximately 8 Hz with a 20,000-point limit, so it updates much more slowly than the robot controller and can lag during fast motion.</li>
+                <li>After implementing C++ inverse kinematics and asynchronous command processing, physical command updates remain capped at ~12 Hz due to hardware communication limits in the MyCobot Python API and its internal ESP32.</li>
+                <li>The Franka colored wrist-camera point cloud is currently streamed at approximately 8 Hz, so it updates much more slowly than the robot controller and can lag during fast motion.</li>
                 <li>Camera and point-cloud quality must be balanced against local-network bandwidth and latency. WebRTC feedback can temporarily freeze while the separate control path remains active, so the AR view is not a safety system.</li>
-                <li>The MyCobot path remains a prototype for this specific robot configuration rather than a plug-and-play robot-independent controller.</li>
             </ul>
         </section>
 

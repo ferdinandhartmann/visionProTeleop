@@ -164,6 +164,21 @@ h3 {
     font-weight: 700;
 }
 
+.page-toc .toc-section {
+    margin-top: 7px;
+    color: var(--ink);
+    font-weight: 400;
+}
+
+.page-toc .toc-section.is-active {
+    font-weight: 400;
+}
+
+.page-toc .toc-subsection {
+    padding-left: 24px;
+    font-size: 0.74rem;
+}
+
 /* Header */
 .project-header {
     position: relative;
@@ -423,9 +438,8 @@ main {
 }
 
 .wide-figure {
-    width: min(1160px, calc(100vw - 32px));
-    margin: 34px 50% 0;
-    transform: translateX(-50%);
+    width: 100%;
+    margin: 34px auto 0;
 }
 
 .wide-figure a {
@@ -455,15 +469,6 @@ main {
     border: 1px solid var(--line);
     border-radius: 9px;
     background: var(--soft);
-}
-
-.card-label {
-    margin-bottom: 7px;
-    color: var(--accent);
-    font-size: 0.71rem;
-    font-weight: 800;
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
 }
 
 .info-card h3 {
@@ -838,6 +843,27 @@ footer {
         font-size: 0.78rem;
         text-decoration: none;
     }
+
+    .mobile-toc-group {
+        display: grid;
+        flex: 1 1 210px;
+        grid-template-columns: 1fr;
+        gap: 3px;
+        padding: 7px 10px;
+        border-left: 2px solid var(--line);
+        background: var(--soft);
+    }
+
+    .mobile-toc-group .toc-section {
+        color: var(--ink);
+        font-weight: 400;
+    }
+
+    .mobile-toc-group .toc-subsection {
+        padding-left: 10px;
+        color: var(--muted);
+        font-size: 0.74rem;
+    }
 }
 
 @media (max-width: 720px) {
@@ -895,10 +921,6 @@ footer {
 
     .section-heading {
         margin-top: 32px;
-    }
-
-    .wide-figure {
-        width: calc(100vw - 20px);
     }
 
     .card-grid,
